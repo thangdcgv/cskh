@@ -1,0 +1,594 @@
+{% extends "base.html" %}
+
+{% block title %}Quản Lý Hàng Chờ | Center Hub{% endblock %}
+
+{% block head %}
+{{ super() }}
+<!-- React, Babel & Supabase CDN -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<!-- Root Render ứng dụng React Quản lý Hàng Chờ -->
+<div id="root" class="w-full"></div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+
+<!-- Inject Dữ liệu Current User từ FastAPI Jinja2 Context -->
+<script id="user-data" type="application/json">
+  {{ current_user | tojson | safe }}
+</script>
+<script>
+  const SERVER_CURRENT_USER = JSON.parse(document.getElementById('user-data').textContent || '{}');
+  console.log("✅ CURRENT_USER:", SERVER_CURRENT_USER);
+</script>
+
+{% raw %}
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+const API_BASE = "/api";
+const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${protocol}//${window.location.host}/ws/tickets`;
+
+// Ánh xạ phòng ban & Role
+const DEPT_NAME = {
+  KTSC: "Sửa Chữa",
+  KTLD: "Lắp Đặt",
+  KD: "Kinh Doanh",
+  CSKH: "CSKH"
+};
+const ROLE_LABEL = {
+  super_admin: "Super Admin",
+  admin: "Quản lý",
+  ktv: "Kỹ thuật",
+  kd: "Kinh doanh",
+  le_tan: "Lễ tân"
+};
+
+// HÀM ÂM THANH DỰ PHÒNG (BEEP)
+const playBeepFallback = () => {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [0, 0.15].forEach(delay => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + delay);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime + delay);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + delay + 0.1);
+      osc.start(ctx.currentTime + delay);
+      osc.stop(ctx.currentTime + delay + 0.1);
+    });
+  } catch (e) {}
+};
+
+const playNewSound = (enabled) => {
+  if (!enabled) return;
+  const audio = new Audio("/static/sounds/co_so_moi.mp3");
+  audio.volume = 1.0;
+  audio.play()
+    .then(() => console.log("🔊 Phát âm thanh vé mới"))
+    .catch(err => {
+      console.warn("⚠️ File MP3 lỗi, dùng tiếng Bíp dự phòng:", err.message);
+      playBeepFallback();
+    });
+};
+
+const playTransferSound = (enabled, department) => {
+  if (!enabled) return;
+  const deptSound = {
+    KTSC: "/static/sounds/phong_sua_chua.mp3",
+    KTLD: "/static/sounds/phong_lap_dat.mp3",
+    KD: "/static/sounds/phong_kinh_doanh.mp3",
+    CSKH: "/static/sounds/phong_cskh.mp3"
+  }[department];
+  
+  const audio1 = new Audio("/static/sounds/chuyen_phong.mp3");
+  audio1.play()
+    .then(() => {
+      if (deptSound) {
+        audio1.onended = () => {
+          setTimeout(() => new Audio(deptSound).play().catch(() => {}), 150);
+        };
+      }
+    })
+    .catch(() => playBeepFallback());
+};
+
+function App() {
+  const user = SERVER_CURRENT_USER;
+  const [loading, setLoading] = useState(true);
+  const [audioOn, setAudioOn] = useState(() => localStorage.getItem("audioOn") === "true");
+  const [deptFilter, setDeptFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [tickets, setTickets] = useState([]);
+  const [stats, setStats] = useState({ waiting: 0, processing: 0, completed: 0 });
+  const [transferTicket, setTransferTicket] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [wsConnected, setWsConnected] = useState(false);
+  
+  const wsRef = useRef(null);
+  const audioOnRef = useRef(audioOn);
+
+  useEffect(() => {
+    audioOnRef.current = audioOn;
+    localStorage.setItem("audioOn", audioOn);
+  }, [audioOn]);
+
+  const canSeeAll = user && (user.role === "super admin" || user.role === "admin" || user.role === "system admin");
+  const canTransfer = canSeeAll;
+  const effectiveDept = canSeeAll ? deptFilter : (user.department || "KTSC");
+
+  // TẢI DANH SÁCH VÉ
+  const loadTickets = useCallback(async () => {
+    try {
+      const q = new URLSearchParams();
+      q.set("department", effectiveDept);
+      q.set("status", statusFilter);
+      const res = await fetch(`${API_BASE}/tickets/queue?${q.toString()}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.success) {
+        setTickets(data.tickets || []);
+        setStats(data.stats || { waiting: 0, processing: 0, completed: 0 });
+      }
+    } catch (e) {
+      console.error("❌ Lỗi tải vé:", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [effectiveDept, statusFilter]);
+
+  const loadTicketsRef = useRef(loadTickets);
+  useEffect(() => {
+    loadTicketsRef.current = loadTickets;
+  }, [loadTickets]);
+
+  useEffect(() => {
+    loadTickets();
+  }, [loadTickets]);
+
+  // UNLOCK AUTOPLAY AUDIO
+  useEffect(() => {
+    const unlockAudio = () => {
+      playBeepFallback();
+      window.removeEventListener("click", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+    };
+    window.addEventListener("click", unlockAudio);
+    window.addEventListener("touchstart", unlockAudio);
+    return () => {
+      window.removeEventListener("click", unlockAudio);
+      window.removeEventListener("touchstart", unlockAudio);
+    };
+  }, []);
+
+  // WEBSOCKET REALTIME
+  useEffect(() => {
+    let reconnectTimer = null;
+    let isMounted = true;
+
+    const connect = () => {
+      const ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsConnected(true);
+        if (loadTicketsRef.current) loadTicketsRef.current();
+      };
+
+      ws.onmessage = (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch { return; }
+
+        switch (msg.type) {
+          case "connected":
+            if (loadTicketsRef.current) loadTicketsRef.current();
+            break;
+
+          case "new_ticket":
+            playNewSound(audioOnRef.current);
+            // Chỉ cần tải lại danh sách mới nhất từ server
+            if (loadTicketsRef.current) loadTicketsRef.current();
+            break;
+
+          case "transfer_ticket":
+            playTransferSound(audioOnRef.current, msg.new_department);
+            if (loadTicketsRef.current) loadTicketsRef.current();
+            break;
+
+          case "status_update":
+            if (loadTicketsRef.current) loadTicketsRef.current();
+            break;
+        }
+      };
+
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (isMounted) reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (err) => {
+        ws.close();
+      };
+    };
+
+    connect();
+
+    return () => {
+      isMounted = false;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
+    };
+  }, []);
+
+  // HÀNH ĐỘNG
+  // Tiếp nhận (gọi số) — dùng endpoint call
+  const callTicket = async (id) => {
+    const res = await fetch(`${API_BASE}/tickets/call/${id}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    });
+    if (res.ok) {
+      showToast("Đã tiếp nhận vé!", "success");
+      loadTickets(); // dự phòng khi WS đứt
+    } else {
+      showToast("Lỗi khi tiếp nhận vé!", "error");
+    }
+  };
+
+  // Hoàn thành — vẫn dùng PATCH status
+  const updateStatus = async (id, status) => {
+    const res = await fetch(`${API_BASE}/tickets/${id}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status })
+    });
+    if (res.ok) {
+      showToast("Đã cập nhật trạng thái!", "success");
+      loadTickets(); // dự phòng khi WS đứt
+    } else {
+      showToast("Lỗi cập nhật trạng thái!", "error");
+    }
+  };
+
+  const doTransfer = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const newDept = fd.get("new_dept");
+    try {
+      const res = await fetch(`${API_BASE}/tickets/${transferTicket.id}/transfer`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          new_department: newDept,
+          device_info: fd.get("device_info")
+        })
+      });
+      if (res.ok) {
+        showToast(`Đã chuyển sang phòng ${DEPT_NAME[newDept]}!`, "success");
+        setTransferTicket(null);
+        loadTickets();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToast(errData.detail || "Lỗi khi chuyển phòng!", "error");
+      }
+    } catch (err) {
+      showToast("Lỗi kết nối máy chủ!", "error");
+    }
+  };
+
+  const showToast = (msg, type) => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
+  return (
+    <div className="w-full space-y-4 max-w-5xl mx-auto">
+      {/* TOAST NOTIFICATION */}
+      {toast && (
+        <div className={`fixed top-16 right-4 z-50 px-4 py-3 rounded-xl shadow-2xl font-medium text-white transition-all backdrop-blur-md flex items-center gap-3 border ${
+            toast.type === 'error' 
+                ? 'bg-rose-900/90 border-rose-500/30 text-rose-200' 
+                : 'bg-emerald-900/90 border-emerald-500/30 text-emerald-200'
+        }`}>
+            <i className={`fa-solid ${toast.type === 'error' ? 'fa-circle-exclamation text-rose-400' : 'fa-circle-check text-emerald-400'}`}></i>
+            <span className="text-sm">{toast.msg}</span>
+        </div>
+      )}
+
+      {/* HEADER CARD */}
+      <div className="card flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 p-4 sm:p-5">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-[var(--primary-light)] flex items-center justify-center text-xl font-bold shadow-inner flex-shrink-0">
+            <i className="fa-solid fa-list-check"></i>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">KHÁCH HÀNG CHỜ HỖ TRỢ</h1>
+              <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full border ${
+                wsConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
+              }`}>
+                {wsConnected ? "● Realtime Online" : "○ Mất kết nối"}
+              </span>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              <strong>{user.ho_ten || user.name || "Nhân viên"}</strong> · <span className="text-[var(--primary-light)]">{ROLE_LABEL[user.role] || user.role}</span> · {canSeeAll ? "Tất cả phòng" : (DEPT_NAME[user.department] || "Chưa phân phòng")}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* NÚT ĐIỀU HƯỚNG TỚI TRANG BỐC SỐ */}
+          <a 
+            href="/ticket" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="px-3 py-2 bg-sky-600 hover:bg-sky-500 text-white border border-sky-400/30 text-xs font-bold rounded-[var(--radius-btn)] transition-all flex items-center gap-1.5 no-underline shadow-sm"
+            title="Mở giao diện bốc số thứ tự trong tab mới"
+          >
+            <i className="fa-solid fa-ticket"></i>
+            <span>Trang Bốc Số</span>
+          </a>
+
+          <button 
+            onClick={() => setAudioOn(!audioOn)}
+            className={`px-3 py-2 rounded-[var(--radius-btn)] border text-xs font-bold transition-all flex items-center gap-2 ${
+              audioOn 
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
+                : 'bg-slate-800/80 border-[var(--border-color)] text-[var(--text-muted)]'
+            }`}
+          >
+            <i className={`fa-solid ${audioOn ? 'fa-volume-high' : 'fa-volume-xmark'}`}></i>
+            {audioOn ? "Âm thanh: BẬT" : "Âm thanh: TẮT"}
+          </button>
+        </div>
+      </div>
+
+      {/* BANNER ÂM THANH (NẾU CHƯA BẬT) */}
+      {!audioOn && (
+        <div className="bg-amber-500/10 border border-amber-500/20 p-3 rounded-xl flex items-center justify-between gap-3 text-xs text-amber-200">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-bell-slash text-amber-400 text-sm"></i>
+            <span>Bật chuông thông báo để nhận âm thanh tức thì khi có số thứ tự mới hoặc nhận chuyển phòng.</span>
+          </div>
+          <button onClick={() => setAudioOn(true)} className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs whitespace-nowrap transition-all">
+            Bật Ngay
+          </button>
+        </div>
+      )}
+
+      {/* STATS GRID */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="card text-center p-3.5 bg-amber-500/5 border-amber-500/15">
+          <div className="text-2xl sm:text-3xl font-black text-amber-400 tracking-tight">{stats.waiting}</div>
+          <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider mt-1">Đang Chờ</div>
+        </div>
+        <div className="card text-center p-3.5 bg-sky-500/5 border-sky-500/15">
+          <div className="text-2xl sm:text-3xl font-black text-sky-400 tracking-tight">{stats.processing}</div>
+          <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider mt-1">Đang Xử Lý</div>
+        </div>
+        <div className="card text-center p-3.5 bg-emerald-500/5 border-emerald-500/15">
+          <div className="text-2xl sm:text-3xl font-black text-emerald-400 tracking-tight">{stats.completed}</div>
+          <div className="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider mt-1">Hoàn Thành</div>
+        </div>
+      </div>
+
+      {/* FILTER BAR */}
+      <div className="card p-3.5 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-[var(--text-muted)] uppercase">Phòng:</span>
+            <select
+              value={deptFilter}
+              onChange={(e) => setDeptFilter(e.target.value)}
+              disabled={!canSeeAll}
+              className="px-3 py-1.5 bg-[#0a0f1d]/70 border border-[var(--border-color)] rounded-[var(--radius-btn)] text-[var(--text-main)] text-xs font-semibold focus:border-[var(--primary-light)] outline-none disabled:opacity-50"
+            >
+              <option value="ALL">Tất cả phòng</option>
+              <option value="KTSC">Sửa Chữa</option>
+              <option value="KTLD">Lắp Đặt</option>
+              <option value="KD">Kinh Doanh</option>
+              <option value="CSKH">CSKH</option>
+            </select>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-[var(--text-muted)] uppercase">Trạng thái:</span>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="px-3 py-1.5 bg-[#0a0f1d]/70 border border-[var(--border-color)] rounded-[var(--radius-btn)] text-[var(--text-main)] text-xs font-semibold focus:border-[var(--primary-light)] outline-none"
+            >
+              <option value="all">Tất cả trạng thái</option>
+              <option value="waiting">Đang chờ</option>
+              <option value="processing">Đang xử lý</option>
+              <option value="completed">Hoàn thành</option>
+              <option value="cancelled">Đã hủy</option> {/* ✅ Thêm bộ lọc đã hủy */}
+            </select>
+          </div>
+        </div>
+
+        <button 
+          onClick={loadTickets} 
+          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-[var(--border-color)] font-bold rounded-[var(--radius-btn)] text-xs transition-all flex items-center gap-1.5"
+        >
+          <i className="fa-solid fa-rotate"></i> Tải lại
+        </button>
+      </div>
+
+      {/* TICKET GRID */}
+      {loading ? (
+        <div className="text-center py-12 text-[var(--text-muted)]">
+          <i className="fa-solid fa-spinner animate-spin text-2xl mb-2 text-[var(--primary-light)]"></i>
+          <div className="text-xs">Đang tải dữ liệu vé...</div>
+        </div>
+      ) : tickets.length === 0 ? (
+        <div className="card p-12 text-center text-[var(--text-muted)]">
+          <i className="fa-solid fa-inbox text-4xl mb-3 opacity-30"></i>
+          <p className="text-xs">Không có vé nào trong danh sách hiện tại.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+          {tickets.map(t => (
+            <div 
+              key={t.id} 
+              className={`card flex flex-col justify-between p-4 border-l-4 transition-all hover:border-sky-500/40 ${
+                t.status === 'waiting' ? 'border-l-amber-500' :
+                t.status === 'processing' ? 'border-l-sky-500' :
+                t.status === 'completed' ? 'border-l-emerald-500 opacity-75' :
+                'border-l-rose-500 opacity-60 bg-rose-950/10' /* 🛑 Style cho vé bị hủy */
+              }`}
+            >
+              <div>
+                <div className="flex justify-between items-start mb-2">
+                  <span className="text-lg font-black text-[var(--text-main)] tracking-wider">
+                    {t.ticket_code}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    {/* Huy hiệu trạng thái hủy nếu có */}
+                    {t.status === 'cancelled' && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 uppercase">
+                        Đã hủy
+                      </span>
+                    )}
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-sky-500/10 border border-sky-500/20 text-[var(--primary-light)] uppercase">
+                      {DEPT_NAME[t.department] || t.department}
+                    </span>
+                  </div>
+                </div>
+
+                <h3 className="font-bold text-[var(--text-main)] text-sm">{t.customer_name}</h3>
+                <p className="text-xs text-[var(--text-muted)] mt-0.5 mb-2">
+                  <i className="fa-solid fa-phone text-[10px] mr-1"></i>{t.phone || "Không có SĐT"}
+                </p>
+
+                {t.device_info && (
+                  <div className="text-xs text-[var(--text-sub)] bg-[#0a0f1d]/60 border border-[var(--border-color)] p-2 rounded-lg mb-3 break-words">
+                    <strong className="text-[var(--text-muted)]">Mô tả:</strong> {t.device_info}
+                  </div>
+                )}
+              </div>
+
+              {/* Các nút thao tác */}
+              <div className="flex gap-2 pt-2 border-t border-[var(--border-color)] flex-wrap">
+                {t.status === "waiting" && (
+                  <button 
+                    onClick={() => callTicket(t.id)}
+                    className="flex-1 py-1.5 bg-emerald-600/80 hover:bg-emerald-600 text-white font-bold text-xs rounded-[var(--radius-btn)] transition-all flex items-center justify-center gap-1 shadow-sm border border-emerald-500/30"
+                  >
+                    <i className="fa-solid fa-circle-check"></i> Tiếp Nhận
+                  </button>
+                )}
+
+                {t.status === "processing" && (
+                  <button 
+                    onClick={() => updateStatus(t.id, "completed")}
+                    className="flex-1 py-1.5 bg-sky-600/80 hover:bg-sky-600 text-white font-bold text-xs rounded-[var(--radius-btn)] transition-all flex items-center justify-center gap-1 shadow-sm border border-sky-500/30"
+                  >
+                    <i className="fa-solid fa-check"></i> Hoàn Thành
+                  </button>
+                )}
+
+                {/* 🛑 CHỈ HIỆN NÚT CHUYỂN KHI PHIẾU KHÔNG PHẢI LÀ 'completed' VÀ KHÔNG PHẢI LÀ 'cancelled' */}
+                {canTransfer && t.status !== "completed" && t.status !== "cancelled" && (
+                  <button 
+                    onClick={() => setTransferTicket(t)}
+                    className="px-2.5 py-1.5 bg-amber-600/80 hover:bg-amber-600 text-white font-bold text-xs rounded-[var(--radius-btn)] transition-all flex items-center justify-center gap-1 shadow-sm border border-amber-500/30"
+                    title="Chuyển sang phòng khác"
+                  >
+                    <i className="fa-solid fa-right-left"></i> Chuyển
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* MODAL CHUYỂN PHÒNG */}
+      {transferTicket && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="card max-w-md w-full p-5 border border-[var(--border-color)] shadow-2xl bg-[#0e1424]">
+            <div className="flex justify-between items-center mb-3">
+              <h3 className="text-base font-bold text-[var(--text-main)]">Chuyển Vé {transferTicket.ticket_code}</h3>
+              <button 
+                onClick={() => setTransferTicket(null)}
+                className="text-[var(--text-muted)] hover:text-white text-sm"
+              >
+                <i className="fa-solid fa-xmark"></i>
+              </button>
+            </div>
+
+            <form onSubmit={doTransfer} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-sub)] uppercase mb-1.5">
+                  Phòng ban đích <span className="text-rose-400">*</span>
+                </label>
+                <select 
+                  name="new_dept" 
+                  required
+                  className="w-full p-2.5 bg-[#0a0f1d]/70 border border-[var(--border-color)] rounded-[var(--radius-btn)] text-[var(--text-main)] text-xs font-semibold focus:border-[var(--primary-light)] outline-none"
+                >
+                  <option value="">-- Chọn phòng --</option>
+                  <option value="KTSC">Sửa Chữa</option>
+                  <option value="KTLD">Lắp Đặt</option>
+                  <option value="KD">Kinh Doanh</option>
+                  <option value="CSKH">CSKH</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[var(--text-sub)] uppercase mb-1.5">
+                  Ghi chú / Thông tin bổ sung
+                </label>
+                <textarea
+                  name="device_info"
+                  rows={3}
+                  defaultValue={transferTicket.device_info || ""}
+                  placeholder="Nhập ghi chú yêu cầu mới hoặc tình trạng thiết bị..."
+                  className="w-full p-3 bg-[#0a0f1d]/70 border border-[var(--border-color)] rounded-[var(--radius-btn)] text-[var(--text-main)] text-xs focus:border-[var(--primary-light)] outline-none resize-none"
+                />
+              </div>
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setTransferTicket(null)}
+                  className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-[var(--text-sub)] font-bold text-xs rounded-[var(--radius-btn)] border border-[var(--border-color)] transition-all"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 py-2 bg-[var(--primary)] hover:bg-sky-600 text-white font-bold text-xs rounded-[var(--radius-btn)] transition-all flex items-center justify-center gap-1.5"
+                >
+                  <i className="fa-solid fa-check"></i> Xác Nhận Chuyển
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const container = document.getElementById("root");
+if (container) {
+  const root = ReactDOM.createRoot(container);
+  root.render(<App />);
+}
+</script>
+{% endraw %}
+{% endblock %}

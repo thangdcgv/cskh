@@ -1,0 +1,669 @@
+{% extends "base.html" %}
+{% block title %}Lễ Tân Tiếp Nhận Thiết Bị | Center Hub{% endblock %}
+{% block head %}
+{{ super() }}
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+{% endblock %}
+{% block content %}
+<div id="root" class="w-full"></div>
+{% endblock %}
+{% block scripts %}
+{{ super() }}
+{% raw %}
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+const API_BASE = "/api/reception";
+const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${protocol}//${window.location.host}/ws/tickets`;
+
+const handleResponse = async (res) => {
+  if (res.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Vui lòng đăng nhập lại');
+  }
+  const data = await res.json();
+  if (!res.ok) {
+    throw new Error(data.detail || data.message || 'Yêu cầu thất bại');
+  }
+  return data;
+};
+
+const removeAccents = (str) => {
+  if (!str) return '';
+  return str
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D');
+};
+
+const sendReceptionSms = (record, hotline = '') => {
+  if (!record || !record.phone) return;
+  const cleanPhone = record.phone.replace(/[\s\-\.]/g, '');
+  const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
+  const cleanCustomerName = removeAccents(record.customer_name || '');
+  const noteStr = removeAccents(record.received_note || record.note || 'Binh thuong').trim();
+  
+  const trackingUrl = `${window.location.origin}/tracking?search=${record.code || cleanPhone}`;
+  const lhPart = hotline ? ` .LH: ${hotline}` : '';
+  const smsText = `May in Dai Thanh da tao phieu [${record.code}] ghi nhan thiet bi KH ${cleanCustomerName} luc ${nowStr}. Tinh trang: ${noteStr}. Tra cuu tien do tai: ${trackingUrl}${lhPart}`;
+  
+  const encodedText = encodeURIComponent(smsText);
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const targetLink = isIOS ? `sms:${cleanPhone}&body=${encodedText}` : `sms:${cleanPhone}?body=${encodedText}`;
+  
+  window.location.href = targetLink;
+};
+
+function ReceptionApp() {
+  const [loading, setLoading] = useState(false);
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [records, setRecords] = useState([]);
+  const [hotlinePhone, setHotlinePhone] = useState('');
+  const [updatingId, setUpdatingId] = useState(null);
+
+  // State Modal Sửa Đơn
+  const [editingRecord, setEditingRecord] = useState(null);
+  const [editForm, setEditForm] = useState({
+    customer_name: '',
+    phone: '',
+    address: '',
+    note: '',
+    received_note: ''
+  });
+  const [isSaving, setIsSaving] = useState(false);
+
+  // State Modal Trả Máy Yêu Cầu Lý Do (Dành cho Đơn đang ở trạng thái 'received')
+  const [returnModalRecord, setReturnModalRecord] = useState(null);
+  const [returnReason, setReturnReason] = useState('');
+  const [isSubmittingReturn, setIsSubmittingReturn] = useState(false);
+
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: 20,
+    total: 0,
+    total_pages: 1
+  });
+
+  const searchStateRef = useRef({ searchQuery, page: pagination.page });
+  useEffect(() => {
+    searchStateRef.current = { searchQuery, page: pagination.page };
+  }, [searchQuery, pagination.page]);
+
+  const showToast = (message, type = 'success') => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast({ message, type });
+    toastTimerRef.current = setTimeout(() => setToast(null), 5000);
+  };
+
+  useEffect(() => {
+    const fetchHotlineConfig = async () => {
+      try {
+        const res = await fetch('/api/settings/config');
+        if (res.ok) {
+          const config = await res.json();
+          if (config && config.sms_hotline) {
+            setHotlinePhone(config.sms_hotline.trim());
+          }
+        }
+      } catch (err) {
+        console.warn("Không thể tải hotline từ cấu hình:", err);
+      }
+    };
+    fetchHotlineConfig();
+  }, []);
+
+  const handleSearch = useCallback(async (queryStr, targetPage = 1) => {
+    const q = queryStr !== undefined ? queryStr : searchQuery;
+    try {
+      setLoading(true);
+      const params = new URLSearchParams({
+        query_str: q || '',
+        page: targetPage,
+        limit: 20
+      });
+      if (statusFilter && statusFilter !== 'all') {
+        params.append('status', statusFilter);
+      }
+      const res = await fetch(`${API_BASE}/search?${params}`);
+      const data = await handleResponse(res);
+      if (data.success) {
+        setRecords(data.data || []);
+        if (data.pagination) setPagination(data.pagination);
+      }
+    } catch (err) {
+      showToast(err.message || "Lỗi kết nối máy chủ!", "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQuery, statusFilter]);
+
+  useEffect(() => {
+    handleSearch(searchQuery, 1);
+  }, [statusFilter]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => handleSearch(searchQuery, 1), 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery, handleSearch]);
+
+  useEffect(() => {
+    let ws = null;
+    try {
+      ws = new WebSocket(WS_URL);
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'reception_new' || msg.type === 'reception_returned' || msg.type === 'base_sync') {
+            const { searchQuery, page } = searchStateRef.current;
+            handleSearch(searchQuery, page);
+          }
+        } catch (e) {}
+      };
+    } catch (err) {
+      console.warn("Lỗi kết nối WebSocket:", err);
+    }
+    return () => { if (ws) ws.close(); };
+  }, [handleSearch]);
+
+  // ===== BẮT ĐẦU QUY TRÌNH TRẢ MÁY =====
+  const handleReturnClick = (record) => {
+    const status = (record.status || '').toLowerCase();
+
+    // Quy tắc 1: Nếu đang sửa chữa -> KHÔNG ĐƯỢC TRẢ MÁY
+    if (status === 'processing' || status === 'repairing') {
+      showToast("⚙ Thiết bị đang trong quá trình sửa chữa! KTV cần hoàn thành hoặc báo hủy sửa trước khi trả máy.", "error");
+      return;
+    }
+
+    // Quy tắc 2: Nếu đang ở trạng thái Tiếp nhận -> YÊU CẦU NHẬP LÝ DO TRẢ
+    if (status === 'received') {
+      setReturnModalRecord(record);
+      setReturnReason('Khách hàng đổi ý / Mang máy về');
+      return;
+    }
+
+    // Quy tắc 3: Nếu Đã sửa xong hoặc Sửa thất bại/Hủy -> Trả trực tiếp
+    executeDirectReturn(record);
+  };
+
+  // Thực thi trả máy trực tiếp
+  const executeDirectReturn = async (record, extraNote = '') => {
+    if (!window.confirm(`Xác nhận trả thiết bị [${record.code}] cho khách ${record.customer_name}?`)) return;
+
+    setUpdatingId(record.id);
+    try {
+      const payload = { status: 'returned' };
+      if (extraNote) {
+        payload.received_note = record.received_note ? `${record.received_note} | Lý do trả: ${extraNote}` : `Lý do trả: ${extraNote}`;
+      }
+
+      let res = await fetch(`${API_BASE}/${record.id}/return`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${API_BASE}/${record.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+
+      await handleResponse(res);
+      showToast(`✅ Đã xác nhận trả thiết bị [${record.code}] thành công!`, 'success');
+      handleSearch(searchQuery, pagination.page);
+    } catch (err) {
+      showToast(err.message || "Không thể cập nhật trạng thái trả máy", "error");
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  // Nộp form trả máy có lý do (Dành cho Đơn đang chờ)
+  const handleReturnWithReasonSubmit = async (e) => {
+    e.preventDefault();
+    if (!returnModalRecord) return;
+    if (!returnReason.trim()) {
+      showToast("Vui lòng nhập lý do trả máy!", "error");
+      return;
+    }
+
+    setIsSubmittingReturn(true);
+    try {
+      const payload = {
+        status: 'returned',
+        received_note: returnModalRecord.received_note 
+          ? `${returnModalRecord.received_note} [Lý do trả: ${returnReason.trim()}]`
+          : `Lý do trả: ${returnReason.trim()}`
+      };
+
+      const res = await fetch(`${API_BASE}/${returnModalRecord.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      await handleResponse(res);
+      showToast(`✅ Đã cập nhật lý do & xác nhận trả máy [${returnModalRecord.code}]!`, 'success');
+      setReturnModalRecord(null);
+      handleSearch(searchQuery, pagination.page);
+    } catch (err) {
+      showToast(err.message || "Không thể trả máy", "error");
+    } finally {
+      setIsSubmittingReturn(false);
+    }
+  };
+
+  const openEditModal = (record) => {
+    setEditingRecord(record);
+    setEditForm({
+      customer_name: record.customer_name || '',
+      phone: record.phone || '',
+      address: record.address || '',
+      note: record.note || '',
+      received_note: record.received_note || ''
+    });
+  };
+
+  const handleEditSubmit = async (e) => {
+    e.preventDefault();
+    if (!editingRecord) return;
+
+    if (!editForm.customer_name.trim()) {
+      showToast("Tên khách hàng không được để trống!", "error");
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const payload = {
+        customer_name: editForm.customer_name.trim(),
+        phone: editForm.phone.trim(),
+        address: editForm.address.trim() || undefined,
+        note: editForm.note.trim() || undefined,
+        received_note: editForm.received_note.trim() || undefined
+      };
+
+      const res = await fetch(`${API_BASE}/${editingRecord.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      
+      const data = await handleResponse(res);
+      if (data.success) {
+        showToast(`✅ Đã cập nhật thông tin phiếu ${editingRecord.code}!`, 'success');
+        setEditingRecord(null);
+        handleSearch(searchQuery, pagination.page);
+      }
+    } catch (err) {
+      showToast(err.message || "Không thể cập nhật phiếu", "error");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '—';
+    return new Date(dateStr).toLocaleString('vi-VN');
+  };
+
+  const pendingCount = useMemo(() => records.filter(r => r.status === 'received').length, [records]);
+
+  const getStatusBadge = (status) => {
+    switch ((status || '').toLowerCase()) {
+      case 'returned':
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-emerald-500/10 border-emerald-500/20 text-emerald-400">✓ Đã Trả Khách</span>;
+      case 'fixed':
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-sky-500/10 border-sky-500/20 text-sky-400 animate-pulse">★ Đã Sửa Xong</span>;
+      case 'processing':
+      case 'repairing':
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-purple-500/10 border-purple-500/20 text-purple-400">⚙ Đang Sửa</span>;
+      default:
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-amber-500/10 border-amber-500/20 text-amber-400">● Đang Chờ</span>;
+    }
+  };
+
+  return (
+    <div className="w-full space-y-4 max-w-5xl mx-auto">
+      {/* TOAST NOTIFICATION */}
+      {toast && (
+        <div className={`fixed top-16 right-4 z-50 p-4 rounded-xl shadow-2xl font-medium text-white transition-all backdrop-blur-md flex items-center gap-3 border max-w-md ${
+          toast.type === 'error' 
+            ? 'bg-rose-900/95 border-rose-500/40 text-rose-100' 
+            : 'bg-emerald-900/95 border-emerald-500/40 text-emerald-100'
+        }`}>
+          <i className={`fa-solid ${toast.type === 'error' ? 'fa-circle-exclamation text-rose-400' : 'fa-circle-check text-emerald-400'}`}></i>
+          <span className="text-xs sm:text-sm font-semibold">{toast.message}</span>
+        </div>
+      )}
+
+      {/* HEADER CARD */}
+      <div className="card flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 p-4 sm:p-5">
+        <div className="flex items-center gap-3.5">
+          <div className="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-[var(--primary-light)] flex items-center justify-center text-xl font-bold shadow-inner">
+            <i className="fa-solid fa-boxes-packing"></i>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">TIẾP NHẬN THIẾT BỊ MÁY IN</h1>
+              <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full">Đồng bộ Base</span>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">Quản lý danh sách, chuẩn hóa nội dung & gửi tin nhắn xác nhận cho khách</p>
+          </div>
+        </div>
+        
+        {pendingCount > 0 && (
+          <div className="flex items-center gap-2 px-3.5 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400 text-xs font-bold">
+            <i className="fa-solid fa-clock animate-pulse"></i>
+            <span>Đang chờ tiếp nhận: <strong>{pendingCount}</strong> phiếu</span>
+          </div>
+        )}
+      </div>
+
+      {/* DANH SÁCH & BỘ LỌC */}
+      <div className="space-y-3.5">
+        <div className="card p-3.5 sm:p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
+            <div className="relative flex-1">
+              <i className={`fa-solid ${loading ? 'fa-spinner animate-spin text-[var(--primary-light)]' : 'fa-magnifying-glass text-[var(--text-muted)]'} absolute left-3.5 top-3 text-xs`}></i>
+              <input type="text" placeholder="Tìm theo SĐT, tên khách, mã phiếu..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-9 pr-9 py-2 bg-[#0a0f1d]/70 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)]" />
+              {searchQuery && (
+                <button onClick={() => setSearchQuery('')} className="absolute right-3 top-2.5 text-[var(--text-muted)] hover:text-white">
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              )}
+            </div>
+            <button onClick={() => handleSearch(searchQuery, pagination.page)} disabled={loading}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-bold rounded-lg border border-[var(--border-color)] flex items-center justify-center gap-1.5 transition-all">
+              <i className={`fa-solid fa-rotate ${loading ? 'animate-spin' : ''}`}></i> Làm mới
+            </button>
+          </div>
+
+          {/* BỘ LỌC TRẠNG THÁI */}
+          <div className="flex items-center gap-2 pt-1 overflow-x-auto">
+            {[
+              {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
+              {val: 'received', label: 'Đang Chờ', icon: 'fa-clock'},
+              {val: 'processing', label: 'Đang Sửa', icon: 'fa-gear'},
+              {val: 'fixed', label: 'Đã Sửa Xong', icon: 'fa-square-check'},
+              {val: 'returned', label: 'Đã Trả Khách', icon: 'fa-circle-check'},
+            ].map(f => (
+              <button key={f.val} onClick={() => setStatusFilter(f.val)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap border transition-all ${
+                  statusFilter === f.val
+                    ? f.val === 'received' ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                    : f.val === 'processing' ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
+                    : f.val === 'fixed' ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
+                    : f.val === 'returned' ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
+                    : 'bg-slate-700 border-slate-500 text-white'
+                    : 'bg-[#0a0f1d]/50 border-[var(--border-color)] text-[var(--text-muted)] hover:text-white'
+                }`}>
+                <i className={`fa-solid ${f.icon}`}></i> {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* BẢN GHI PHIẾU TIẾP NHẬN */}
+        {loading && records.length === 0 ? (
+          <div className="text-center py-12 text-[var(--text-muted)]">
+            <i className="fa-solid fa-spinner animate-spin text-2xl mb-2"></i>
+            <div className="text-xs">Đang tải dữ liệu từ máy chủ...</div>
+          </div>
+        ) : records.length === 0 ? (
+          <div className="card p-12 text-center text-[var(--text-muted)]">
+            <i className="fa-solid fa-box-open text-4xl mb-3 opacity-30"></i>
+            <p className="text-sm font-semibold">Không tìm thấy phiếu nhận hàng nào</p>
+            <p className="text-xs mt-1">{searchQuery ? "Thử tìm kiếm với từ khóa khác" : "Phiếu tiếp nhận từ Base sẽ tự động hiển thị tại đây"}</p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {records.map(r => {
+                const status = (r.status || '').toLowerCase();
+                const isProcessing = status === 'processing' || status === 'repairing';
+                const isReturned = status === 'returned';
+                const isFixed = status === 'fixed';
+                const isReceived = status === 'received';
+
+                return (
+                  <div key={r.id} className={`card p-4 border flex flex-col justify-between transition-all ${
+                    isFixed ? 'bg-[#081b29]/90 border-sky-500/40 shadow-lg' :
+                    isReceived ? 'bg-[#0b1329]/90 border-amber-500/30' : ''
+                  }`}>
+                    <div>
+                      <div className="flex justify-between items-start mb-3">
+                        <div>
+                          <span className="text-[0.65rem] font-black text-[var(--primary-light)] bg-sky-500/10 border border-sky-500/20 px-2 py-0.5 rounded-md uppercase font-monospace">{r.code}</span>
+                          <h3 className="font-bold text-sm mt-1.5 text-[var(--text-main)]">{r.customer_name}</h3>
+                          <p className="text-xs text-[var(--text-muted)] mt-0.5 font-monospace">
+                            <i className="fa-solid fa-phone mr-1"></i>{r.phone || '—'}
+                          </p>
+                        </div>
+                        {getStatusBadge(r.status)}
+                      </div>
+
+                      <div className="space-y-1.5 text-xs bg-[#0a0f1d]/70 p-2.5 rounded-xl border border-[var(--border-color)]">
+                        <div><strong className="text-[var(--text-muted)]">Ngày nhận:</strong> {formatDate(r.created_at)}</div>
+                        {r.address && <div><strong className="text-[var(--text-muted)]">Địa chỉ / Khu vực:</strong> <span className="text-sky-300 font-medium">{r.address}</span></div>}
+                        {r.note && <div><strong className="text-[var(--text-muted)]">Yêu cầu / Lỗi:</strong> {r.note}</div>}
+                        {r.received_note && <div><strong className="text-[var(--text-muted)]">Tình trạng nhận:</strong> <span className="text-amber-200/90">{r.received_note}</span></div>}
+                      </div>
+                    </div>
+
+                    {/* CÁC NÚT THAO TÁC ĐỒNG ĐỀU (GRID 3 CỘT) */}
+                    <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[var(--border-color)] mt-3">
+                      {/* 1. NÚT SỬA */}
+                      <button onClick={() => openEditModal(r)}
+                        className="h-9 w-full bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-xs rounded-lg border border-amber-500/30 flex items-center justify-center gap-1.5 transition-all"
+                        title="Sửa thông tin phiếu">
+                        <i className="fa-solid fa-pen-to-square"></i>
+                        <span>Sửa</span>
+                      </button>
+
+                      {/* 2. NÚT GỬI SMS */}
+                      <button onClick={() => sendReceptionSms(r, hotlinePhone)}
+                        className="h-9 w-full bg-sky-600/80 hover:bg-sky-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all"
+                        title="Gửi SMS xác nhận cho khách">
+                        <i className="fa-solid fa-comment-sms"></i>
+                        <span>Gửi SMS</span>
+                      </button>
+
+                      {/* 3. NÚT XÁC NHẬN TRẢ MÁY */}
+                      {isReturned ? (
+                        <div className="h-9 w-full bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-400 text-[11px] font-bold flex items-center justify-center gap-1">
+                          <i className="fa-solid fa-circle-check"></i>
+                          <span>Đã Trả</span>
+                        </div>
+                      ) : isProcessing ? (
+                        <button disabled
+                          className="h-9 w-full bg-slate-800/40 border border-slate-700/50 text-slate-500 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 cursor-not-allowed opacity-60"
+                          title="Thiết bị đang sửa chữa - Không thể trả máy">
+                          <i className="fa-solid fa-lock"></i>
+                          <span>Đang Sửa</span>
+                        </button>
+                      ) : (
+                        <button onClick={() => handleReturnClick(r)}
+                          disabled={updatingId === r.id}
+                          className={`h-9 w-full font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all ${
+                            isFixed
+                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-400/30 animate-pulse'
+                              : 'bg-amber-600 hover:bg-amber-500 text-white'
+                          }`}
+                          title={isReceived ? "Trả máy & nhập lý do" : "Xác nhận trả máy cho khách"}>
+                          {updatingId === r.id ? (
+                            <i className="fa-solid fa-spinner animate-spin"></i>
+                          ) : (
+                            <i className="fa-solid fa-box-check"></i>
+                          )}
+                          <span>{isReceived ? 'Trả Máy' : 'Trả Máy'}</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* PHÂN TRANG */}
+            {pagination.total_pages > 1 && (
+              <div className="card p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3 mt-4">
+                <div className="text-xs text-[var(--text-muted)]">
+                  Trang <strong>{pagination.page}</strong>/{pagination.total_pages} — Tổng <strong>{pagination.total}</strong> phiếu
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => handleSearch(searchQuery, pagination.page - 1)}
+                    disabled={pagination.page <= 1 || loading}
+                    className="px-3 py-1.5 bg-slate-800/80 rounded-lg text-xs disabled:opacity-40 flex items-center gap-1.5">
+                    <i className="fa-solid fa-chevron-left"></i> Trước
+                  </button>
+                  <span className="text-xs font-bold px-3 py-1 bg-sky-500/10 rounded-lg">{pagination.page}</span>
+                  <button onClick={() => handleSearch(searchQuery, pagination.page + 1)}
+                    disabled={pagination.page >= pagination.total_pages || loading}
+                    className="px-3 py-1.5 bg-slate-800/80 rounded-lg text-xs disabled:opacity-40 flex items-center gap-1.5">
+                    Sau <i className="fa-solid fa-chevron-right"></i>
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* MODAL CẬP NHẬT LÝ DO TRẢ MÁY (DÀNH CHO ĐƠN Ở TRẠNG THÁI TIẾP NHẬN) */}
+      {returnModalRecord && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="card max-w-md w-full p-5 border border-amber-500/40 shadow-2xl bg-[#0e1424]">
+            <div className="flex justify-between items-center mb-3 pb-2 border-b border-[var(--border-color)]">
+              <h3 className="text-sm font-bold text-amber-400 flex items-center gap-2">
+                <i className="fa-solid fa-triangle-exclamation"></i> Xác Nhận Trả Máy [{returnModalRecord.code}]
+              </h3>
+              <button onClick={() => setReturnModalRecord(null)} className="text-[var(--text-muted)] hover:text-white">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 mb-3">
+              Đơn này đang ở trạng thái <strong>Đang Chờ/Tiếp Nhận</strong>. Vui lòng nhập lý do trả máy cho khách <strong className="text-sky-300">{returnModalRecord.customer_name}</strong>:
+            </p>
+
+            <form onSubmit={handleReturnWithReasonSubmit} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">
+                  Lý Do Trả Máy <span className="text-rose-400">*</span>
+                </label>
+                <textarea rows="3"
+                  value={returnReason}
+                  onChange={(e) => setReturnReason(e.target.value)}
+                  placeholder="Ví dụ: Khách đổi ý không sửa, Báo giá cao khách mang về..."
+                  className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-amber-400 resize-none" required />
+              </div>
+
+              <div className="flex gap-2.5 pt-2 border-t border-[var(--border-color)]">
+                <button type="button" onClick={() => setReturnModalRecord(null)}
+                  className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold">Hủy Bỏ</button>
+                <button type="submit" disabled={isSubmittingReturn}
+                  className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-md">
+                  {isSubmittingReturn ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-box-check"></i>}
+                  Xác Nhận Trả Máy
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL SỬA PHIẾU TIẾP NHẬN */}
+      {editingRecord && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="card max-w-lg w-full p-5 border border-[var(--border-color)] shadow-2xl bg-[#0e1424]">
+            <div className="flex justify-between items-center mb-4 pb-2 border-b border-[var(--border-color)]">
+              <h3 className="text-base font-bold text-[var(--primary-light)] flex items-center gap-2">
+                <i className="fa-solid fa-pen-to-square"></i> Cập Nhật Thông Tin Phiếu [{editingRecord.code}]
+              </h3>
+              <button onClick={() => setEditingRecord(null)} className="text-[var(--text-muted)] hover:text-white">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            <form onSubmit={handleEditSubmit} className="space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">
+                    Họ & Tên KH <span className="text-rose-400">*</span>
+                  </label>
+                  <input type="text"
+                    value={editForm.customer_name}
+                    onChange={(e) => setEditForm({...editForm, customer_name: e.target.value})}
+                    className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)]" required />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">Số điện thoại</label>
+                  <input type="text"
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
+                    className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)] font-monospace" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">Địa chỉ / Khu vực</label>
+                <input type="text"
+                  value={editForm.address}
+                  onChange={(e) => setEditForm({...editForm, address: e.target.value})}
+                  className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)]" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">Yêu cầu sửa chữa / Lỗi báo</label>
+                <textarea rows="2"
+                  value={editForm.note}
+                  onChange={(e) => setEditForm({...editForm, note: e.target.value})}
+                  className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)] resize-none" />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">Tình trạng nhận máy / Phụ kiện kèm theo</label>
+                <textarea rows="2"
+                  value={editForm.received_note}
+                  onChange={(e) => setEditForm({...editForm, received_note: e.target.value})}
+                  className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)] resize-none" />
+              </div>
+
+              <div className="flex gap-2.5 pt-2 border-t border-[var(--border-color)]">
+                <button type="button" onClick={() => setEditingRecord(null)}
+                  className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold">Hủy Bỏ</button>
+                <button type="submit" disabled={isSaving}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-white text-xs font-bold flex items-center justify-center gap-1.5 shadow-md">
+                  {isSaving ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-floppy-disk"></i>}
+                  Lưu Cập Nhật
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<ReceptionApp />);
+</script>
+{% endraw %}
+{% endblock %}

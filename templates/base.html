@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+
+<!-- Favicon -->
+<link rel="icon" type="image/png" href="/static/icons/favicon.png">
+
+<title>{% block title %}Center Hub - Máy In Đại Thành{% endblock %}</title>
+
+<!-- PWA Manifest -->
+<link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
+<meta name="theme-color" content="#0d1117">
+
+<!-- Google Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link 
+  href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" 
+  rel="stylesheet"
+  media="print"
+  onload="this.media='all'"
+>
+<noscript>
+  <link 
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" 
+    rel="stylesheet"
+  >
+</noscript>
+
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  darkMode: 'class',
+  theme: {
+    extend: {
+      fontFamily: {
+        sans: ['Inter', 'Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+      }
+    }
+  }
+}
+</script>
+
+<!-- Font Awesome -->
+<link 
+  rel="stylesheet" 
+  href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" 
+  integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" 
+  crossorigin="anonymous" 
+  referrerpolicy="no-referrer"
+>
+
+<!-- Viewer.js CSS -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.css">
+
+<style>
+:root {
+  --bg-main: #0b0f19;
+  --bg-card: rgba(22, 32, 54, 0.75);
+  --bg-card-hover: rgba(30, 43, 72, 0.85);
+  --text-main: #e2e8f0;
+  --text-sub: #cbd5e1;
+  --text-muted: #94a3b8;
+  --primary: #0284c7;
+  --primary-light: #38bdf8;
+  --primary-glow: rgba(56, 189, 248, 0.25);
+  --accent-green: #34d399;
+  --accent-red: #f87171;
+  --border-color: rgba(255, 255, 255, 0.07);
+  --top-header-height: 52px;
+  --bottom-nav-height: 56px;
+  --radius-card: 16px;
+  --radius-btn: 10px;
+  --glass-bg: rgba(11, 15, 25, 0.85);
+  --glass-blur: blur(12px);
+  --shadow-glow: 0 4px 14px rgba(2, 132, 199, 0.25);
+}
+
+/* Sửa lỗi selector '*' từ '-' */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  font-family: 'Inter', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  overflow-x: hidden;
+  background-image: 
+    radial-gradient(circle at 50% 0%, rgba(2, 132, 199, 0.10) 0%, transparent 50%),
+    radial-gradient(circle at 100% 100%, rgba(16, 185, 129, 0.04) 0%, transparent 40%);
+  background-attachment: fixed;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 600px;
+  height: 220px;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.07) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+  transition: max-width 0.3s ease;
+}
+
+.app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--top-header-height) + env(safe-area-inset-top));
+  padding-top: env(safe-area-inset-top);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: 1rem;
+  padding-right: 1rem;
+  z-index: 100;
+}
+
+.home-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  text-decoration: none;
+  min-width: 0;
+  padding: 0.3rem 0.65rem;
+  border-radius: var(--radius-btn);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.home-btn svg {
+  flex-shrink: 0;
+  color: var(--primary-light);
+  filter: drop-shadow(0 0 6px var(--primary-glow));
+  transition: transform 0.2s ease, color 0.2s ease;
+}
+
+.home-btn:hover {
+  background: rgba(2, 132, 199, 0.12);
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 14px var(--primary-glow);
+}
+
+.home-btn:hover svg {
+  transform: scale(1.1);
+  color: #ffffff;
+}
+
+.home-btn:active {
+  transform: scale(0.97);
+}
+
+.header-title-box {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.header-title {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--text-main);
+  letter-spacing: 0.03em;
+  line-height: 1.15;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: color 0.2s ease;
+}
+
+.home-btn:hover .header-title {
+  color: #ffffff;
+}
+
+.header-subtitle {
+  font-size: 0.63rem;
+  color: var(--primary-light);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-subtitle::before {
+  content: '';
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  background-color: var(--accent-green);
+  border-radius: 50%;
+  box-shadow: 0 0 6px var(--accent-green);
+}
+
+.header-user-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.header-user-greeting {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  padding: 0.3rem 0.7rem;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  color: var(--text-sub);
+}
+
+.header-user-greeting strong {
+  color: var(--primary-light);
+}
+
+.logout-btn {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  color: var(--text-sub);
+  border-radius: 9px;
+  text-decoration: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.logout-btn:hover {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: var(--accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.logout-btn:active {
+  transform: scale(0.95);
+}
+
+.app-content {
+  flex: 1;
+  padding-top: calc(var(--top-header-height) + env(safe-area-inset-top) + 0.75rem);
+  padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem);
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+  max-width: 600px;
+  width: 100%;
+  margin: 0 auto;
+  position: relative;
+  z-index: 1;
+  transition: max-width 0.3s ease, padding 0.3s ease;
+}
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom));
+  padding-bottom: env(safe-area-inset-bottom);
+  background: var(--glass-bg);
+  backdrop-filter: var(--glass-blur);
+  -webkit-backdrop-filter: var(--glass-blur);
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  z-index: 100;
+}
+
+.nav-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: var(--bottom-nav-height);
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.68rem;
+  font-weight: 600;
+  gap: 3px;
+  position: relative;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.nav-item svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.2s ease, stroke 0.2s ease;
+}
+
+.nav-item:active {
+  transform: scale(0.92);
+}
+
+.nav-item.active {
+  color: var(--primary-light);
+}
+
+.nav-item.active svg {
+  stroke: var(--primary-light);
+  transform: translateY(-1px);
+  filter: drop-shadow(0 2px 6px var(--primary-glow));
+}
+
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 24px;
+  height: 2px;
+  background: var(--primary-light);
+  border-radius: 0 0 3px 3px;
+  box-shadow: 0 2px 8px var(--primary-light);
+}
+
+.card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  padding: 0.85rem;
+  margin-bottom: 0.75rem;
+  box-shadow: 0 6px 20px -6px rgba(0, 0, 0, 0.4);
+  transition: border-color 0.2s ease;
+}
+
+.card:hover {
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+:where(input, select, textarea) {
+  width: 100%;
+  background-color: rgba(10, 15, 29, 0.6);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-btn);
+  color: var(--text-main);
+  padding: 0.45rem 0.75rem;
+  font-family: inherit;
+  font-size: 0.85rem; 
+  outline: none;
+  min-height: 38px;
+  transition: all 0.2s ease;
+}
+
+:where(input:focus, select:focus, textarea:focus) {
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px var(--primary-glow);
+  background-color: rgba(10, 15, 29, 0.9);
+}
+
+:where(.btn-default) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  background: linear-gradient(135deg, var(--primary) 0%, #0369a1 100%);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  border: none;
+  border-radius: var(--radius-btn);
+  padding: 0.5rem 1rem;
+  min-height: 38px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: var(--shadow-glow);
+  text-decoration: none;
+}
+
+/* Responsive */
+@media (max-width: 576px) {
+  .header-subtitle { display: none; }
+  .header-user-greeting span:not(strong) { display: none; }
+}
+@media (max-width: 430px) {
+  .app-content { padding-left: 0.5rem; padding-right: 0.5rem; }
+  .card { padding: 0.75rem; border-radius: 12px; }
+  .header-title { font-size: 0.78rem; }
+  .nav-item { font-size: 0.62rem; }
+  body::before { height: 180px; }
+}
+@media (min-width: 768px) {
+  .app-content { max-width: 800px; padding-left: 1rem; padding-right: 1rem; }
+  body::before { max-width: 800px; }
+  .card { padding: 1rem; }
+}
+@media (min-width: 992px) {
+  :root { --bottom-nav-height: 48px; }
+  .app-content {
+    max-width: 1280px;
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+    padding-top: calc(var(--top-header-height) + 1rem);
+    padding-bottom: calc(var(--bottom-nav-height) + 1rem);
+  }
+  body::before { max-width: 1280px; }
+  .card { padding: 1.15rem; }
+  .bottom-nav { justify-content: center; gap: 2.5rem; }
+  .nav-item { flex: 0 0 auto; padding: 0 1rem; flex-direction: row; gap: 6px; font-size: 0.75rem; }
+  .nav-item.active::after { top: auto; bottom: 0; width: 100%; border-radius: 3px 3px 0 0; }
+}
+</style>
+
+{% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- Header -->
+<header class="app-header">
+  <a href="/" class="home-btn" title="Trang chủ">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+      <polyline points="9 22 9 12 15 12 15 22"></polyline>
+    </svg>
+    <div class="header-title-box">
+      <span class="header-title">TRUNG TÂM XỬ LÝ HÀNG HÓA</span>
+      <span class="header-subtitle">Máy In Đại Thành</span>
+    </div>
+  </a>
+
+  <div class="header-user-actions">
+    <div class="header-user-greeting">
+      <span class="greeting-text">
+        Chào, <strong>
+          {% if current_user and current_user.name %}
+            {{ current_user.name }}
+          {% elif current_user and current_user.ho_ten %}
+            {{ current_user.ho_ten }}
+          {% else %}
+            Quản trị viên
+          {% endif %}
+        </strong>!
+      </span>
+      <span class="greeting-hand">👋</span>
+    </div>
+    <a href="/logout" class="logout-btn" title="Đăng xuất">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+        <polyline points="16 17 21 12 16 7"></polyline>
+        <line x1="21" y1="12" x2="9" y2="12"></line>
+      </svg>
+    </a>
+  </div>
+</header>
+
+<!-- Nội dung chính -->
+<main class="app-content">
+  {% block content %}{% endblock %}
+</main>
+
+<!-- Thanh điều hướng dưới -->
+<nav class="bottom-nav">
+  {% set user_role = (current_user.role | string | trim | lower) if (current_user and current_user.role) else '' %}
+  {% set current_path = request.url.path if (request and request.url) else '' %}
+
+  <!-- Lễ Tân -->
+  <a href="/" class="nav-item {% if current_path == '/' %}active{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+      <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+      <path d="M9 12h6"></path>
+      <path d="M9 16h6"></path>
+    </svg>
+    <span>Lễ tân</span>
+  </a>
+
+  <!-- Hàng Chờ Bốc Số -->
+  <a href="/admin/queue" class="nav-item {% if '/admin/queue' in current_path or '/queue' in current_path %}active{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v2z"></path>
+      <path d="M13 5v14" stroke-dasharray="2 2"></path>
+    </svg>
+    <span>Hàng chờ</span>
+  </a>
+
+  <!-- Tra cứu -->
+  <a href="/tracking" class="nav-item {% if '/tracking' in current_path %}active{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8"></circle>
+      <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+    </svg>
+    <span>Tra cứu</span>
+  </a>
+
+  <!-- Cài đặt — Hiện cho Admin / Super Admin / System Admin -->
+  {% if user_role in ['admin', 'super admin', 'system admin'] or not user_role %}
+  <a href="/settings" class="nav-item {% if '/settings' in current_path or '/setting' in current_path %}active{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"></circle>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06-.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+    </svg>
+    <span>Cài đặt</span>
+  </a>
+  {% endif %}
+</nav>
+
+<!-- JS Libraries -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/viewerjs/1.11.6/viewer.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
+
+{% block scripts %}{% endblock %}
+
+<script>
+// Service Worker
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/static/sw.js')
+      .catch(err => console.debug('Service Worker không khả dụng:', err));
+  });
+}
+
+// Khởi tạo Viewer phóng to ảnh an toàn
+document.addEventListener("DOMContentLoaded", function () {
+  const images = document.querySelectorAll('.zoomable-img, .attendance-card img');
+  images.forEach(img => {
+    img.style.cursor = 'zoom-in';
+    img.addEventListener('click', function () {
+      if (typeof Viewer === 'undefined') return;
+      const viewer = new Viewer(img, {
+        inline: false,
+        button: true,
+        navbar: false,
+        title: false,
+        toolbar: {
+          zoomIn: 4, zoomOut: 4, oneToOne: 4, reset: 4, rotateLeft: 4, rotateRight: 4
+        },
+        zoomRatio: 0.3,
+        minZoomRatio: 0.1,
+        maxZoomRatio: 10,
+        hidden: function () {
+          this.destroy();
+        }
+      });
+      viewer.show();
+    });
+  });
+});
+</script>
+
+</body>
+</html>

@@ -1,0 +1,987 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bốc Số Thứ Tự Điện Tử | Máy In Đại Thành</title>
+    <link rel="icon" type="image/png" href="https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png">
+    
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome 6 CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        daithanh: {
+                            red: '#dc2626',
+                            redhover: '#b91c1c',
+                            yellow: '#f59e0b',
+                            gold: '#eab308',
+                            blue: '#1d4ed8',
+                            bluebg: '#eff6ff',
+                            dark: '#1e293b'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- React & Babel CDN -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f8fafc;
+            min-height: 100vh;
+        }
+
+        .card-daithanh {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-top: 4px solid #f59e0b;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
+            border-radius: 1.25rem;
+        }
+
+        .btn-daithanh-red {
+            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
+            color: #ffffff;
+            box-shadow: 0 4px 12px rgba(220, 38, 38, 0.3);
+            transition: all 0.2s ease-in-out;
+        }
+
+        .btn-daithanh-red:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(220, 38, 38, 0.4);
+        }
+
+        @keyframes pulse-ring {
+            0% { transform: scale(0.96); opacity: 0.8; }
+            50% { transform: scale(1.03); opacity: 1; }
+            100% { transform: scale(0.96); opacity: 0.8; }
+        }
+
+        .animate-pulse-subtle {
+            animation: pulse-ring 2s infinite ease-in-out;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .animate-fadeIn {
+            animation: fadeIn 0.25s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="text-slate-800 antialiased py-6 px-3 sm:px-4 flex items-center justify-center">
+
+    <!-- App Root Container -->
+    <div id="root" class="w-full max-w-2xl mx-auto"></div>
+
+    {% raw %}
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useRef } = React;
+
+        const API_BASE = "/api"; 
+        const HOTLINE_NUMBER = "0938580406";
+        const LOGO_URL = "https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png";
+
+        const PHONE_REGEX = /^0[35789]\d{8}$/;
+
+        const DEPARTMENTS = [
+            {
+                id: "KTSC",
+                icon: "fa-solid fa-wrench",
+                bgColor: "bg-red-50 text-red-600 border-red-200",
+                title: "Kỹ Thuật Sửa Chữa",
+                shortTitle: "Sửa chữa máy in",
+                desc: "Kẹt giấy, báo lỗi đèn, nghẹt đầu phun...",
+                placeholder: "VD: Máy Epson L8050 kẹt giấy, Canon G1010 nghẹt màu..."
+            },
+            {
+                id: "KTLD",
+                icon: "fa-solid fa-truck-ramp-box",
+                bgColor: "bg-blue-50 text-blue-600 border-blue-200",
+                title: "Kỹ Thuật Lắp Đặt",
+                shortTitle: "Lắp đặt & Cài driver",
+                desc: "Lắp máy mới, cài driver...",
+                placeholder: "VD: Cần hỗ trợ chia sẻ máy in qua UltraViewer..."
+            },
+            {
+                id: "KD",
+                icon: "fa-solid fa-comments-dollar",
+                bgColor: "bg-amber-50 text-amber-600 border-amber-200",
+                title: "Kinh Doanh & Báo Giá",
+                shortTitle: "Tư vấn báo giá",
+                desc: "Tư vấn chọn mua máy in, mực in, linh kiện vật tư...",
+                placeholder: "VD: Cần báo giá máy in dịch vụ A3 & mực in..."
+            },
+            {
+                id: "CSKH",
+                icon: "fa-solid fa-headset",
+                bgColor: "bg-rose-50 text-rose-600 border-rose-200",
+                title: "Chăm Sóc Khách Hàng",
+                shortTitle: "CSKH & Phản ánh",
+                desc: "Gửi phản ánh dịch vụ, bảo hành hoặc gặp tư vấn viên...",
+                placeholder: "Nội dung yêu cầu phản ánh hoặc bảo hành..."
+            }
+        ];
+
+        const STATUS_CONFIG = {
+            waiting: {
+                label: "Đang chờ đến lượt",
+                desc: "Yêu cầu của bạn đã nằm trong hàng chờ. Kỹ thuật viên sẽ liên hệ trong ít phút nữa.",
+                badgeClass: "bg-amber-50 text-amber-800 border-amber-300",
+                icon: "fa-solid fa-clock text-amber-500",
+                step: 1
+            },
+            calling: {
+                label: "Đang gọi số của bạn!",
+                desc: "Kỹ thuật viên đang kết nối với bạn. Vui lòng giữ máy điện thoại!",
+                badgeClass: "bg-purple-50 text-purple-800 border-purple-300 animate-pulse-subtle",
+                icon: "fa-solid fa-bell text-purple-600",
+                step: 2
+            },
+            processing: {
+                label: "Đang tiếp nhận xử lý",
+                desc: "Kỹ thuật viên đang hỗ trợ và làm việc với thiết bị của bạn.",
+                badgeClass: "bg-blue-50 text-blue-800 border-blue-300",
+                icon: "fa-solid fa-spinner animate-spin text-blue-600",
+                step: 2
+            },
+            completed: {
+                label: "Hỗ trợ hoàn tất",
+                desc: "Phiếu đã xử lý xong. Cảm ơn quý khách đã tin tưởng dịch vụ Máy In Đại Thành!",
+                badgeClass: "bg-emerald-50 text-emerald-800 border-emerald-300",
+                icon: "fa-solid fa-circle-check text-emerald-600",
+                step: 3
+            }
+        };
+
+        function PublicTicketApp() {
+            const [step, setStep] = useState("SELECT");
+            const [loading, setLoading] = useState(true);
+            const [submitting, setSubmitting] = useState(false);
+            const [cancelling, setCancelling] = useState(false);
+            const [showShareModal, setShowShareModal] = useState(false);
+            const [toast, setToast] = useState(null);
+
+            const [activeTicket, setActiveTicket] = useState(null);
+            const [selectedDept, setSelectedDept] = useState(null);
+
+            const [formData, setFormData] = useState({
+                customer_name: localStorage.getItem("saved_customer_name") || "",
+                phone: localStorage.getItem("saved_customer_phone") || "",
+                device_info: ""
+            });
+            const [formErrors, setFormErrors] = useState({});
+
+            const wsRef = useRef(null);
+
+            const showToast = (message, type = 'success') => {
+                setToast({ message, type });
+                setTimeout(() => setToast(null), 3500);
+            };
+
+            useEffect(() => {
+                const params = new URLSearchParams(window.location.search);
+                const urlTicketId = params.get("ticket_id");
+                const urlPhone = params.get("phone");
+
+                if (urlTicketId) localStorage.setItem("active_ticket_id", urlTicketId);
+                if (urlPhone) localStorage.setItem("saved_customer_phone", urlPhone);
+            }, []);
+
+            const checkMyTicket = useCallback(async (isSilent = false) => {
+                const savedTicketId = localStorage.getItem("active_ticket_id");
+                const savedPhone = localStorage.getItem("saved_customer_phone");
+
+                if (!savedTicketId && !savedPhone) {
+                    if (!isSilent) setLoading(false);
+                    return;
+                }
+
+                try {
+                    const query = new URLSearchParams();
+                    if (savedTicketId) {
+                        query.set("ticket_id", savedTicketId);
+                    } else if (savedPhone) {
+                        query.set("phone", savedPhone);
+                    }
+
+                    const res = await fetch(`${API_BASE}/tickets/my-ticket?${query.toString()}`);
+                    if (!res.ok) return;
+                    const data = await res.json();
+
+                    if (data.has_ticket && data.ticket) {
+                        const ticket = data.ticket;
+
+                        if (["waiting", "calling", "processing", "completed"].includes(ticket.status)) {
+                            if (isSilent && activeTicket && activeTicket.status !== ticket.status) {
+                                if (ticket.status === "calling") {
+                                    showToast("🔊 Kỹ thuật viên đang gọi số của bạn!", "info");
+                                } else if (ticket.status === "processing") {
+                                    showToast("💻 Kỹ thuật viên đã tiếp nhận xử lý phiếu!", "info");
+                                } else if (ticket.status === "completed") {
+                                    showToast("✅ Phiếu hỗ trợ của bạn đã hoàn thành!", "success");
+                                }
+                            }
+                            setActiveTicket(ticket);
+                            localStorage.setItem("active_ticket_id", ticket.id);
+                        } else {
+                            setActiveTicket(null);
+                            localStorage.removeItem("active_ticket_id");
+                        }
+                    } else {
+                        setActiveTicket(null);
+                        localStorage.removeItem("active_ticket_id");
+                    }
+                } catch (err) {
+                    console.error("Lỗi kiểm tra phiếu:", err);
+                } finally {
+                    if (!isSilent) setLoading(false);
+                }
+            }, [activeTicket]);
+
+            useEffect(() => {
+                checkMyTicket(false);
+
+                const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                const wsUrl = `${protocol}//${window.location.host}/ws/tickets`;
+
+                const connectWS = () => {
+                    try {
+                        const ws = new WebSocket(wsUrl);
+                        wsRef.current = ws;
+
+                        ws.onmessage = (event) => {
+                            try {
+                                const msg = JSON.parse(event.data);
+                                if (["status_update", "transfer_ticket"].includes(msg.type)) {
+                                    const savedTicketId = localStorage.getItem("active_ticket_id");
+                                    if (msg.ticket && String(msg.ticket.id) === String(savedTicketId)) {
+                                        checkMyTicket(true);
+                                    }
+                                }
+                            } catch (e) {}
+                        };
+
+                        ws.onclose = () => {
+                            setTimeout(connectWS, 5000);
+                        };
+                    } catch (e) {}
+                };
+
+                connectWS();
+
+                const interval = setInterval(() => {
+                    if (!activeTicket || activeTicket.status !== "completed") {
+                        checkMyTicket(true);
+                    }
+                }, 8000);
+
+                return () => {
+                    if (wsRef.current) wsRef.current.close();
+                    clearInterval(interval);
+                };
+            }, [activeTicket?.status]);
+
+            const handleSelectDept = (dept) => {
+                setSelectedDept(dept);
+                setFormErrors({});
+                if (dept.id === "CSKH") {
+                    setStep("CSKH_CHOICE");
+                } else {
+                    setStep("FORM");
+                }
+            };
+
+            const validateForm = () => {
+                const errors = {};
+                const cleanName = formData.customer_name.trim();
+                const cleanPhone = formData.phone.replace(/\D/g, ""); // Tự động làm sạch SĐT
+
+                if (!selectedDept) {
+                    showToast("Vui lòng chọn dịch vụ cần hỗ trợ!", "error");
+                    return false;
+                }
+
+                if (!cleanName) {
+                    errors.customer_name = "Vui lòng nhập họ và tên!";
+                } else if (cleanName.length < 2) {
+                    errors.customer_name = "Tên phải có ít nhất 2 ký tự!";
+                }
+
+                if (!cleanPhone) {
+                    errors.phone = "Vui lòng nhập số điện thoại!";
+                } else if (!PHONE_REGEX.test(cleanPhone)) {
+                    errors.phone = "SĐT không hợp lệ (ví dụ: 0912345678)";
+                }
+
+                if (formData.device_info && formData.device_info.length > 250) {
+                    errors.device_info = "Nội dung không vượt quá 250 ký tự!";
+                }
+
+                setFormErrors(errors);
+                return Object.keys(errors).length === 0;
+            };
+
+            const handleSubmitTicket = async (e) => {
+                e.preventDefault();
+                if (!validateForm()) return;
+
+                setSubmitting(true);
+                try {
+                    const cleanPhone = formData.phone.replace(/\D/g, "");
+                    const payload = {
+                        department: selectedDept.id,
+                        customer_name: formData.customer_name.trim(),
+                        phone: cleanPhone,
+                        device_info: formData.device_info.trim()
+                    };
+
+                    const res = await fetch(`${API_BASE}/tickets/create`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await res.json();
+
+                    if (res.ok && data.success) {
+                        localStorage.setItem("saved_customer_name", payload.customer_name);
+                        localStorage.setItem("saved_customer_phone", payload.phone);
+                        if (data.ticket?.id) {
+                            localStorage.setItem("active_ticket_id", data.ticket.id);
+                        }
+                        setActiveTicket(data.ticket);
+                        setStep("SELECT");
+                        showToast("Bốc số thứ tự thành công!", "success");
+                    } else if (data.ticket) {
+                        setActiveTicket(data.ticket);
+                        localStorage.setItem("active_ticket_id", data.ticket.id);
+                        showToast("Bạn đang có phiếu trong hàng chờ!", "info");
+                    } else {
+                        showToast(data.detail || data.message || "Không thể bốc số lúc này!", "error");
+                    }
+                } catch (err) {
+                    showToast("Lỗi kết nối máy chủ!", "error");
+                } finally {
+                    setSubmitting(false);
+                }
+            };
+
+            const handleCancelTicket = async () => {
+                if (!activeTicket || !window.confirm("Bạn có chắc chắn muốn hủy số thứ tự này?")) return;
+
+                setCancelling(true);
+                try {
+                    const res = await fetch(`${API_BASE}/tickets/${activeTicket.id}/status`, {
+                        method: "PATCH",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ status: "cancelled" })
+                    });
+
+                    if (res.ok) {
+                        localStorage.removeItem("active_ticket_id");
+                        setActiveTicket(null);
+                        setStep("SELECT");
+                        showToast("Đã hủy số thứ tự thành công.", "info");
+                    } else {
+                        showToast("Không thể hủy số lúc này.", "error");
+                    }
+                } catch (e) {
+                    showToast("Lỗi kết nối khi hủy vé.", "error");
+                } finally {
+                    setCancelling(false);
+                }
+            };
+
+            const handleCallHotline = () => {
+                window.location.href = `tel:${HOTLINE_NUMBER}`;
+            };
+
+            const handleCopyLink = () => {
+                const pageUrl = window.location.origin + "/ticket";
+                navigator.clipboard.writeText(pageUrl).then(() => {
+                    showToast("Đã sao chép link bốc số!", "success");
+                }).catch(() => {
+                    showToast("Không thể sao chép tự động", "error");
+                });
+            };
+
+            if (loading) {
+                return (
+                    <div className="card-daithanh p-12 text-center text-slate-500 my-auto">
+                        <i className="fa-solid fa-spinner animate-spin text-4xl text-daithanh-red mb-4"></i>
+                        <div className="text-sm font-bold text-slate-700">Đang nạp hệ thống bốc số...</div>
+                    </div>
+                );
+            }
+
+            const currentPublicUrl = window.location.origin + "/ticket";
+            const qrCodeApiUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(currentPublicUrl)}`;
+
+            return (
+                <div className="space-y-6">
+                    {/* TOAST THÔNG BÁO */}
+                    {toast && (
+                        <div className={`fixed top-4 right-4 left-4 sm:left-auto z-50 px-4 py-3 rounded-xl shadow-xl font-medium text-white transition-all backdrop-blur-md flex items-center gap-3 border ${
+                            toast.type === 'error' 
+                                ? 'bg-red-600 border-red-400' 
+                                : toast.type === 'info'
+                                ? 'bg-blue-600 border-blue-400'
+                                : 'bg-emerald-600 border-emerald-400'
+                        }`}>
+                            <i className={`fa-solid ${toast.type === 'error' ? 'fa-circle-exclamation' : 'fa-circle-check'} text-lg`}></i>
+                            <span className="text-sm font-semibold">{toast.message}</span>
+                        </div>
+                    )}
+
+                    {/* MODAL MÃ QR & CHIA SẺ */}
+                    {showShareModal && (
+                        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl max-w-sm w-full p-6 text-center space-y-4 shadow-2xl relative border-t-4 border-daithanh-gold">
+                                <button 
+                                    onClick={() => setShowShareModal(false)}
+                                    className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-sm transition-colors"
+                                >
+                                    ✕
+                                </button>
+
+                                <div className="text-sm font-black text-daithanh-red uppercase tracking-wider pt-2">
+                                    Mã QR Bốc Số Tự Động
+                                </div>
+
+                                <div className="p-3 bg-slate-50 rounded-2xl border border-slate-100 inline-block shadow-inner">
+                                    <img src={qrCodeApiUrl} alt="Mã QR Bốc số" className="w-48 h-48 object-contain mx-auto rounded-lg" />
+                                </div>
+
+                                <p className="text-xs text-slate-500 leading-relaxed px-2">
+                                    Quét mã QR bằng camera điện thoại để truy cập thẳng vào trang bốc số của Đại Thành.
+                                </p>
+
+                                <div className="space-y-2 pt-2">
+                                    <button
+                                        onClick={handleCopyLink}
+                                        className="w-full py-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all"
+                                    >
+                                        <i className="fa-solid fa-copy"></i>
+                                        <span>Sao Chép Đường Dẫn</span>
+                                    </button>
+                                    <a
+                                        href={qrCodeApiUrl}
+                                        target="_blank"
+                                        download="QR_Boc_So_Dai_Thanh.png"
+                                        className="w-full py-2.5 bg-slate-800 hover:bg-slate-900 text-white rounded-xl font-bold text-xs flex items-center justify-center gap-2 transition-all block"
+                                    >
+                                        <i className="fa-solid fa-download"></i>
+                                        <span>Tải Ảnh Mã QR</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* HEADER THƯƠNG HIỆU MÁY IN ĐẠI THÀNH */}
+                    <div className="text-center space-y-2 py-2">
+                        <div className="flex items-center justify-center gap-3">
+                            <img 
+                                src={LOGO_URL} 
+                                alt="Logo Máy In Đại Thành" 
+                                className="w-14 h-14 sm:w-16 sm:h-16 object-contain flex-shrink-0 drop-shadow-sm"
+                            />
+                            <div className="text-left">
+                                <h1 className="text-2xl sm:text-3xl font-black text-daithanh-red uppercase tracking-tight leading-none">
+                                    HỆ THỐNG BỐC SỐ TỰ ĐỘNG
+                                </h1>
+                                <p className="text-xs sm:text-sm font-semibold italic text-daithanh-red/90 mt-1">
+                                    Lấy số thứ tự hỗ trợ kỹ thuật nhanh chóng và tiện lợi
+                                </p>
+                            </div>
+                        </div>
+
+                        {/* 5 SAO VÀNG THƯƠNG HIỆU */}
+                        <div className="flex items-center justify-center gap-1 text-amber-400 text-sm pt-1">
+                            <i className="fa-solid fa-star"></i>
+                            <i className="fa-solid fa-star"></i>
+                            <i className="fa-solid fa-star"></i>
+                            <i className="fa-solid fa-star"></i>
+                            <i className="fa-solid fa-star"></i>
+                        </div>
+                    </div>
+
+                    {/* MÀN HÌNH 1: KHÁCH HÀNG ĐÃ BỐC SỐ */}
+                    {activeTicket ? (
+                        <div className="space-y-4">
+                            <div className={`p-4 rounded-2xl border ${(STATUS_CONFIG[activeTicket.status] || STATUS_CONFIG.waiting).badgeClass} flex items-start gap-3 shadow-sm`}>
+                                <i className={`${(STATUS_CONFIG[activeTicket.status] || STATUS_CONFIG.waiting).icon} text-xl mt-0.5`}></i>
+                                <div className="space-y-0.5">
+                                    <h2 className="text-base font-black uppercase tracking-wide">{(STATUS_CONFIG[activeTicket.status] || STATUS_CONFIG.waiting).label}</h2>
+                                    <p className="text-xs leading-relaxed opacity-95">{(STATUS_CONFIG[activeTicket.status] || STATUS_CONFIG.waiting).desc}</p>
+                                </div>
+                            </div>
+
+                            <div className="card-daithanh p-4">
+                                <div className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mb-3">
+                                    Tiến độ phục vụ
+                                </div>
+                                <div className="flex items-center justify-between relative px-2">
+                                    <div className="absolute top-3.5 left-8 right-8 h-1 bg-slate-100 z-0 rounded-full"></div>
+                                    {[
+                                        { num: 1, title: "Đã bốc số" },
+                                        { num: 2, title: "Đang xử lý" },
+                                        { num: 3, title: "Hoàn thành" }
+                                    ].map((s) => {
+                                        const currentStep = STATUS_CONFIG[activeTicket.status]?.step || 1;
+                                        const isPassed = currentStep >= s.num;
+                                        const isCurrent = currentStep === s.num;
+
+                                        return (
+                                            <div key={s.num} className="flex flex-col items-center z-10">
+                                                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black transition-all ${
+                                                    isPassed 
+                                                        ? 'bg-daithanh-red text-white shadow-md shadow-red-500/20' 
+                                                        : 'bg-slate-100 text-slate-400 border border-slate-200'
+                                                } ${isCurrent ? 'ring-4 ring-red-100 scale-110' : ''}`}>
+                                                    {isPassed && s.num < currentStep ? "✓" : s.num}
+                                                </div>
+                                                <span className={`text-[11px] mt-2 font-bold ${isCurrent ? 'text-daithanh-red font-black' : 'text-slate-400'}`}>
+                                                    {s.title}
+                                                </span>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="card-daithanh p-6 text-center relative overflow-hidden bg-gradient-to-b from-white to-amber-50/30">
+                                <div className="text-[11px] font-extrabold text-slate-400 uppercase tracking-widest">
+                                    Số thứ tự của quý khách
+                                </div>
+                                <div className="text-5xl sm:text-6xl font-black text-daithanh-red my-3 tracking-tight">
+                                    {activeTicket.ticket_code}
+                                </div>
+                                <div className="inline-block px-3 py-1 rounded-full bg-red-50 text-daithanh-red text-xs font-black border border-red-200">
+                                    {DEPARTMENTS.find(d => d.id === activeTicket.department)?.title || "Bộ phận kỹ thuật"}
+                                </div>
+
+                                <div className="my-5 p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between shadow-sm">
+                                    <div className="text-left">
+                                        <div className="text-[11px] font-bold text-slate-400">Đang gọi phục vụ số:</div>
+                                        <div className="text-2xl font-black text-slate-800">
+                                            {activeTicket.current_number || activeTicket.ticket_code}
+                                        </div>
+                                    </div>
+                                    <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center text-lg">
+                                        <i className="fa-solid fa-bullhorn"></i>
+                                    </div>
+                                </div>
+
+                                <div className="text-left text-xs space-y-2 pt-3 border-t border-slate-100 text-slate-600">
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400 font-semibold">Khách hàng:</span>
+                                        <strong className="text-slate-800">{activeTicket.customer_name}</strong>
+                                    </div>
+                                    <div className="flex justify-between">
+                                        <span className="text-slate-400 font-semibold">Số điện thoại:</span>
+                                        <strong className="text-slate-800">{activeTicket.phone}</strong>
+                                    </div>
+                                    {activeTicket.device_info && (
+                                        <div className="flex justify-between">
+                                            <span className="text-slate-400 font-semibold">Nội dung yêu cầu:</span>
+                                            <span className="text-slate-800 text-right truncate max-w-[200px]">{activeTicket.device_info}</span>
+                                        </div>
+                                    )}
+                                    {activeTicket.technician_name && (
+                                        <div className="flex justify-between pt-2 border-t border-dashed border-slate-200">
+                                            <span className="text-slate-400 font-semibold">KTV phụ trách:</span>
+                                            <strong className="text-daithanh-red">{activeTicket.technician_name}</strong>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {["calling", "processing"].includes(activeTicket.status) && (
+                                <button
+                                    onClick={handleCallHotline}
+                                    className="btn-daithanh-red w-full py-3.5 font-black text-sm rounded-2xl flex items-center justify-center gap-2"
+                                >
+                                    <i className="fa-solid fa-phone"></i>
+                                    <span>GỌI TRỰC TIẾP HOTLINE ({HOTLINE_NUMBER})</span>
+                                </button>
+                            )}
+
+                            {activeTicket.status === "waiting" && (
+                                <button
+                                    onClick={handleCancelTicket}
+                                    disabled={cancelling}
+                                    className="w-full py-3 bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-sm rounded-2xl transition-all flex items-center justify-center gap-2 shadow-sm"
+                                >
+                                    {cancelling ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-xmark"></i>}
+                                    <span>Hủy số thứ tự này</span>
+                                </button>
+                            )}
+
+                            {activeTicket.status === "completed" && (
+                                <button
+                                    onClick={() => {
+                                        localStorage.removeItem("active_ticket_id");
+                                        setActiveTicket(null);
+                                        setStep("SELECT");
+                                        showToast("Vui lòng chọn bộ phận để bốc số mới", "info");
+                                    }}
+                                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black text-sm rounded-2xl shadow-lg shadow-emerald-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer"
+                                >
+                                    <i className="fa-solid fa-rotate-right"></i>
+                                    <span>✓ ĐÃ HOÀN THÀNH — BỐC SỐ MỚI</span>
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        <>
+                            {/* 1. CHỌN BỘ PHẬN (4 PHÒNG BAN) */}
+                            {step === "SELECT" && (
+                                <div className="space-y-4 animate-fadeIn">
+                                    <div className="flex items-center justify-between px-1">
+                                        <div className="flex items-center gap-2">
+                                            <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span>
+                                            <h2 className="text-xs font-black text-slate-700 uppercase tracking-wider">
+                                                Vui lòng chọn dịch vụ cần hỗ trợ
+                                            </h2>
+                                        </div>
+                                        <button
+                                            onClick={() => setShowShareModal(true)}
+                                            className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 border border-blue-200/80 text-blue-700 text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm hover:shadow"
+                                        >
+                                            <i className="fa-solid fa-qrcode text-blue-600"></i>
+                                            <span>Mã QR</span>
+                                        </button>
+                                    </div>
+
+                                    {/* Grid 4 Phòng Ban */}
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                                        {DEPARTMENTS.map((dept) => (
+                                            <div
+                                                key={dept.id}
+                                                onClick={() => handleSelectDept(dept)}
+                                                className="group relative p-4 rounded-2xl bg-white border border-slate-200/80 shadow-sm hover:shadow-xl hover:border-daithanh-red hover:-translate-y-1 transition-all duration-200 cursor-pointer overflow-hidden flex items-center gap-3.5"
+                                            >
+                                                <div className="absolute top-0 left-0 bottom-0 w-1 bg-transparent group-hover:bg-daithanh-red transition-all duration-200"></div>
+
+                                                <div className={`w-12 h-12 rounded-2xl ${dept.bgColor} flex items-center justify-center text-xl flex-shrink-0 group-hover:scale-110 group-hover:rotate-3 transition-transform duration-200 shadow-sm`}>
+                                                    <i className={dept.icon}></i>
+                                                </div>
+
+                                                <div className="flex-1 min-w-0">
+                                                    <h3 className="text-sm font-black text-slate-800 group-hover:text-daithanh-red transition-colors truncate">
+                                                        {dept.title}
+                                                    </h3>
+                                                    <p className="text-[11px] font-medium text-slate-500 mt-0.5 leading-tight line-clamp-2">
+                                                        {dept.desc}
+                                                    </p>
+                                                </div>
+
+                                                <div className="w-7 h-7 rounded-full bg-slate-100 group-hover:bg-red-50 text-slate-400 group-hover:text-daithanh-red flex items-center justify-center flex-shrink-0 transition-all duration-200 group-hover:translate-x-0.5">
+                                                    <i className="fa-solid fa-chevron-right text-xs"></i>
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+
+                                    {/* Thẻ Giờ Làm Việc */}
+                                    <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-50/90 via-white to-amber-50/50 border border-amber-200/80 flex items-center gap-3.5 shadow-sm">
+                                        <div className="w-10 h-10 rounded-xl bg-amber-400 text-slate-900 flex items-center justify-center text-base flex-shrink-0 shadow-sm font-black">
+                                            <i className="fa-solid fa-clock"></i>
+                                        </div>
+                                        <div className="text-xs text-slate-700 leading-relaxed">
+                                            <span className="font-extrabold text-amber-900 block uppercase tracking-wide text-[10px]">Thời gian làm việc</span>
+                                            <strong className="text-slate-900 font-bold">Thứ 2 – Thứ 7:</strong> 08:00–12:00 & 13:30–17:30
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 2. CHOOSER CSKH */}
+                            {step === "CSKH_CHOICE" && (
+                                <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-md space-y-4 animate-fadeIn">
+                                    <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
+                                        <button
+                                            type="button"
+                                            onClick={() => setStep("SELECT")}
+                                            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-all"
+                                        >
+                                            <i className="fa-solid fa-arrow-left"></i> Quay lại
+                                        </button>
+                                        <span className="text-xs font-black text-daithanh-red bg-red-50 border border-red-200/80 px-3 py-1 rounded-full uppercase tracking-wider">
+                                            CSKH & Hỗ trợ
+                                        </span>
+                                    </div>
+
+                                    <div className="space-y-3 pt-1">
+                                        <button
+                                            onClick={handleCallHotline}
+                                            className="w-full p-4 rounded-2xl bg-gradient-to-r from-red-500/5 via-red-500/10 to-transparent border border-red-200 hover:border-red-400 text-red-700 flex items-center justify-between transition-all duration-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 group cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-3.5 text-left">
+                                                <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center text-xl shadow-md shadow-red-600/20 group-hover:scale-105 transition-transform">
+                                                    <i className="fa-solid fa-phone"></i>
+                                                </div>
+                                                <div>
+                                                    <div className="font-black text-slate-900 group-hover:text-red-600 transition-colors text-sm">GỌI TRỰC TIẾP HOTLINE</div>
+                                                    <div className="text-xs text-slate-500 font-medium mt-0.5">Gặp trực tiếp tư vấn viên ngay ({HOTLINE_NUMBER})</div>
+                                                </div>
+                                            </div>
+                                            <div className="w-8 h-8 rounded-full bg-red-100 text-red-600 flex items-center justify-center text-xs group-hover:translate-x-1 transition-transform">
+                                                <i className="fa-solid fa-chevron-right"></i>
+                                            </div>
+                                        </button>
+
+                                        <button
+                                            onClick={() => setStep("FORM")}
+                                            className="w-full p-4 rounded-2xl bg-gradient-to-r from-blue-500/5 via-blue-500/10 to-transparent border border-blue-200 hover:border-blue-400 text-blue-800 flex items-center justify-between transition-all duration-200 shadow-sm hover:shadow-md hover:-translate-y-0.5 group cursor-pointer"
+                                        >
+                                            <div className="flex items-center gap-3.5 text-left">
+                                                <div className="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center text-xl shadow-md shadow-blue-600/20 group-hover:scale-105 transition-transform">
+                                                    <i className="fa-solid fa-ticket"></i>
+                                                </div>
+                                                <div>
+                                                    <div className="font-black text-slate-900 group-hover:text-blue-600 transition-colors text-sm">BỐC SỐ XẾP HÀNG TỰ ĐỘNG</div>
+                                                    <div className="text-xs text-slate-500 font-medium mt-0.5">Gửi thông tin để nhân viên gọi lại theo thứ tự</div>
+                                                </div>
+                                            </div>
+                                            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-xs group-hover:translate-x-1 transition-transform">
+                                                <i className="fa-solid fa-chevron-right"></i>
+                                            </div>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 3. FORM ĐIỀN THÔNG TIN BỐC SỐ */}
+                            {step === "FORM" && (
+                                <div className="p-5 sm:p-6 rounded-2xl bg-white border border-slate-200/80 shadow-md space-y-5 animate-fadeIn">
+                                    <div className="flex items-center justify-between pb-3.5 border-b border-slate-100">
+                                        <button
+                                            type="button"
+                                            onClick={() => setStep(selectedDept?.id === "CSKH" ? "CSKH_CHOICE" : "SELECT")}
+                                            className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-all"
+                                        >
+                                            <i className="fa-solid fa-arrow-left"></i> Quay lại
+                                        </button>
+                                        <span className="text-xs font-black text-daithanh-red bg-red-50 border border-red-200/80 px-3 py-1 rounded-full uppercase tracking-wider">
+                                            {selectedDept?.shortTitle}
+                                        </span>
+                                    </div>
+
+                                    <form onSubmit={handleSubmitTicket} className="space-y-4">
+                                        {/* Input Họ Tên */}
+                                        <div>
+                                            <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                                Họ và tên khách hàng <span className="text-red-600">*</span>
+                                            </label>
+                                            <div className="relative">
+                                                <i className="fa-solid fa-user absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                                                <input
+                                                    type="text"
+                                                    placeholder="Nhập họ và tên của bạn..."
+                                                    value={formData.customer_name}
+                                                    onChange={(e) => {
+                                                        setFormData({...formData, customer_name: e.target.value});
+                                                        if (formErrors.customer_name) setFormErrors({...formErrors, customer_name: ''});
+                                                    }}
+                                                    className={`w-full pl-10 pr-4 py-3 bg-slate-50 border rounded-xl text-slate-800 placeholder-slate-400 text-sm font-medium outline-none transition-all duration-200 ${
+                                                        formErrors.customer_name 
+                                                            ? 'border-red-400 focus:bg-white focus:ring-4 focus:ring-red-500/10' 
+                                                            : 'border-slate-200 focus:bg-white focus:border-daithanh-red focus:ring-4 focus:ring-red-500/10'
+                                                    }`}
+                                                />
+                                            </div>
+                                            {formErrors.customer_name && (
+                                                <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-bold">
+                                                    <i className="fa-solid fa-circle-exclamation text-[10px]"></i> {formErrors.customer_name}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Input Số Điện Thoại */}
+                                        <div>
+                                            <label className="block text-xs font-black text-slate-700 uppercase tracking-wider mb-1.5">
+                                                Số điện thoại liên hệ <span className="text-red-600">*</span>
+                                            </label>
+                                            <div className="relative">
+                                                <i className="fa-solid fa-phone absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
+                                                <input
+                                                    type="tel"
+                                                    placeholder="Nhập 10 số điện thoại (VD: 0912345678)..."
+                                                    value={formData.phone}
+                                                    onChange={(e) => {
+                                                        setFormData({...formData, phone: e.target.value});
+                                                        if (formErrors.phone) setFormErrors({...formErrors, phone: ''});
+                                                    }}
+                                                    className={`w-full pl-10 pr-10 py-3 bg-slate-50 border rounded-xl text-slate-800 placeholder-slate-400 text-sm font-medium outline-none transition-all duration-200 ${
+                                                        formErrors.phone 
+                                                            ? 'border-red-400 focus:bg-white focus:ring-4 focus:ring-red-500/10' 
+                                                            : 'border-slate-200 focus:bg-white focus:border-daithanh-red focus:ring-4 focus:ring-red-500/10'
+                                                    }`}
+                                                />
+                                                {formData.phone && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setFormData({...formData, phone: ''})}
+                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs p-1"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {formErrors.phone && (
+                                                <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-bold">
+                                                    <i className="fa-solid fa-circle-exclamation text-[10px]"></i> {formErrors.phone}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Textarea Nội Dung */}
+                                        <div>
+                                            <div className="flex items-center justify-between mb-1.5">
+                                                <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+                                                    Nội dung / Tình trạng máy cần hỗ trợ
+                                                </label>
+                                                <span className="text-[10px] font-bold text-slate-400">
+                                                    {formData.device_info.length}/250
+                                                </span>
+                                            </div>
+                                            <textarea
+                                                rows="3"
+                                                maxLength={250}
+                                                placeholder={selectedDept?.placeholder}
+                                                value={formData.device_info}
+                                                onChange={(e) => setFormData({...formData, device_info: e.target.value})}
+                                                className={`w-full p-3.5 bg-slate-50 border rounded-xl text-slate-800 placeholder-slate-400 text-sm font-medium focus:bg-white focus:border-daithanh-red focus:ring-4 focus:ring-red-500/10 outline-none transition-all duration-200 resize-none ${
+                                                    formErrors.device_info ? 'border-red-400' : 'border-slate-200'
+                                                }`}
+                                            ></textarea>
+                                            {formErrors.device_info && (
+                                                <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1 font-bold">
+                                                    <i className="fa-solid fa-circle-exclamation text-[10px]"></i> {formErrors.device_info}
+                                                </p>
+                                            )}
+                                        </div>
+
+                                        {/* Submit Button */}
+                                        <button
+                                            type="submit"
+                                            disabled={submitting}
+                                            className="w-full py-3.5 bg-gradient-to-r from-red-600 via-red-600 to-red-700 hover:from-red-700 hover:to-red-800 text-white font-black text-sm uppercase tracking-wider rounded-xl shadow-lg shadow-red-600/30 hover:shadow-xl hover:shadow-red-600/40 hover:-translate-y-0.5 active:translate-y-0 transition-all duration-200 flex items-center justify-center gap-2.5 cursor-pointer mt-2"
+                                        >
+                                            {submitting ? (
+                                                <i className="fa-solid fa-spinner animate-spin text-base"></i>
+                                            ) : (
+                                                <>
+                                                    <i className="fa-solid fa-ticket text-base"></i>
+                                                    <span>LẤY SỐ THỨ TỰ NGAY</span>
+                                                </>
+                                            )}
+                                        </button>
+                                    </form>
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {/* BANNER HƯỚNG DẪN & THƯ VIỆN ĐẠI THÀNH */}
+                    <div className="rounded-2xl bg-blue-700 p-4 sm:p-5 text-white flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg">
+                        <div className="space-y-1 text-center sm:text-left">
+                            <div className="text-sm font-black flex items-center justify-center sm:justify-start gap-2 text-amber-300 uppercase tracking-wide">
+                                <i className="fa-solid fa-book-open"></i>
+                                <span>Thư viện hướng dẫn & xử lý lỗi máy in</span>
+                            </div>
+                            <p className="text-xs text-blue-100">
+                                Tra cứu hướng dẫn sử dụng thiết bị bởi KTV Đại Thành
+                            </p>
+                        </div>
+                        <a 
+                            href="https://thuvien-daithanh.hf.space/"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-4 py-2.5 bg-amber-400 hover:bg-amber-300 text-slate-900 font-extrabold text-xs rounded-xl shadow transition-all flex-shrink-0 flex items-center gap-1.5"
+                        >
+                            <span>Truy cập thư viện ngay</span>
+                            <i className="fa-solid fa-arrow-right"></i>
+                        </a>
+                    </div>
+
+                    {/* FOOTER THÔNG TIN CÔNG TY */}
+                    <div className="card-daithanh p-5 space-y-4 text-xs text-slate-600 bg-white">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="space-y-2">
+                                <div className="font-black text-slate-900 text-sm flex items-center gap-2 text-daithanh-red">
+                                    <i className="fa-solid fa-building"></i>
+                                    <span>CÔNG TY TNHH MÁY IN ĐẠI THÀNH</span>
+                                </div>
+                                <p className="flex items-start gap-2">
+                                    <i className="fa-solid fa-location-dot text-daithanh-red mt-0.5"></i>
+                                    <span>29/31 Nguyễn Văn Khối, P. Thông Tây Hội, TP.HCM</span>
+                                </p>
+                                <p className="flex items-center gap-2 text-blue-700 font-semibold">
+                                    <i className="fa-solid fa-globe"></i>
+                                    <a href="https://www.mayindaithanh.com" target="_blank" rel="noreferrer" className="hover:underline">www.mayindaithanh.com</a>
+                                </p>
+                                <p className="flex items-center gap-2 text-blue-700 font-semibold">
+                                    <i className="fa-solid fa-globe"></i>
+                                    <a href="https://www.mayinsaigon.com" target="_blank" rel="noreferrer" className="hover:underline">www.mayinsaigon.com</a>
+                                </p>
+                            </div>
+
+                            <div className="space-y-2 border-t sm:border-t-0 sm:border-l border-slate-100 pt-3 sm:pt-0 sm:pl-4">
+                                <div className="font-black text-slate-900 text-sm flex items-center gap-2 text-daithanh-red">
+                                    <i className="fa-solid fa-headset"></i>
+                                    <span>HỖ TRỢ KHÁCH HÀNG</span>
+                                </div>
+                                <p className="flex items-center justify-between">
+                                    <span>Kỹ thuật bảo hành:</span>
+                                    <strong className="text-daithanh-red">0795.570.382</strong>
+                                </p>
+                                <p className="flex items-center justify-between">
+                                    <span>Kỹ thuật sửa chữa:</span>
+                                    <strong className="text-daithanh-red">0795.570.381</strong>
+                                </p>
+                                <p className="flex items-center justify-between">
+                                    <span>Kỹ thuật lắp đặt:</span>
+                                    <strong className="text-amber-600">0795.570.380</strong>
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="pt-3 border-t border-slate-100 text-center text-[11px] text-slate-400 font-medium">
+                            © 2026 Powered by Máy In Đại Thành.
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById("root"));
+        root.render(<PublicTicketApp />);
+    </script>
+    {% endraw %}
+</body>
+</html>

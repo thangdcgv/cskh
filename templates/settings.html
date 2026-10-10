@@ -1,0 +1,639 @@
+{% extends "base.html" %}
+
+{% block title %}Cài Đặt Hệ Thống | Center Hub{% endblock %}
+
+{% block head %}
+{{ super() }}
+<style>
+.page-container {
+  max-width: 960px;
+  margin: 0 auto;
+}
+.section-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  padding: 1.5rem;
+  margin-bottom: 1.25rem;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.25);
+}
+.section-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--primary-light);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.6rem;
+  border-bottom: 1px solid var(--border-color);
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: 9999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+.badge-received { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border-color: rgba(56, 189, 248, 0.25); }
+.badge-processing { background: rgba(168, 85, 247, 0.12); color: #c084fc; border-color: rgba(168, 85, 247, 0.25); }
+.badge-fixed { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border-color: rgba(56, 189, 248, 0.25); }
+.badge-returned { background: rgba(52, 211, 153, 0.12); color: #34d399; border-color: rgba(52, 211, 153, 0.25); }
+.badge-cancelled { background: rgba(248, 113, 113, 0.12); color: #f87171; border-color: rgba(248, 113, 113, 0.25); }
+
+/* Form Control Inputs */
+.form-input {
+  width: 100%;
+  padding: 0.6rem 0.85rem;
+  background: rgba(10, 15, 29, 0.75);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  color: var(--text-main);
+  font-size: 0.85rem;
+  outline: none;
+  transition: all 0.2s ease;
+}
+.form-input:focus {
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.15);
+}
+
+.input-group {
+  position: relative;
+}
+.input-group .form-input {
+  padding-right: 2.5rem;
+}
+.input-group button {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 0.375rem;
+  transition: color 0.2s ease;
+}
+.input-group button:hover {
+  color: #ffffff;
+}
+
+/* Table Design */
+.table-container {
+  overflow-x: auto;
+  border-radius: 0.5rem;
+  border: 1px solid var(--border-color);
+  background: rgba(10, 15, 29, 0.4);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  text-align: left;
+  padding: 0.75rem 1rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: rgba(15, 23, 42, 0.6);
+  border-bottom: 1px solid var(--border-color);
+}
+td {
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  font-size: 0.85rem;
+}
+tr:last-child td {
+  border-bottom: none;
+}
+tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Modal Overlay */
+.modal-container {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 1rem;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.modal-container.active {
+  opacity: 1;
+  visibility: visible;
+}
+.modal-box {
+  background: #0e1424;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-card);
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 460px;
+  transform: scale(0.95) translateY(10px);
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+}
+.modal-container.active .modal-box {
+  transform: scale(1) translateY(0);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  padding: 0.5rem 1rem;
+  border-radius: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.hint-text {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+}
+
+/* Toast Floating */
+.toast-floating {
+  position: fixed;
+  top: 4rem;
+  right: 1rem;
+  z-index: 300;
+  padding: 0.85rem 1.25rem;
+  border-radius: 0.75rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  border: 1px solid transparent;
+  transform: translateY(-10px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: none;
+}
+.toast-floating.show {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+.toast-floating.success {
+  background: rgba(6, 78, 59, 0.92);
+  border-color: rgba(52, 211, 153, 0.4);
+  color: #ecfdf5;
+}
+.toast-floating.error {
+  background: rgba(136, 19, 55, 0.92);
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fff1f2;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-container space-y-4">
+  <!-- Toast Thông Báo Nổi -->
+  <div id="toastFloating" class="toast-floating">
+    <i id="toastIcon" class="fa-solid"></i>
+    <span id="toastText"></span>
+  </div>
+
+  <!-- Header Card -->
+  <div class="section-card flex flex-col md:flex-row justify-between items-stretch md:items-center gap-4 py-4 px-5">
+    <div class="flex items-center gap-3.5">
+      <div class="w-12 h-12 rounded-xl bg-sky-500/10 border border-sky-500/20 text-[var(--primary-light)] flex items-center justify-center text-xl font-bold shadow-inner">
+        <i class="fa-solid fa-sliders"></i>
+      </div>
+      <div>
+        <div class="flex items-center gap-2">
+          <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">CÀI ĐẶT HỆ THỐNG</h1>
+          <span class="px-2.5 py-0.5 text-[10px] font-bold bg-sky-500/10 border border-sky-500/20 text-sky-400 rounded-full">Quản trị</span>
+        </div>
+        <p class="text-xs text-[var(--text-muted)] mt-0.5">Cấu hình kết nối API, mã bí mật xác thực Webhook & Ánh xạ trạng thái sửa chữa</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section 1: Cấu hình Hệ thống & Xác thực -->
+  <div class="section-card">
+    <h2 class="section-title">
+      <i class="fa-solid fa-key text-sky-400"></i> Thông Số Hệ Thống & Mã Xác Thực
+    </h2>
+    
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <!-- Hotline SMS -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">SĐT Hotline SMS</label>
+        <input type="text" id="sms_hotline" placeholder="VD: 0901234567" class="form-input font-monospace">
+        <p class="hint-text">Số liên hệ hiển thị ở cuối tin nhắn SMS xác nhận phiếu</p>
+      </div>
+
+      <!-- Shared URL Secret -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Shared Secret Token</label>
+        <div class="input-group">
+          <input type="password" id="base_shared_secret" placeholder="Mã bí mật Webhook..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_shared_secret')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_shared_secret_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Khớp với header <code>x-base-secret</code> từ Webhook ngoài</p>
+      </div>
+
+      <!-- Base API Access Token -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Base API Access Token</label>
+        <div class="input-group">
+          <input type="password" id="base_api_token" placeholder="Token truy cập API..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_api_token')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_api_token_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Dùng để đồng bộ dữ liệu trạng thái ngược về hệ thống ngoài</p>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div class="flex justify-end mt-5 pt-3 border-t border-[var(--border-color)]">
+      <button id="btnSaveConfig" class="btn-default py-2 px-4 text-xs font-bold flex items-center gap-2" onclick="saveAllConfigs()">
+        <i class="fa-solid fa-floppy-disk"></i> <span>Lưu Tất Cả Cấu Hình</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Section 2: Ánh Xạ Trạng Thái -->
+  <div class="section-card">
+    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 pb-3 border-b border-[var(--border-color)]">
+      <div>
+        <h2 class="section-title mb-0 border-0 p-0">
+          <i class="fa-solid fa-route text-purple-400"></i> Ánh Xạ Trạng Thái Giai Đoạn
+        </h2>
+        <p class="hint-text mt-1">Khớp tên giai đoạn xử lý từ hệ thống bên ngoài với trạng thái chuẩn của Center Hub</p>
+      </div>
+      <button class="btn-default text-xs py-2 px-3 flex items-center gap-1.5" onclick="openModal()">
+        <i class="fa-solid fa-plus"></i> Thêm Quy Tắc
+      </button>
+    </div>
+    
+    <div class="table-container">
+      <table>
+        <thead>
+          <tr>
+            <th>Trạng thái nguồn (Base Stage)</th>
+            <th>Trạng thái hệ thống nội bộ</th>
+            <th>Mô tả</th>
+            <th class="text-right">Thao tác</th>
+          </tr>
+        </thead>
+        <tbody id="mappingTableBody">
+          <tr>
+            <td colspan="4" class="text-center py-6 text-slate-400 text-xs">
+              <i class="fa-solid fa-spinner animate-spin mr-2"></i> Đang tải danh sách ánh xạ...
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Modal Thêm/Sửa Quy Tắc -->
+<div id="mappingModal" class="modal-container" onclick="closeModalOnOverlay(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <div class="flex justify-between items-center mb-4 pb-2 border-b border-[var(--border-color)]">
+      <h3 class="text-base font-bold text-[var(--primary-light)] flex items-center gap-2">
+        <i class="fa-solid fa-route"></i> Thêm Quy Tắc Ánh Xạ
+      </h3>
+      <button onclick="closeModal()" class="text-[var(--text-muted)] hover:text-white p-1">
+        <i class="fa-solid fa-xmark text-base"></i>
+      </button>
+    </div>
+
+    <form onsubmit="event.preventDefault(); submitMapping();" class="space-y-3.5">
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1">
+          Tên trạng thái nguồn (Base Stage) <span class="text-rose-400">*</span>
+        </label>
+        <input type="text" id="modal_base_stage" placeholder="VD: Đang kiểm tra, Chờ linh kiện..." class="form-input" required>
+      </div>
+
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1">Trạng thái nội bộ tương ứng</label>
+        <select id="modal_system_status" class="form-input">
+          <option value="received">Tiếp nhận / Đang chờ (received)</option>
+          <option value="processing">Đang sửa chữa (processing)</option>
+          <option value="fixed">Đã sửa xong (fixed)</option>
+          <option value="returned">Đã trả máy (returned)</option>
+          <option value="cancelled">Đã hủy (cancelled)</option>
+        </select>
+      </div>
+
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1">Mô tả ghi chú (tùy chọn)</label>
+        <input type="text" id="modal_description" placeholder="Ghi chú chi tiết mục đích quy tắc..." class="form-input">
+      </div>
+
+      <div class="flex justify-end gap-2 mt-5 pt-3 border-t border-[var(--border-color)]">
+        <button type="button" class="btn-secondary" onclick="closeModal()">Hủy Bỏ</button>
+        <button type="submit" id="btnSubmitMapping" class="btn-default flex items-center gap-1.5">
+          <i class="fa-solid fa-floppy-disk"></i> <span>Lưu Quy Tắc</span>
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+const API_BASE = '/api/settings';
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadConfigs();
+  loadMappings();
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeModal();
+  });
+});
+
+// Bật/Tắt ẩn/hiện mật khẩu
+function toggleSecret(id) {
+  const el = document.getElementById(id);
+  const icon = document.getElementById(`${id}_icon`);
+  if (!el) return;
+  if (el.type === 'password') {
+    el.type = 'text';
+    if (icon) icon.className = 'fa-regular fa-eye-slash';
+  } else {
+    el.type = 'password';
+    if (icon) icon.className = 'fa-regular fa-eye';
+  }
+}
+
+// Hiển thị Toast Floating Nổi
+let toastTimer = null;
+function showMessage(msg, type = 'success') {
+  const toast = document.getElementById('toastFloating');
+  const icon = document.getElementById('toastIcon');
+  const text = document.getElementById('toastText');
+  
+  if (!toast) return;
+  if (toastTimer) clearTimeout(toastTimer);
+
+  toast.className = `toast-floating ${type} show`;
+  icon.className = `fa-solid ${type === 'success' ? 'fa-circle-check' : 'fa-circle-exclamation'}`;
+  text.textContent = msg;
+
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+  }, 4000);
+}
+
+// Tải cấu hình hệ thống
+async function loadConfigs() {
+  try {
+    const res = await fetch(`${API_BASE}/config`);
+    if (res.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    if (!res.ok) throw new Error('Không thể tải cấu hình từ máy chủ');
+    const data = await res.json();
+    
+    if (data.sms_hotline) document.getElementById('sms_hotline').value = data.sms_hotline;
+    if (data.base_shared_secret) document.getElementById('base_shared_secret').value = data.base_shared_secret;
+    if (data.base_api_token) document.getElementById('base_api_token').value = data.base_api_token;
+  } catch (e) {
+    console.warn('Cảnh báo tải cấu hình:', e);
+  }
+}
+
+// Lưu tất cả cấu hình cùng lúc
+// Lưu tất cả cấu hình (Chỉ gửi những ô có dữ liệu)
+async function saveAllConfigs() {
+  const sms_hotline = document.getElementById('sms_hotline').value.trim();
+  const secret = document.getElementById('base_shared_secret').value.trim();
+  const token = document.getElementById('base_api_token').value.trim();
+  const btn = document.getElementById('btnSaveConfig');
+
+  // Danh sách các request cần gửi
+  const requests = [];
+
+  if (sms_hotline !== '') {
+    requests.push(
+      fetch(`${API_BASE}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'sms_hotline', value: sms_hotline, description: 'Số điện thoại hotline hiển thị trong tin nhắn SMS' })
+      })
+    );
+  }
+
+  if (secret !== '') {
+    requests.push(
+      fetch(`${API_BASE}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'base_shared_secret', value: secret, description: 'Mã bí mật xác thực Webhook' })
+      })
+    );
+  }
+
+  if (token !== '') {
+    requests.push(
+      fetch(`${API_BASE}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'base_api_token', value: token, description: 'Token kết nối API ngoài' })
+      })
+    );
+  }
+
+  if (requests.length === 0) {
+    showMessage('Vui lòng nhập ít nhất một thông số cấu hình!', 'error');
+    return;
+  }
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> <span>Đang lưu...</span>`;
+    }
+
+    const responses = await Promise.all(requests);
+    const hasError = responses.some(res => !res.ok);
+
+    if (hasError) {
+      throw new Error('Không thể lưu một số cấu hình. Vui lòng kiểm tra lại!');
+    }
+
+    showMessage('Đã lưu cấu hình hệ thống thành công!', 'success');
+  } catch (e) {
+    showMessage(e.message || 'Lỗi khi lưu cấu hình hệ thống!', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-floppy-disk"></i> <span>Lưu Tất Cả Cấu Hình</span>`;
+    }
+  }
+}
+
+// Tải danh sách quy tắc ánh xạ
+async function loadMappings() {
+  const tbody = document.getElementById('mappingTableBody');
+  try {
+    const res = await fetch(`${API_BASE}/status-mappings`);
+    if (!res.ok) throw new Error('Không thể lấy danh sách ánh xạ');
+    const data = await res.json();
+    
+    tbody.innerHTML = '';
+
+    if (!data || data.length === 0) {
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="4" class="text-center py-8 text-slate-400 text-xs">
+            <i class="fa-solid fa-folder-open text-2xl mb-2 block opacity-30"></i>
+            Chưa có quy tắc ánh xạ nào. Bấm <strong>"Thêm Quy Tắc"</strong> để khởi tạo.
+          </td>
+        </tr>
+      `;
+      return;
+    }
+
+    const badgeMap = {
+      received: '<span class="status-badge badge-received">Tiếp nhận</span>',
+      processing: '<span class="status-badge badge-processing">Đang sửa chữa</span>',
+      repairing: '<span class="status-badge badge-processing">Đang sửa chữa</span>',
+      fixed: '<span class="status-badge badge-fixed">Đã sửa xong</span>',
+      returned: '<span class="status-badge badge-returned">Đã trả máy</span>',
+      cancelled: '<span class="status-badge badge-cancelled">Đã hủy</span>'
+    };
+
+    data.forEach(item => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `
+        <td class="font-semibold text-sky-300 font-monospace">${escapeHtml(item.base_stage)}</td>
+        <td>${badgeMap[item.system_status] || `<span class="status-badge">${escapeHtml(item.system_status)}</span>`}</td>
+        <td class="text-slate-400 text-xs">${escapeHtml(item.description || '—')}</td>
+        <td class="text-right">
+          <button onclick="deleteMapping(${item.id})" class="p-1.5 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition-all" title="Xóa quy tắc">
+            <i class="fa-regular fa-trash-can"></i>
+          </button>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    console.warn('Không tải được danh sách ánh xạ:', e);
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="4" class="text-center py-6 text-rose-400 text-xs">
+          Lỗi tải dữ liệu ánh xạ. Vui lòng thử lại sau!
+        </td>
+      </tr>
+    `;
+  }
+}
+
+// Escaping HTML an toàn
+function escapeHtml(text) {
+  if (!text) return '';
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Điều khiển Modal
+function openModal() {
+  document.getElementById('mappingModal').classList.add('active');
+  setTimeout(() => document.getElementById('modal_base_stage').focus(), 100);
+}
+function closeModal() {
+  document.getElementById('mappingModal').classList.remove('active');
+  document.getElementById('modal_base_stage').value = '';
+  document.getElementById('modal_description').value = '';
+}
+function closeModalOnOverlay(e) {
+  if (e.target.id === 'mappingModal') closeModal();
+}
+
+// Thêm / Lưu quy tắc ánh xạ mới
+async function submitMapping() {
+  const base_stage = document.getElementById('modal_base_stage').value.trim();
+  const system_status = document.getElementById('modal_system_status').value;
+  const description = document.getElementById('modal_description').value.trim();
+  const btn = document.getElementById('btnSubmitMapping');
+
+  if (!base_stage) {
+    showMessage('Vui lòng nhập tên trạng thái nguồn!', 'error');
+    return;
+  }
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> <span>Đang lưu...</span>`;
+    }
+
+    const res = await fetch(`${API_BASE}/status-mappings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_stage, system_status, description })
+    });
+    
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Lỗi khi lưu quy tắc ánh xạ');
+    }
+
+    closeModal();
+    loadMappings();
+    showMessage(`Đã thêm quy tắc cho giai đoạn "${base_stage}"!`, 'success');
+  } catch (e) {
+    showMessage(e.message || 'Không thể lưu quy tắc ánh xạ!', 'error');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-floppy-disk"></i> <span>Lưu Quy Tắc</span>`;
+    }
+  }
+}
+
+// Xóa quy tắc ánh xạ
+async function deleteMapping(id) {
+  if (!confirm('Bạn có chắc chắn muốn xóa quy tắc ánh xạ này không?')) return;
+  try {
+    const res = await fetch(`${API_BASE}/status-mappings/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Không thể xóa quy tắc');
+    }
+
+    loadMappings();
+    showMessage('Đã xóa quy tắc ánh xạ thành công!', 'success');
+  } catch (e) {
+    showMessage(e.message || 'Lỗi khi xóa quy tắc!', 'error');
+  }
+}
+</script>
+{% endblock %}

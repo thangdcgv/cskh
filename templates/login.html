@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>Đăng nhập - Máy In Đại Thành Center Hub</title>
+
+<!-- Favicon -->
+<link rel="icon" type="image/png" href="/static/icons/favicon.png">
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { 
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
+  background: #0f172a; 
+  background-image: radial-gradient(at 50% 0%, #1e293b 0%, #0f172a 100%);
+  color: #f8fafc; 
+  display: flex; 
+  justify-content: center; 
+  align-items: center; 
+  min-height: 100vh; 
+  padding: 1rem;
+  overflow-y: auto;
+}
+.login-card { 
+  background: #1e293b; 
+  padding: 1.75rem 1.25rem; 
+  border-radius: 20px; 
+  border: 1px solid #334155; 
+  width: 100%; 
+  max-width: 400px; 
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4); 
+  text-align: center;
+}
+.brand-logo {
+  max-width: 160px;
+  height: auto;
+  margin-bottom: 1rem;
+  object-fit: contain;
+  filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.3));
+}
+h2 { 
+  color: #38bdf8; 
+  font-size: 1.25rem; 
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.25rem; 
+}
+p.subtitle { 
+  color: #94a3b8; 
+  font-size: 0.85rem; 
+  margin-bottom: 1.5rem; 
+}
+.form-group { 
+  text-align: left;
+  margin-bottom: 1rem; 
+}
+label { 
+  display: block; 
+  font-size: 0.85rem; 
+  color: #cbd5e1; 
+  margin-bottom: 0.4rem; 
+  font-weight: 500;
+}
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+input { 
+  width: 100%; 
+  min-height: 48px; 
+  padding: 0.75rem 1rem; 
+  border-radius: 10px; 
+  border: 1px solid #334155; 
+  background: #0f172a; 
+  color: #f8fafc; 
+  font-size: 1rem; 
+  outline: none; 
+  transition: border-color 0.2s, box-shadow 0.2s; 
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+}
+.password-wrapper input {
+  padding-right: 2.75rem;
+}
+input:focus { 
+  border-color: #0284c7; 
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.25);
+}
+.toggle-pwd-btn {
+  position: absolute;
+  right: 0.75rem;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+.toggle-pwd-btn:hover {
+  color: #f8fafc;
+}
+button[type="submit"] { 
+  width: 100%; 
+  min-height: 48px; 
+  padding: 0.75rem; 
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); 
+  color: white; 
+  border: none; 
+  border-radius: 10px; 
+  font-weight: 600; 
+  font-size: 1rem; 
+  cursor: pointer; 
+  transition: transform 0.1s ease, box-shadow 0.2s ease, opacity 0.2s ease; 
+  margin-top: 0.5rem; 
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.3);
+  -webkit-tap-highlight-color: transparent;
+}
+button[type="submit"]:active:not(:disabled) {
+  transform: scale(0.98);
+}
+button[type="submit"]:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.error-msg { 
+  background: rgba(127, 29, 29, 0.4); 
+  color: #fca5a5; 
+  padding: 0.75rem; 
+  border-radius: 8px; 
+  font-size: 0.85rem; 
+  margin-bottom: 1rem; 
+  border: 1px solid #991b1b; 
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.auth-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+.auth-actions a {
+  font-size: 0.8rem;
+  color: #38bdf8;
+  text-decoration: none;
+}
+.auth-actions a:hover {
+  text-decoration: underline;
+}
+.footer-text {
+  margin-top: 1.5rem;
+  font-size: 0.75rem;
+  color: #64748b;
+}
+.spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid transparent;
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 0.5rem;
+  vertical-align: middle;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+</style>
+</head>
+<body>
+<div class="login-card">
+  <img 
+    src="https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png" 
+    alt="Máy In Đại Thành" 
+    class="brand-logo"
+    loading="lazy">
+  
+  <h2>TRUNG TÂM QUẢN TRỊ</h2>
+  <p class="subtitle">Ứng dụng tập trung</p>
+
+  {% if error %}
+  <div class="error-msg">
+    <span>⚠️</span>
+    <span>{{ error }}</span>
+  </div>
+  {% endif %}
+
+  <form id="loginForm" action="/login" method="POST">
+    <!-- Kiểm tra an toàn trước khi render CSRF token -->
+    {% if csrf_token %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% endif %}
+
+    <div class="form-group">
+      <label for="email">Tài khoản / Email</label>
+      <input 
+        type="text" 
+        id="email" 
+        name="email" 
+        required 
+        placeholder="VD: admin hoặc admin@gmail.com"
+        autocomplete="username">
+    </div>
+
+    <div class="form-group">
+      <label for="password">Mật khẩu</label>
+      <div class="password-wrapper">
+        <input 
+          type="password" 
+          id="password" 
+          name="password" 
+          required 
+          placeholder="••••••••"
+          autocomplete="current-password">
+        <button type="button" class="toggle-pwd-btn" id="togglePwdBtn" title="Hiện/Ẩn mật khẩu">👁️</button>
+      </div>
+      
+      <div class="auth-actions">
+        <a href="/forgot-password">Quên mật khẩu / Xin cấp lại?</a>
+      </div>
+    </div>
+
+    <button type="submit" id="submitBtn">
+      <span id="btnText">Đăng nhập</span>
+    </button>
+  </form>
+
+  <div class="footer-text">
+    &copy; Máy In Đại Thành — Tất cả quyền được bảo lưu
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const emailInput = document.getElementById('email');
+  const pwdInput = document.getElementById('password');
+  const togglePwdBtn = document.getElementById('togglePwdBtn');
+  const loginForm = document.getElementById('loginForm');
+  const submitBtn = document.getElementById('submitBtn');
+  const btnText = document.getElementById('btnText');
+  let isSubmitting = false;
+
+  // Bật/Tắt hiển thị mật khẩu
+  if (togglePwdBtn && pwdInput) {
+    togglePwdBtn.addEventListener('click', function() {
+      const isPwd = pwdInput.type === 'password';
+      pwdInput.type = isPwd ? 'text' : 'password';
+      togglePwdBtn.textContent = isPwd ? '🙈' : '👁️';
+    });
+  }
+
+  // Tự động thêm @gmail.com nếu không có tên miền
+  function appendDefaultDomain() {
+    const val = emailInput.value.trim();
+    if (val && !val.includes('@')) {
+      emailInput.value = val + '@gmail.com';
+    }
+  }
+
+  emailInput.addEventListener('blur', appendDefaultDomain);
+
+  // Ngăn gửi nhiều lần + hiển thị trạng thái loading
+  loginForm.addEventListener('submit', function(e) {
+    if (isSubmitting) {
+      e.preventDefault();
+      return;
+    }
+    
+    appendDefaultDomain();
+    isSubmitting = true;
+    
+    submitBtn.disabled = true;
+    btnText.innerHTML = '<span class="spinner"></span> Đang xác thực...';
+  });
+});
+</script>
+</body>
+</html>

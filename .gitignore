@@ -1,0 +1,22 @@
+# Python bytecode / Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Môi trường ảo (Virtual Environment)
+venv/
+.venv/
+env/
+
+# File cấu hình chứa mật khẩu / API Key (RẤT QUAN TRỌNG)
+.env
+.env.local
+
+# File rác hệ thống (macOS / Windows)
+.DS_Store
+Thumbs.db
+
+# Thư mục IDE
+.vscode/
+.idea/

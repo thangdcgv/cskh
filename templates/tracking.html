@@ -27,26 +27,37 @@
         .header-title {
             color: #e53935;
             font-weight: 800;
-            font-size: 1.65rem;
-            letter-spacing: 0.3px;
+            font-size: 1.33rem;
+            letter-spacing: 0.25px;
         }
         .header-subtitle {
             color: #d32f2f;
             font-style: italic;
-            font-size: 0.95rem;
+            font-size: 0.85rem;
             font-weight: 500;
         }
         .stars-container {
             color: #ffc107;
-            font-size: 1.15rem;
-            letter-spacing: 3px;
+            font-size: 0.9rem;
+            letter-spacing: 2px;
         }
         .brand-logo {
-            max-height: 65px;
+            max-height: 58px;
             width: auto;
             object-fit: contain;
         }
-
+        /* Màn hình từ Tablet / Desktop trở lên */
+        @media (min-width: 576px) {
+            .brand-logo {
+                height: 60px;
+            }
+            .header-subtitle {
+                font-size: 0.95rem;
+            }
+            .stars-container {
+                font-size: 1.1rem;
+            }
+        }
         /* Search Section */
         .search-input-group .form-control {
             border: 1px solid #e0e0e0;
@@ -126,19 +137,20 @@
         .text-brand-red {
             color: #d32f2f !important;
         }
+        
     </style>
 </head>
 <body>
 
     <!-- Header & Logo -->
-    <header class="container my-4 text-center">
-        <div class="d-flex align-items-center justify-content-center gap-3 mb-2 flex-wrap">
-            <a href="/tracking">
+    <header class="container my-3 my-md-4 text-center">
+        <div class="d-flex align-items-center justify-content-center gap-2 gap-sm-3 mb-2 flex-wrap">
+            <a href="/tracking" class="d-inline-block">
                 <img src="https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png" alt="Máy In Đại Thành" class="brand-logo">
             </a>
             <div class="text-center text-sm-start">
-                <h1 class="header-title m-0">HỆ THỐNG TRA CỨU HÀNH TRÌNH THIẾT BỊ</h1>
-                <div class="header-subtitle">Tra cứu thông tin tiến độ sửa chữa & bảo hành nhanh chóng</div>
+                <h1 class="header-title mb-1 fs-5 fs-sm-3 fw-bold">TRA CỨU HÀNH TRÌNH THIẾT BỊ</h1>
+                <div class="header-subtitle small">Tra cứu tiến độ sửa chữa & bảo hành nhanh chóng</div>
             </div>
         </div>
         <div class="stars-container mt-1">
@@ -149,14 +161,13 @@
             <i class="bi bi-star-fill"></i>
         </div>
     </header>
-
     <!-- Nội dung chính -->
-    <main class="container mb-5 flex-grow-1">
+    <main class="container mb-8 flex-grow-1">
         <div class="row justify-content-center">
             <div class="col-12 col-md-10 col-lg-9">
                 
                 <!-- Khung tìm kiếm -->
-                <div class="mb-4">
+                <div class="mb-5">
                     <label for="searchInput" class="form-label fw-medium text-dark small mb-2">Nhập số điện thoại hoặc mã phiếu để kiểm tra:</label>
                     <div class="input-group search-input-group">
                         <input type="text" id="searchInput" class="form-control rounded-3" placeholder="Ví dụ: 0912345678 hoặc NT-1009-001" autocomplete="off">
@@ -277,7 +288,7 @@
                     <div class="row g-4 text-start">
                         <div class="col-md-7">
                             <h6 class="fw-bold text-brand-red mb-3"><i class="bi bi-building me-2"></i>CÔNG TY TNHH MÁY IN ĐẠI THÀNH</h6>
-                            <p class="text-muted small mb-2"><i class="bi bi-geo-alt-fill text-brand-red me-2"></i>29/31 Nguyễn Văn Khối, P. Thông Tây Hội, TP.HCM</p>
+                            <p class="text-muted small mb-2"><i class="bi bi-geo-alt-fill text-brand-red me-1"></i>29/31 Nguyễn Văn Khối, P.Thông Tây Hội, HCM</p>
                             <p class="text-muted small mb-1"><i class="bi bi-globe me-2 text-primary"></i><a href="https://www.mayindaithanh.com" target="_blank" class="text-brand-red fw-medium text-decoration-none">www.mayindaithanh.com</a></p>
                             <p class="text-muted small mb-0"><i class="bi bi-globe me-2 text-primary"></i><a href="https://www.mayinsaigon.com" target="_blank" class="text-brand-red fw-medium text-decoration-none">www.mayinsaigon.com</a></p>
                         </div>

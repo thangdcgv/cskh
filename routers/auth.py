@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
@@ -11,14 +12,14 @@ from starlette.concurrency import run_in_threadpool
 from database import supabase, supabase_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter()
+router = APIRouter(prefix="", tags=["Authentication"])
 
 # =========================================================
-# CẤU HÌNH HẰNG SỐ
+# CẤU HÌNH HẰNG SỐ CHUYÊN CHO HỆ THỐNG SỬA CHỮA (REPAIR)
 # =========================================================
-APP_CODE = "CENTER"
+APP_CODE = os.getenv("APP_CODE", "REPAIR")  # Mã phân định ứng dụng Tiếp nhận & Sửa chữa
 SUPER_ADMIN_ROLES = {"super admin", "system admin"}
-ALLOWED_ROLES = {"user", "admin", "super admin", "system admin", "ktv", "lễ tân"}
+ALLOWED_ROLES = {"user", "admin", "super admin", "system admin"}
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = (
@@ -87,6 +88,7 @@ def extract_user_from_session(request: Request) -> Optional[Dict[str, Any]]:
 
 
 async def verify_active_session(user_id: str, session_token: str) -> bool:
+    """Xác minh phiên làm việc còn hiệu lực trong DB với APP_CODE = 'REPAIR'"""
     def _check():
         res = supabase_admin.table("user_sessions").select("id") \
             .eq("user_id", user_id).eq("app_code", APP_CODE) \
@@ -97,11 +99,11 @@ async def verify_active_session(user_id: str, session_token: str) -> bool:
         return await run_in_threadpool(_check)
     except Exception as e:
         logger.error(f"VERIFY SESSION DB ERROR: {e}")
-        return False  # Fail-closed: DB lỗi -> từ chối kết nối
+        return False  # Fail-closed: DB lỗi -> Từ chối kết nối
 
 
 async def require_login(request: Request) -> Dict[str, Any]:
-    """Dependency / Helper: Lấy thông tin user hiện tại hoặc bắn lỗi 401 nếu hết hạn"""
+    """Dependency: Lấy thông tin user hiện tại hoặc bắn lỗi 401 nếu hết hạn"""
     user = extract_user_from_session(request)
     if not user:
         raise HTTPException(
@@ -117,7 +119,6 @@ async def require_login(request: Request) -> Dict[str, Any]:
     return user
 
 
-# Tái sử dụng require_login để tránh lặp code
 get_current_user = require_login
 
 
@@ -130,9 +131,7 @@ async def get_current_user_or_redirect(request: Request) -> Optional[Dict[str, A
 
 
 def get_redirect_url_by_role(role: str) -> str:
-    role_clean = str(role or "user").strip().lower()
-    if role_clean in SUPER_ADMIN_ROLES or role_clean == "admin":
-        return "/settings"
+    """Định tuyến sau khi đăng nhập: Điều hướng về Màn hình Lễ tân Tiếp nhận (/) cho tất cả vai trò"""
     return "/"
 
 
@@ -141,10 +140,9 @@ def get_redirect_url_by_role(role: str) -> str:
 # =========================================================
 @router.get("/login", response_class=HTMLResponse)
 async def login_page(request: Request):
-    user = request.session.get("user")
+    user = request.session.get("user_id")
     if user:
-        # Chuyển về trang chủ Lễ tân thay vì trang Cài đặt
-        return RedirectResponse(url="/", status_code=303)
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse("login.html", {"request": request})
 
 
@@ -158,7 +156,7 @@ async def login(
     if not email_or_user or not password:
         return render_template(request, "login.html", {"error": "Vui lòng nhập đầy đủ thông tin."}, status_code=400)
 
-    # Xử lý nhập username hoặc email
+    # Xử lý đăng nhập bằng username hoặc email
     login_email = email_or_user
     if "@" not in login_email:
         login_email = f"{login_email}@gmail.com"
@@ -173,7 +171,7 @@ async def login(
 
         auth_id = str(auth_res.user.id)
 
-        # Truy vấn thông tin tài khoản từ DB
+        # Truy vấn thông tin người dùng từ DB
         def _fetch_profile():
             return supabase_admin.table("quan_tri_vien").select("*") \
                 .eq("auth_id", auth_id).limit(1).execute()
@@ -199,7 +197,7 @@ async def login(
         device_type = detect_device_type(user_agent)
         new_session_token = str(uuid.uuid4())
 
-        # Đồng bộ session vào DB
+        # Đồng bộ session vào DB (Xóa session cũ của cùng thiết bị + APP_CODE)
         def _sync_session():
             supabase_admin.table("user_sessions").delete() \
                 .eq("user_id", auth_id).eq("app_code", APP_CODE) \
@@ -230,7 +228,7 @@ async def login(
             "access_token": auth_res.session.access_token if auth_res.session else None,
         })
 
-        return RedirectResponse(url=get_redirect_url_by_role(role), status_code=303)
+        return RedirectResponse(url=get_redirect_url_by_role(role), status_code=status.HTTP_303_SEE_OTHER)
 
     except Exception as e:
         logger.warning(f"LOGIN FAILED cho tài khoản '{email_or_user}': {e}")
@@ -259,7 +257,7 @@ async def logout(request: Request):
             logger.error(f"LOGOUT ERROR: {e}")
 
     request.session.clear()
-    return RedirectResponse(url="/login", status_code=303)
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
 # =========================================================
@@ -268,7 +266,7 @@ async def logout(request: Request):
 @router.get("/change-password", response_class=HTMLResponse)
 async def change_password_page(request: Request):
     if not await get_current_user_or_redirect(request):
-        return RedirectResponse(url="/login", status_code=303)
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     return render_template(request, "change_password.html", {"error": None, "success": None})
 
 
@@ -280,19 +278,17 @@ async def change_password_submit(
 ):
     user = await get_current_user_or_redirect(request)
     if not user:
-        return RedirectResponse(url="/login", status_code=303)
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
     valid, err = is_valid_password(new_password)
     if not valid:
         return render_template(request, "change_password.html", {"error": err, "success": None}, status_code=400)
 
     try:
-        # Xác minh mật khẩu hiện tại
         await run_in_threadpool(
             supabase.auth.sign_in_with_password,
             {"email": user["email"], "password": current_password}
         )
-        # Cập nhật mật khẩu mới qua Admin API
         await run_in_threadpool(
             supabase_admin.auth.admin.update_user_by_id,
             user["auth_id"],

@@ -7,17 +7,16 @@
 <title>{% block title %}Center Hub - Máy In Đại Thành{% endblock %}</title>
 
 {% block head %}
-<!-- 1. Favicon hiển thị trên Tab Trình duyệt (Laptop/Điện thoại) -->
-<link rel="icon" type="image/png" href="/static/icons/favicon.png">
-<link rel="shortcut icon" href="/static/icons/favicon.png">
+<!-- Favicon Tab trình duyệt -->
+<link rel="icon" type="image/png" sizes="32x32" href="/static/icons/favicon.png">
 
-<!-- 2. Logo khi Thêm vào màn hình chính trên iOS / iPhone / Safari -->
-<link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-192.png">
+<!-- Apple iOS Home Screen Icon (Nên dùng file ảnh nền vuông có màu cố định) -->
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-512.png">
 
-<!-- 3. Cấu hình Manifest cho Android / Chrome / Cốc Cốc / Windows PWA -->
+<!-- Manifest cho Android/PWA -->
 <link rel="manifest" href="/static/manifest.json">
 <meta name="theme-color" content="#0a0f1d">
-<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 {% endblock %}
 

@@ -4,11 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 
-<!-- Favicon -->
-<link rel="icon" type="image/png" href="/static/icons/favicon.png">
-
 <title>{% block title %}Center Hub - Máy In Đại Thành{% endblock %}</title>
-
 
 {% block head %}
 <!-- 1. Favicon hiển thị trên Tab Trình duyệt (Laptop/Điện thoại) -->
@@ -24,6 +20,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 {% endblock %}
+
 <!-- Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -90,7 +87,6 @@ tailwind.config = {
   --shadow-glow: 0 4px 14px rgba(2, 132, 199, 0.25);
 }
 
-/* Sửa lỗi selector '*' từ '-' */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -446,8 +442,6 @@ body::before {
   .nav-item.active::after { top: auto; bottom: 0; width: 100%; border-radius: 3px 3px 0 0; }
 }
 </style>
-
-{% block head %}{% endblock %}
 </head>
 <body>
 

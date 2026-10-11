@@ -207,16 +207,22 @@
                                 <strong id="resPhone" class="fs-6 font-monospace text-dark"></strong>
                             </div>
 
-                            <!-- THÊM HIỂN THỊ YÊU CẦU CỦA KHÁCH -->
+                            <!-- YÊU CẦU CỦA KHÁCH -->
                             <div class="col-12 col-md-6 border-top pt-2">
                                 <span class="text-muted small d-block"><i class="bi bi-tools text-brand-red me-1"></i>Yêu cầu sửa chữa / Báo lỗi:</span>
                                 <strong id="resCustomerReq" class="d-block text-dark small mt-1">Chưa có yêu cầu</strong>
                             </div>
 
-                            <!-- HIỂN THỊ TÌNH TRẠNG NHẬN MÁY -->
+                            <!-- TÌNH TRẠNG NHẬN MÁY -->
                             <div class="col-12 col-md-6 border-top pt-2">
                                 <span class="text-muted small d-block"><i class="bi bi-card-checklist text-primary me-1"></i>Tình trạng nhận máy & Phụ kiện:</span>
                                 <p id="resNote" class="mb-0 text-secondary small mt-1"></p>
+                            </div>
+
+                            <!-- THÔNG TIN HÌNH THỨC & GHI CHÚ BÀN GIAO (NẾU CÓ) -->
+                            <div id="returnedInfoArea" class="col-12 border-top pt-2" style="display: none;">
+                                <span class="text-muted small d-block"><i class="bi bi-box-arrow-right text-success me-1"></i>Thông tin Bàn Giao & Trả Máy:</span>
+                                <p id="resReturnedDetail" class="mb-0 text-dark small mt-1 font-medium"></p>
                             </div>
                         </div>
 
@@ -422,6 +428,18 @@
             document.getElementById('resCustomerReq').innerText = item.note || 'Chưa có yêu cầu';
             document.getElementById('resNote').innerText = item.received_note || 'Bình thường';
 
+            // Hiển thị thêm chi tiết Bàn Giao & Trả máy nếu có
+            const returnedInfoArea = document.getElementById('returnedInfoArea');
+            if (item.returned_method || item.returned_note) {
+                let retText = '';
+                if (item.returned_method) retText += 'Hình thức: ' + escapeHtml(item.returned_method);
+                if (item.returned_note) retText += (retText ? ' | ' : '') + 'Ghi chú: ' + escapeHtml(item.returned_note);
+                document.getElementById('resReturnedDetail').innerText = retText;
+                returnedInfoArea.style.display = 'block';
+            } else {
+                returnedInfoArea.style.display = 'none';
+            }
+
             document.getElementById('timeReceived').innerText = 'Tiếp nhận lúc: ' + (item.created_at ? new Date(item.created_at).toLocaleString('vi-VN') : '—');
 
             const badge = document.getElementById('resStatusBadge');
@@ -438,31 +456,71 @@
             const timeReturned = document.getElementById('timeReturned');
 
             const st = (item.status || '').toLowerCase();
+            const retNoteStr = (item.returned_note || '').toLowerCase();
+            const noteStr = (item.note || '').toLowerCase();
+
+            // KIỂM TRA XEM ĐƠN NÀY LÀ TRẢ MÁY NGUYÊN TRẠNG / KHÔNG SỬA ĐƯỢC HAY SỬA THÀNH CÔNG
+            const isUnrepairedReturn = 
+                item.is_fixed === false || 
+                item.repaired === false ||
+                item.repair_result === 'failed' ||
+                /hủy|không sửa|thất bại|mang về|đổi ý|nguyên trạng|báo giá|không đồng ý|lý do trả/i.test(retNoteStr) ||
+                /không sửa|không đồng ý|hủy/i.test(noteStr);
 
             // QUY TRÌNH HÀNH TRÌNH 4 BƯỚC
             if (st === 'returned') {
-                // TRẠNG THÁI: ĐÃ TRẢ MÁY (HOÀN TẤT 100%)
-                badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
-                badge.innerText = '✓ Đã Trả Khách';
+                if (isUnrepairedReturn) {
+                    // TH1: ĐÃ TRẢ MÁY NGUYÊN TRẠNG (SỬA THẤT BẠI / HỦY SỬA)
+                    badge.className = 'badge bg-secondary text-white fs-6 px-3 py-2';
+                    badge.innerText = '↩ Đã Trả Máy Nguyên Trạng';
 
-                // Bước 1: Tiếp nhận
-                iconStep1.className = 'timeline-icon bg-success';
-                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
+                    // Bước 1: Tiếp nhận
+                    iconStep1.className = 'timeline-icon bg-success';
+                    iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                // Bước 2: Kiểm tra & sửa
-                iconStep2.className = 'timeline-icon bg-success';
-                iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                timeRepair.innerText = 'Đã hoàn tất quá trình kiểm tra & sửa chữa.';
+                    // Bước 2: Kiểm tra & sửa
+                    iconStep2.className = 'timeline-icon bg-danger';
+                    iconStep2.innerHTML = '<i class="bi bi-x"></i>';
+                    timeRepair.innerText = 'Kỹ thuật viên đã kiểm tra: Thiết bị không tiến hành sửa chữa / Hủy sửa.';
 
-                // Bước 3: Sửa xong
-                iconStep3.className = 'timeline-icon bg-success';
-                iconStep3.innerHTML = '<i class="bi bi-check"></i>';
-                timeFixed.innerText = 'Thiết bị đã kiểm tra chất lượng & chạy thử tốt.';
+                    // Bước 3: Sửa xong
+                    iconStep3.className = 'timeline-icon bg-secondary';
+                    iconStep3.innerHTML = '<i class="bi bi-dash-circle"></i>';
+                    timeFixed.innerText = 'Không tiến hành sửa chữa (Chờ bàn giao máy nguyên trạng).';
 
-                // Bước 4: Trả máy
-                iconStep4.className = 'timeline-icon bg-success';
-                iconStep4.innerHTML = '<i class="bi bi-check"></i>';
-                timeReturned.innerText = 'Đã bàn giao cho khách lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
+                    // Bước 4: Trả máy
+                    iconStep4.className = 'timeline-icon bg-dark text-white';
+                    iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
+                    let retDetailText = 'Đã bàn giao trả máy nguyên trạng lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
+                    if (item.returned_note) retDetailText += ' (' + item.returned_note + ')';
+                    timeReturned.innerText = retDetailText;
+
+                } else {
+                    // TH2: ĐÃ SỬA THÀNH CÔNG & ĐÃ TRẢ KHÁCH
+                    badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
+                    badge.innerText = '✓ Đã Trả Khách (Hoàn Tất)';
+
+                    // Bước 1: Tiếp nhận
+                    iconStep1.className = 'timeline-icon bg-success';
+                    iconStep1.innerHTML = '<i class="bi bi-check"></i>';
+
+                    // Bước 2: Kiểm tra & sửa
+                    iconStep2.className = 'timeline-icon bg-success';
+                    iconStep2.innerHTML = '<i class="bi bi-check"></i>';
+                    timeRepair.innerText = 'Đã hoàn tất quá trình kiểm tra & sửa chữa.';
+
+                    // Bước 3: Sửa xong
+                    iconStep3.className = 'timeline-icon bg-success';
+                    iconStep3.innerHTML = '<i class="bi bi-check"></i>';
+                    timeFixed.innerText = 'Thiết bị đã kiểm tra chất lượng & chạy thử tốt.';
+
+                    // Bước 4: Trả máy
+                    iconStep4.className = 'timeline-icon bg-success';
+                    iconStep4.innerHTML = '<i class="bi bi-check"></i>';
+                    let retDetailText = 'Đã bàn giao cho khách lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
+                    if (item.returned_method) retDetailText += ' - ' + item.returned_method;
+                    timeReturned.innerText = retDetailText;
+                }
 
             } else if (st === 'fixed') {
                 // TRẠNG THÁI: ĐÃ SỬA XONG (ĐANG CHỜ BÀN GIAO)
@@ -490,8 +548,6 @@
 
             } else if (st === 'processing' || st === 'repairing') {
                 // TRẠNG THÁI: ĐANG SỬA CHỮA
-                badge.className = 'badge text-white fs-6 px-3 py-2';
-                badge.style.backgroundColor = '#8b5cf6';
                 badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
                 badge.innerText = '⚙ Đang Kiểm Tra & Sửa Chữa';
 

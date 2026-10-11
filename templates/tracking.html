@@ -219,6 +219,12 @@
                                 <p id="resNote" class="mb-0 text-secondary small mt-1"></p>
                             </div>
 
+                            <!-- LÝ DO KTV BÁO KHÔNG SỬA ĐƯỢC / HỦY SỬA (NẾU CÓ) -->
+                            <div id="failureReasonArea" class="col-12 border-top pt-2" style="display: none;">
+                                <span class="text-danger small d-block fw-bold"><i class="bi bi-exclamation-triangle-fill me-1"></i>Lý do KTV báo không sửa được / Hủy sửa:</span>
+                                <p id="resFailureReason" class="mb-0 text-danger small mt-1 fw-bold"></p>
+                            </div>
+
                             <!-- THÔNG TIN HÌNH THỨC & GHI CHÚ BÀN GIAO (NẾU CÓ) -->
                             <div id="returnedInfoArea" class="col-12 border-top pt-2" style="display: none;">
                                 <span class="text-muted small d-block"><i class="bi bi-box-arrow-right text-success me-1"></i>Thông tin Bàn Giao & Trả Máy:</span>
@@ -428,7 +434,41 @@
             document.getElementById('resCustomerReq').innerText = item.note || 'Chưa có yêu cầu';
             document.getElementById('resNote').innerText = item.received_note || 'Bình thường';
 
-            // Hiển thị thêm chi tiết Bàn Giao & Trả máy nếu có
+            // 1. ĐỌC VÀ HIỂN THỊ LÝ DO KTV BÁO THẤT BẠI / KHÔNG SỬA ĐƯỢC
+            const failureReasonArea = document.getElementById('failureReasonArea');
+            const resFailureReason = document.getElementById('resFailureReason');
+
+            const baseReason = item.failure_reason || item.cancel_reason || '';
+            const allNotesText = [
+                item.returned_note,
+                item.received_note,
+                item.note,
+                baseReason
+            ].filter(Boolean).join(' ');
+
+            // Kiểm tra cờ thất bại trực tiếp từ KTV/Base
+            const isKtvFailed = item.is_fixed === false || item.repaired === false || item.repair_result === 'failed' || item.repair_result === 'cancelled';
+            const isUnrepairedReturn = isKtvFailed || /hủy|không sửa|thất bại|mang về|đổi ý|nguyên trạng|báo giá|không đồng ý|lý do trả/i.test(allNotesText);
+
+            // Tìm thông tin lý do chi tiết
+            let failureDetailText = baseReason;
+            if (!failureDetailText) {
+                const match = allNotesText.match(/\[(.*?)\]/);
+                if (match) {
+                    failureDetailText = match[1];
+                } else if (isUnrepairedReturn) {
+                    failureDetailText = item.returned_note || item.received_note || 'Khách mang máy về nguyên trạng / Không tiến hành sửa chữa';
+                }
+            }
+
+            if (isUnrepairedReturn || failureDetailText) {
+                if (resFailureReason) resFailureReason.innerText = failureDetailText;
+                if (failureReasonArea) failureReasonArea.style.display = 'block';
+            } else {
+                if (failureReasonArea) failureReasonArea.style.display = 'none';
+            }
+
+            // 2. HIỂN THỊ THÔNG TIN BÀN GIAO & TRẢ MÁY (NẾU CÓ)
             const returnedInfoArea = document.getElementById('returnedInfoArea');
             if (item.returned_method || item.returned_note) {
                 let retText = '';
@@ -456,21 +496,11 @@
             const timeReturned = document.getElementById('timeReturned');
 
             const st = (item.status || '').toLowerCase();
-            const retNoteStr = (item.returned_note || '').toLowerCase();
-            const noteStr = (item.note || '').toLowerCase();
 
-            // KIỂM TRA XEM ĐƠN NÀY LÀ TRẢ MÁY NGUYÊN TRẠNG / KHÔNG SỬA ĐƯỢC HAY SỬA THÀNH CÔNG
-            const isUnrepairedReturn = 
-                item.is_fixed === false || 
-                item.repaired === false ||
-                item.repair_result === 'failed' ||
-                /hủy|không sửa|thất bại|mang về|đổi ý|nguyên trạng|báo giá|không đồng ý|lý do trả/i.test(retNoteStr) ||
-                /không sửa|không đồng ý|hủy/i.test(noteStr);
-
-            // QUY TRÌNH HÀNH TRÌNH 4 BƯỚC
+            // 3. XỬ LÝ HÀNH TRÌNH 4 BƯỚC
             if (st === 'returned') {
                 if (isUnrepairedReturn) {
-                    // TH1: ĐÃ TRẢ MÁY NGUYÊN TRẠNG (SỬA THẤT BẠI / HỦY SỬA)
+                    // TH1: ĐÃ TRẢ MÁY NGUYÊN TRẠNG (SỬA THẤT BẠI / HỦY SỬA / KHÁCH ĐỔI Ý)
                     badge.className = 'badge bg-secondary text-white fs-6 px-3 py-2';
                     badge.innerText = '↩ Đã Trả Máy Nguyên Trạng';
 
@@ -481,7 +511,7 @@
                     // Bước 2: Kiểm tra & sửa
                     iconStep2.className = 'timeline-icon bg-danger';
                     iconStep2.innerHTML = '<i class="bi bi-x"></i>';
-                    timeRepair.innerText = 'Kỹ thuật viên đã kiểm tra: Thiết bị không tiến hành sửa chữa / Hủy sửa.';
+                    timeRepair.innerText = 'Kỹ thuật viên đã kiểm tra: ' + (failureDetailText || 'Thiết bị không tiến hành sửa chữa / Hủy sửa.');
 
                     // Bước 3: Sửa xong
                     iconStep3.className = 'timeline-icon bg-secondary';
@@ -522,58 +552,10 @@
                     timeReturned.innerText = retDetailText;
                 }
 
-            } else if (st === 'fixed') {
-                // TRẠNG THÁI: ĐÃ SỬA XONG (ĐANG CHỜ BÀN GIAO)
-                badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
-                badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng Bàn Giao)';
-
-                // Bước 1: Tiếp nhận
-                iconStep1.className = 'timeline-icon bg-success';
-                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-
-                // Bước 2: Kiểm tra & sửa
-                iconStep2.className = 'timeline-icon bg-success';
-                iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                timeRepair.innerText = 'Kỹ thuật đã hoàn tất khắc phục lỗi.';
-
-                // Bước 3: Sửa xong
-                iconStep3.className = 'timeline-icon bg-primary text-white';
-                iconStep3.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
-                timeFixed.innerText = 'Thiết bị đã sửa hoàn tất, chạy kiểm tra ổn định và sẵn sàng bàn giao.';
-
-                // Bước 4: Trả máy
-                iconStep4.className = 'timeline-icon bg-warning text-dark';
-                iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
-                timeReturned.innerText = 'Đang chờ quý khách đến nhận hoặc chờ bàn giao đơn vị vận chuyển.';
-
-            } else if (st === 'processing' || st === 'repairing') {
-                // TRẠNG THÁI: ĐANG SỬA CHỮA
-                badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
-                badge.innerText = '⚙ Đang Kiểm Tra & Sửa Chữa';
-
-                // Bước 1: Tiếp nhận
-                iconStep1.className = 'timeline-icon bg-success';
-                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-
-                // Bước 2: Kiểm tra & sửa
-                iconStep2.className = 'timeline-icon bg-warning text-dark';
-                iconStep2.innerHTML = '<i class="bi bi-gear-fill"></i>';
-                timeRepair.innerText = 'Kỹ thuật viên đang kiểm tra linh kiện & xử lý lỗi thiết bị.';
-
-                // Bước 3: Sửa xong
-                iconStep3.className = 'timeline-icon bg-secondary';
-                iconStep3.innerHTML = '<i class="bi bi-check-circle"></i>';
-                timeFixed.innerText = 'Chờ kỹ thuật hoàn tất sửa chữa.';
-
-                // Bước 4: Trả máy
-                iconStep4.className = 'timeline-icon bg-secondary';
-                iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
-                timeReturned.innerText = 'Chờ bàn giao sau khi sửa xong.';
-
             } else if (st === 'cancelled') {
-                // TRẠNG THÁI: HỦY ĐƠN
+                // TRẠNG THÁI: HỦY ĐƠN / SỬA THẤT BẠI
                 badge.className = 'badge bg-danger text-white fs-6 px-3 py-2';
-                badge.innerText = '✕ Đã Hủy';
+                badge.innerText = '✕ Đã Hủy / Sửa Thất Bại';
 
                 // Bước 1: Tiếp nhận
                 iconStep1.className = 'timeline-icon bg-success';
@@ -582,7 +564,7 @@
                 // Bước 2: Kiểm tra & sửa
                 iconStep2.className = 'timeline-icon bg-danger';
                 iconStep2.innerHTML = '<i class="bi bi-x"></i>';
-                timeRepair.innerText = 'Đơn sửa chữa đã hủy theo yêu cầu của khách hoặc không sửa được.';
+                timeRepair.innerText = failureDetailText || 'KTV báo sửa không thành công / Hủy đơn sửa.';
 
                 // Bước 3: Sửa xong
                 iconStep3.className = 'timeline-icon bg-secondary';
@@ -594,26 +576,62 @@
                 iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
                 timeReturned.innerText = 'Sẵn sàng trả lại thiết bị nguyên trạng cho quý khách.';
 
+            } else if (st === 'fixed') {
+                // TRẠNG THÁI: ĐÃ SỬA XONG (ĐANG CHỜ BÀN GIAO)
+                badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
+                badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng Bàn Giao)';
+
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
+
+                iconStep2.className = 'timeline-icon bg-success';
+                iconStep2.innerHTML = '<i class="bi bi-check"></i>';
+                timeRepair.innerText = 'Kỹ thuật đã hoàn tất khắc phục lỗi.';
+
+                iconStep3.className = 'timeline-icon bg-primary text-white';
+                iconStep3.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
+                timeFixed.innerText = 'Thiết bị đã sửa hoàn tất, chạy kiểm tra ổn định và sẵn sàng bàn giao.';
+
+                iconStep4.className = 'timeline-icon bg-warning text-dark';
+                iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
+                timeReturned.innerText = 'Đang chờ quý khách đến nhận hoặc chờ bàn giao đơn vị vận chuyển.';
+
+            } else if (st === 'processing' || st === 'repairing') {
+                // TRẠNG THÁI: ĐANG SỬA CHỮA
+                badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
+                badge.innerText = '⚙ Đang Kiểm Tra & Sửa Chữa';
+
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
+
+                iconStep2.className = 'timeline-icon bg-warning text-dark';
+                iconStep2.innerHTML = '<i class="bi bi-gear-fill"></i>';
+                timeRepair.innerText = 'Kỹ thuật viên đang kiểm tra linh kiện & xử lý lỗi thiết bị.';
+
+                iconStep3.className = 'timeline-icon bg-secondary';
+                iconStep3.innerHTML = '<i class="bi bi-check-circle"></i>';
+                timeFixed.innerText = 'Chờ kỹ thuật hoàn tất sửa chữa.';
+
+                iconStep4.className = 'timeline-icon bg-secondary';
+                iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
+                timeReturned.innerText = 'Chờ bàn giao sau khi sửa xong.';
+
             } else {
                 // TRẠNG THÁI: MỚI TIẾP NHẬN (RECEIVED)
                 badge.className = 'badge bg-info text-dark fs-6 px-3 py-2';
                 badge.innerText = '● Đã Tiếp Nhận (Đang Chờ)';
 
-                // Bước 1: Tiếp nhận
                 iconStep1.className = 'timeline-icon bg-success';
                 iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                // Bước 2: Kiểm tra & sửa
                 iconStep2.className = 'timeline-icon bg-secondary';
                 iconStep2.innerHTML = '<i class="bi bi-gear"></i>';
                 timeRepair.innerText = 'Thiết bị đã tiếp nhận và đang chờ điều phối KTV kiểm tra.';
 
-                // Bước 3: Sửa xong
                 iconStep3.className = 'timeline-icon bg-secondary';
                 iconStep3.innerHTML = '<i class="bi bi-check-circle"></i>';
                 timeFixed.innerText = 'Chờ sửa chữa.';
 
-                // Bước 4: Trả máy
                 iconStep4.className = 'timeline-icon bg-secondary';
                 iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
                 timeReturned.innerText = 'Chờ xử lý xong.';

@@ -255,14 +255,24 @@ function ReceptionApp() {
       return;
     }
 
+    // Tự động gợi ý lý do nếu phiếu bị KTV báo thất bại từ Base
+    let initialNote = '';
+    if (record.failure_reason) {
+      initialNote = record.failure_reason;
+    } else if (status === 'cancelled') {
+      initialNote = 'KTV báo sửa không thành công / Hủy sửa';
+    } else if (status === 'received') {
+      initialNote = 'Khách hàng đổi ý / Mang máy về';
+    }
+
     setReturnModalRecord(record);
     setReturnForm({
       returned_method: 'Trực tiếp tại cửa hàng',
-      returned_note: status === 'received' ? 'Khách hàng đổi ý / Mang máy về' : ''
+      returned_note: initialNote
     });
   };
 
-  // NỘP FORM XÁC NHẬN BÀN GIAO & TRẢ MÁY (Gửi returned_method & returned_note)
+  // NỘP FORM XÁC NHẬN BÀN GIAO & TRẢ MÁY
   const handleReturnSubmit = async (e) => {
     e.preventDefault();
     if (!returnModalRecord) return;
@@ -404,6 +414,8 @@ function ReceptionApp() {
       case 'processing':
       case 'repairing':
         return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-purple-500/10 border-purple-500/20 text-purple-400">⚙ Đang Sửa</span>;
+      case 'cancelled':
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-rose-500/10 border-rose-500/20 text-rose-400">✕ Sửa Thất Bại / Hủy</span>;
       default:
         return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-amber-500/10 border-amber-500/20 text-amber-400">● Đang Chờ</span>;
     }
@@ -473,6 +485,7 @@ function ReceptionApp() {
               {val: 'received', label: 'Đang Chờ', icon: 'fa-clock'},
               {val: 'processing', label: 'Đang Sửa', icon: 'fa-gear'},
               {val: 'fixed', label: 'Đã Sửa Xong', icon: 'fa-square-check'},
+              {val: 'cancelled', label: 'Sửa Thất Bại', icon: 'fa-triangle-exclamation'},
               {val: 'returned', label: 'Đã Trả Khách', icon: 'fa-circle-check'},
               {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
             ].map(f => (
@@ -482,6 +495,7 @@ function ReceptionApp() {
                     ? f.val === 'received' ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                     : f.val === 'processing' ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
                     : f.val === 'fixed' ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
+                    : f.val === 'cancelled' ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
                     : f.val === 'returned' ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
                     : 'bg-slate-700 border-slate-500 text-white'
                     : 'bg-[#0a0f1d]/50 border-[var(--border-color)] text-[var(--text-muted)] hover:text-white'
@@ -512,10 +526,12 @@ function ReceptionApp() {
                 const isReturned = status === 'returned';
                 const isFixed = status === 'fixed';
                 const isReceived = status === 'received';
+                const isCancelled = status === 'cancelled' || r.is_fixed === false || r.repair_result === 'failed';
 
                 return (
                   <div key={r.id} className={`card p-4 border flex flex-col justify-between transition-all ${
                     isFixed ? 'bg-[#081b29]/90 border-sky-500/40 shadow-lg' :
+                    isCancelled ? 'bg-[#210c14]/90 border-rose-500/40 shadow-md' :
                     isReceived ? 'bg-[#0b1329]/90 border-amber-500/30' : ''
                   }`}>
                     <div>
@@ -535,6 +551,15 @@ function ReceptionApp() {
                         {r.address && <div><strong className="text-[var(--text-muted)]">Địa chỉ / Khu vực:</strong> <span className="text-sky-300 font-medium">{r.address}</span></div>}
                         {r.note && <div><strong className="text-[var(--text-muted)]">Yêu cầu / Lỗi:</strong> {r.note}</div>}
                         {r.received_note && <div><strong className="text-[var(--text-muted)]">Tình trạng nhận:</strong> <span className="text-amber-200/90">{r.received_note}</span></div>}
+
+                        {/* KHUNG CẢNH BÁO NẾU KTV BÁO THẤT BẠI TỪ BASE */}
+                        {(r.failure_reason || isCancelled) && (
+                          <div className="mt-2 p-2 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 font-bold">
+                            <i className="fa-solid fa-triangle-exclamation mr-1.5 text-rose-400"></i>
+                            KTV báo thất bại: {r.failure_reason || 'Sửa không thành công / Hủy sửa'}
+                          </div>
+                        )}
+
                         {r.returned_method && <div><strong className="text-[var(--text-muted)]">Hình thức trả:</strong> <span className="text-emerald-300 font-medium">{r.returned_method}</span></div>}
                         {r.returned_note && <div><strong className="text-[var(--text-muted)]">Ghi chú trả:</strong> <span className="text-emerald-200/90">{r.returned_note}</span></div>}
                       </div>
@@ -573,6 +598,8 @@ function ReceptionApp() {
                           className={`h-9 w-full font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all ${
                             isFixed
                               ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-400/30 animate-pulse'
+                              : isCancelled
+                              ? 'bg-rose-600 hover:bg-rose-500 text-white'
                               : 'bg-amber-600 hover:bg-amber-500 text-white'
                           }`}
                           title={isReceived ? "Trả máy & nhập lý do" : "Xác nhận bàn giao & trả máy"}>

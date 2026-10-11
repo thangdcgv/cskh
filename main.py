@@ -12,15 +12,20 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from database import settings
 from websocket_manager import manager
-from routers import reception, webhook,tickets, auth, settings as settings_router
+from routers import reception, webhook, tickets, auth, settings as settings_router
 from routers.auth import extract_user_from_session, SUPER_ADMIN_ROLES
 
 logger = logging.getLogger("uvicorn.error")
 
 # === Tự động khởi tạo thư mục tài nguyên tĩnh ===
-STATIC_DIR = Path("static")
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
 ICONS_DIR = STATIC_DIR / "icons"
+SOUNDS_DIR = STATIC_DIR / "sounds"
+
+# Tự tạo thư mục nếu chưa có để tránh lỗi RuntimeError
 ICONS_DIR.mkdir(parents=True, exist_ok=True)
+SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
 # === Khởi tạo Ứng dụng ===
 app = FastAPI(
@@ -29,7 +34,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# === Cấu hình CORS (Cho phép gọi API / Webhook an toàn) ===
+# === Cấu hình CORS ===
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -49,7 +54,8 @@ app.add_middleware(
 )
 
 # === Mount Static Files & Templates ===
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Chỉ cần mount 1 lần thư mục /static (đã bao gồm /static/icons và /static/sounds)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory="templates")
 
 # === Đăng ký Các Router Nghiệp Vụ ===
@@ -73,7 +79,11 @@ async def home_dashboard(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="reception.html",
-        context={"current_user": user}
+        context={
+            "current_user": user,
+            "supabase_url": getattr(settings, "SUPABASE_URL", ""),
+            "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", ""))
+        }
     )
 
 
@@ -84,7 +94,11 @@ async def tracking_page(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="tracking.html",
-        context={"current_user": user}
+        context={
+            "current_user": user,
+            "supabase_url": getattr(settings, "SUPABASE_URL", ""),
+            "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", ""))
+        }
     )
 
 
@@ -99,7 +113,7 @@ async def settings_page(request: Request):
         logger.warning("Truy cập /settings thất bại: Không tìm thấy Session người dùng")
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
-    # 2. Chuẩn hóa chuỗi Role (loại bỏ gạch dưới và khoảng trắng)
+    # 2. Chuẩn hóa chuỗi Role
     role = str(user.get("role", "")).strip().lower().replace("_", " ")
     admin_roles = {"admin", "super admin", "system admin", "systemadmin"}.union(SUPER_ADMIN_ROLES)
 
@@ -113,7 +127,9 @@ async def settings_page(request: Request):
         name="settings.html",
         context={
             "current_user": user,
-            "user_role": role
+            "user_role": role,
+            "supabase_url": getattr(settings, "SUPABASE_URL", ""),
+            "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", ""))
         }
     )
 

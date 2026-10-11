@@ -220,22 +220,35 @@
                             </div>
                         </div>
 
-                        <!-- Timeline quy trình -->
-                        <h6 class="fw-bold mb-3 text-dark"><i class="bi bi-clock-history text-brand-red me-2"></i>Hành Trình Xử Lý Thiết Bị</h6>
+                        <!-- TIMELINE QUY TRÌNH 4 BƯỚC -->
+                        <h6 class="fw-bold mb-3 text-dark"><i class="bi bi-clock-history text-brand-red me-2"></i>Hành Trình Xử Lý Thiết Bị (4 Bước)</h6>
                         <div class="p-3 border rounded-3 bg-white mb-2">
+                            
+                            <!-- BƯỚC 1: TIẾP NHẬN -->
                             <div class="timeline-step">
-                                <div class="timeline-icon bg-success"><i class="bi bi-check"></i></div>
+                                <div id="iconStep1" class="timeline-icon bg-success"><i class="bi bi-check"></i></div>
                                 <strong class="d-block small text-dark">1. Tiếp Nhận Thiết Bị</strong>
                                 <span class="text-muted small" id="timeReceived">Đang cập nhật...</span>
                             </div>
+
+                            <!-- BƯỚC 2: ĐANG SỬA CHỮA -->
                             <div class="timeline-step">
-                                <div id="iconRepair" class="timeline-icon bg-secondary"><i class="bi bi-gear"></i></div>
-                                <strong class="d-block small text-dark">2. Kỹ Thuật Kiểm Tra & Xử Lý</strong>
-                                <span class="text-muted small" id="timeRepair">Thiết bị đang được kiểm tra lỗi hoặc sửa chữa tại trung tâm.</span>
+                                <div id="iconStep2" class="timeline-icon bg-secondary"><i class="bi bi-gear"></i></div>
+                                <strong class="d-block small text-dark">2. Kiểm Tra & Sửa Chữa</strong>
+                                <span class="text-muted small" id="timeRepair">Thiết bị chờ kỹ thuật kiểm tra và xử lý.</span>
                             </div>
+
+                            <!-- BƯỚC 3: SỬA XONG (CHỜ NHẬN) -->
                             <div class="timeline-step">
-                                <div id="iconReturn" class="timeline-icon bg-secondary"><i class="bi bi-box-seam"></i></div>
-                                <strong class="d-block small text-dark">3. Hoàn Tất & Trả Máy</strong>
+                                <div id="iconStep3" class="timeline-icon bg-secondary"><i class="bi bi-check-circle"></i></div>
+                                <strong class="d-block small text-dark">3. Đã Sửa Xong (Sẵn Sàng Bàn Giao)</strong>
+                                <span class="text-muted small" id="timeFixed">Chờ hoàn tất kiểm tra lỗi và đóng gói.</span>
+                            </div>
+
+                            <!-- BƯỚC 4: ĐÃ TRẢ MÁY -->
+                            <div class="timeline-step">
+                                <div id="iconStep4" class="timeline-icon bg-secondary"><i class="bi bi-box-seam"></i></div>
+                                <strong class="d-block small text-dark">4. Đã Bàn Giao & Trả Khách</strong>
                                 <span class="text-muted small" id="timeReturned">Đang chờ bàn giao cho quý khách.</span>
                             </div>
                         </div>
@@ -406,78 +419,147 @@
             document.getElementById('resCustomer').innerText = item.customer_name || 'Khách lẻ';
             document.getElementById('resPhone').innerText = item.phone || '';
             
-            // TÁCH NỘI DUNG YÊU CẦU BÁO LỖI VÀ TÌNH TRẠNG MÁY
             document.getElementById('resCustomerReq').innerText = item.note || 'Chưa có yêu cầu';
             document.getElementById('resNote').innerText = item.received_note || 'Bình thường';
 
-            document.getElementById('timeReceived').innerText = 'Thời gian tiếp nhận: ' + (item.created_at ? new Date(item.created_at).toLocaleString('vi-VN') : '—');
+            document.getElementById('timeReceived').innerText = 'Tiếp nhận lúc: ' + (item.created_at ? new Date(item.created_at).toLocaleString('vi-VN') : '—');
 
             const badge = document.getElementById('resStatusBadge');
-            const iconRepair = document.getElementById('iconRepair');
-            const iconReturn = document.getElementById('iconReturn');
+            
+            // Các icon 4 bước
+            const iconStep1 = document.getElementById('iconStep1');
+            const iconStep2 = document.getElementById('iconStep2');
+            const iconStep3 = document.getElementById('iconStep3');
+            const iconStep4 = document.getElementById('iconStep4');
+
+            // Text tương ứng 4 bước
             const timeRepair = document.getElementById('timeRepair');
+            const timeFixed = document.getElementById('timeFixed');
             const timeReturned = document.getElementById('timeReturned');
 
             const st = (item.status || '').toLowerCase();
 
+            // QUY TRÌNH HÀNH TRÌNH 4 BƯỚC
             if (st === 'returned') {
+                // TRẠNG THÁI: ĐÃ TRẢ MÁY (HOÀN TẤT 100%)
                 badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
-                badge.innerText = 'Đã Trả Máy';
+                badge.innerText = '✓ Đã Trả Khách';
 
-                iconRepair.className = 'timeline-icon bg-success';
-                iconRepair.innerHTML = '<i class="bi bi-check"></i>';
-                timeRepair.innerText = 'Kỹ thuật đã hoàn tất kiểm tra và sửa chữa thiết bị.';
+                // Bước 1: Tiếp nhận
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                iconReturn.className = 'timeline-icon bg-success';
-                iconReturn.innerHTML = '<i class="bi bi-check"></i>';
-                timeReturned.innerText = 'Đã bàn giao cho khách lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : 'N/A');
+                // Bước 2: Kiểm tra & sửa
+                iconStep2.className = 'timeline-icon bg-success';
+                iconStep2.innerHTML = '<i class="bi bi-check"></i>';
+                timeRepair.innerText = 'Đã hoàn tất quá trình kiểm tra & sửa chữa.';
+
+                // Bước 3: Sửa xong
+                iconStep3.className = 'timeline-icon bg-success';
+                iconStep3.innerHTML = '<i class="bi bi-check"></i>';
+                timeFixed.innerText = 'Thiết bị đã kiểm tra chất lượng & chạy thử tốt.';
+
+                // Bước 4: Trả máy
+                iconStep4.className = 'timeline-icon bg-success';
+                iconStep4.innerHTML = '<i class="bi bi-check"></i>';
+                timeReturned.innerText = 'Đã bàn giao cho khách lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
 
             } else if (st === 'fixed') {
+                // TRẠNG THÁI: ĐÃ SỬA XONG (ĐANG CHỜ BÀN GIAO)
                 badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
-                badge.innerText = 'Đã Sửa Xong (Chờ Nhận)';
+                badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng Bàn Giao)';
 
-                iconRepair.className = 'timeline-icon bg-success';
-                iconRepair.innerHTML = '<i class="bi bi-check"></i>';
-                timeRepair.innerText = 'Kỹ thuật đã hoàn tất sửa chữa. Máy đã sẵn sàng bàn giao.';
+                // Bước 1: Tiếp nhận
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                iconReturn.className = 'timeline-icon bg-warning text-dark';
-                iconReturn.innerHTML = '<i class="bi bi-clock"></i>';
-                timeReturned.innerText = 'Đang chờ quý khách đến nhận hoặc gửi vận chuyển.';
+                // Bước 2: Kiểm tra & sửa
+                iconStep2.className = 'timeline-icon bg-success';
+                iconStep2.innerHTML = '<i class="bi bi-check"></i>';
+                timeRepair.innerText = 'Kỹ thuật đã hoàn tất khắc phục lỗi.';
+
+                // Bước 3: Sửa xong
+                iconStep3.className = 'timeline-icon bg-primary text-white';
+                iconStep3.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
+                timeFixed.innerText = 'Thiết bị đã sửa hoàn tất, chạy kiểm tra ổn định và sẵn sàng bàn giao.';
+
+                // Bước 4: Trả máy
+                iconStep4.className = 'timeline-icon bg-warning text-dark';
+                iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
+                timeReturned.innerText = 'Đang chờ quý khách đến nhận hoặc chờ bàn giao đơn vị vận chuyển.';
 
             } else if (st === 'processing' || st === 'repairing') {
+                // TRẠNG THÁI: ĐANG SỬA CHỮA
+                badge.className = 'badge text-white fs-6 px-3 py-2';
+                badge.style.backgroundColor = '#8b5cf6';
                 badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
-                badge.innerText = 'Đang Sửa Chữa';
+                badge.innerText = '⚙ Đang Kiểm Tra & Sửa Chữa';
 
-                iconRepair.className = 'timeline-icon bg-warning text-dark';
-                iconRepair.innerHTML = '<i class="bi bi-gear-fill"></i>';
-                timeRepair.innerText = 'Thiết bị đang trong quá trình kiểm tra lỗi hoặc sửa chữa tại trung tâm.';
+                // Bước 1: Tiếp nhận
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                iconReturn.className = 'timeline-icon bg-secondary';
-                iconReturn.innerHTML = '<i class="bi bi-box-seam"></i>';
-                timeReturned.innerText = 'Đang chờ hoàn tất quy trình và bàn giao.';
+                // Bước 2: Kiểm tra & sửa
+                iconStep2.className = 'timeline-icon bg-warning text-dark';
+                iconStep2.innerHTML = '<i class="bi bi-gear-fill"></i>';
+                timeRepair.innerText = 'Kỹ thuật viên đang kiểm tra linh kiện & xử lý lỗi thiết bị.';
+
+                // Bước 3: Sửa xong
+                iconStep3.className = 'timeline-icon bg-secondary';
+                iconStep3.innerHTML = '<i class="bi bi-check-circle"></i>';
+                timeFixed.innerText = 'Chờ kỹ thuật hoàn tất sửa chữa.';
+
+                // Bước 4: Trả máy
+                iconStep4.className = 'timeline-icon bg-secondary';
+                iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
+                timeReturned.innerText = 'Chờ bàn giao sau khi sửa xong.';
 
             } else if (st === 'cancelled') {
+                // TRẠNG THÁI: HỦY ĐƠN
                 badge.className = 'badge bg-danger text-white fs-6 px-3 py-2';
-                badge.innerText = 'Đã Hủy';
+                badge.innerText = '✕ Đã Hủy';
 
-                iconRepair.className = 'timeline-icon bg-danger';
-                iconRepair.innerHTML = '<i class="bi bi-x"></i>';
-                timeRepair.innerText = 'Đơn sửa chữa đã hủy theo yêu cầu.';
+                // Bước 1: Tiếp nhận
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                iconReturn.className = 'timeline-icon bg-secondary';
-                iconReturn.innerHTML = '<i class="bi bi-box-seam"></i>';
-                timeReturned.innerText = 'Chờ trả lại thiết bị nguyên trạng.';
+                // Bước 2: Kiểm tra & sửa
+                iconStep2.className = 'timeline-icon bg-danger';
+                iconStep2.innerHTML = '<i class="bi bi-x"></i>';
+                timeRepair.innerText = 'Đơn sửa chữa đã hủy theo yêu cầu của khách hoặc không sửa được.';
+
+                // Bước 3: Sửa xong
+                iconStep3.className = 'timeline-icon bg-secondary';
+                iconStep3.innerHTML = '<i class="bi bi-dash-circle"></i>';
+                timeFixed.innerText = 'Không tiến hành sửa chữa.';
+
+                // Bước 4: Trả máy
+                iconStep4.className = 'timeline-icon bg-warning text-dark';
+                iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
+                timeReturned.innerText = 'Sẵn sàng trả lại thiết bị nguyên trạng cho quý khách.';
 
             } else {
+                // TRẠNG THÁI: MỚI TIẾP NHẬN (RECEIVED)
                 badge.className = 'badge bg-info text-dark fs-6 px-3 py-2';
-                badge.innerText = 'Đã Tiếp Nhận';
+                badge.innerText = '● Đã Tiếp Nhận (Đang Chờ)';
 
-                iconRepair.className = 'timeline-icon bg-secondary';
-                iconRepair.innerHTML = '<i class="bi bi-gear"></i>';
-                timeRepair.innerText = 'Thiết bị đã tiếp nhận và đang chờ điều phối kỹ thuật kiểm tra.';
+                // Bước 1: Tiếp nhận
+                iconStep1.className = 'timeline-icon bg-success';
+                iconStep1.innerHTML = '<i class="bi bi-check"></i>';
 
-                iconReturn.className = 'timeline-icon bg-secondary';
-                iconReturn.innerHTML = '<i class="bi bi-box-seam"></i>';
+                // Bước 2: Kiểm tra & sửa
+                iconStep2.className = 'timeline-icon bg-secondary';
+                iconStep2.innerHTML = '<i class="bi bi-gear"></i>';
+                timeRepair.innerText = 'Thiết bị đã tiếp nhận và đang chờ điều phối KTV kiểm tra.';
+
+                // Bước 3: Sửa xong
+                iconStep3.className = 'timeline-icon bg-secondary';
+                iconStep3.innerHTML = '<i class="bi bi-check-circle"></i>';
+                timeFixed.innerText = 'Chờ sửa chữa.';
+
+                // Bước 4: Trả máy
+                iconStep4.className = 'timeline-icon bg-secondary';
+                iconStep4.innerHTML = '<i class="bi bi-box-seam"></i>';
                 timeReturned.innerText = 'Chờ xử lý xong.';
             }
 

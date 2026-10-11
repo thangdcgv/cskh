@@ -44,6 +44,9 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+    <!-- 1. BỔ SUNG CDN SUPABASE JS -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -96,6 +99,12 @@
     <!-- App Root Container -->
     <div id="root" class="w-full max-w-2xl mx-auto"></div>
 
+    <!-- 2. TRUYỀN BIẾN SUPABASE TỪ JINJA2 -->
+    <script>
+      window.SUPABASE_URL = "{{ supabase_url or '' }}";
+      window.SUPABASE_KEY = "{{ supabase_key or '' }}";
+    </script>
+
     {% raw %}
     <script type="text/babel">
         const { useState, useEffect, useCallback, useRef } = React;
@@ -105,6 +114,18 @@
         const LOGO_URL = "https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png";
 
         const PHONE_REGEX = /^0[35789]\d{8}$/;
+
+        // Singleton Client khởi tạo 1 lần duy nhất
+        const getSupabaseClient = () => {
+          if (window._supabaseInstance) return window._supabaseInstance;
+          const url = window.SUPABASE_URL || '';
+          const key = window.SUPABASE_KEY || '';
+          if (url && key && window.supabase) {
+            window._supabaseInstance = window.supabase.createClient(url, key);
+            return window._supabaseInstance;
+          }
+          return null;
+        };
 
         const DEPARTMENTS = [
             {
@@ -184,6 +205,9 @@
             const [showShareModal, setShowShareModal] = useState(false);
             const [toast, setToast] = useState(null);
 
+            // State theo dõi Realtime
+            const [isRealtimeActive, setIsRealtimeActive] = useState(false);
+
             const [activeTicket, setActiveTicket] = useState(null);
             const [selectedDept, setSelectedDept] = useState(null);
 
@@ -193,8 +217,6 @@
                 device_info: ""
             });
             const [formErrors, setFormErrors] = useState({});
-
-            const wsRef = useRef(null);
 
             const showToast = (message, type = 'success') => {
                 setToast({ message, type });
@@ -261,48 +283,69 @@
                 }
             }, [activeTicket]);
 
+            // Ref lưu hàm checkMyTicket mới nhất
+            const checkMyTicketRef = useRef(checkMyTicket);
+            useEffect(() => {
+                checkMyTicketRef.current = checkMyTicket;
+            }, [checkMyTicket]);
+
+            // 1. KẾT NỐI REALTIME CHUẨN (Chạy 1 lần duy nhất)
             useEffect(() => {
                 checkMyTicket(false);
 
-                const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-                const wsUrl = `${protocol}//${window.location.host}/ws/tickets`;
+                const supabaseClient = getSupabaseClient();
 
-                const connectWS = () => {
-                    try {
-                        const ws = new WebSocket(wsUrl);
-                        wsRef.current = ws;
+                if (!supabaseClient) {
+                    console.warn("⚠️ Thiếu cấu hình hoặc thư viện Supabase!");
+                    setIsRealtimeActive(false);
+                    return;
+                }
 
-                        ws.onmessage = (event) => {
-                            try {
-                                const msg = JSON.parse(event.data);
-                                if (["status_update", "transfer_ticket"].includes(msg.type)) {
-                                    const savedTicketId = localStorage.getItem("active_ticket_id");
-                                    if (msg.ticket && String(msg.ticket.id) === String(savedTicketId)) {
-                                        checkMyTicket(true);
-                                    }
+                const channel = supabaseClient
+                    .channel('realtime-public-tickets-v1')
+                    .on(
+                        'postgres_changes',
+                        { event: 'UPDATE', schema: 'public', table: 'tickets' },
+                        (payload) => {
+                            const savedTicketId = localStorage.getItem("active_ticket_id");
+                            const updatedTicket = payload.new;
+
+                            if (updatedTicket && String(updatedTicket.id) === String(savedTicketId)) {
+                                console.log("⚡ [REALTIME TỨC THÌ] Vé của bạn đã được cập nhật:", updatedTicket);
+                                if (checkMyTicketRef.current) {
+                                    checkMyTicketRef.current(true);
                                 }
-                            } catch (e) {}
-                        };
-
-                        ws.onclose = () => {
-                            setTimeout(connectWS, 5000);
-                        };
-                    } catch (e) {}
-                };
-
-                connectWS();
-
-                const interval = setInterval(() => {
-                    if (!activeTicket || activeTicket.status !== "completed") {
-                        checkMyTicket(true);
-                    }
-                }, 8000);
+                            }
+                        }
+                    )
+                    .subscribe((status) => {
+                        console.log("📡 Trạng thái Supabase Realtime (public_ticket):", status);
+                        if (status === 'SUBSCRIBED') {
+                            setIsRealtimeActive(true);
+                        } else {
+                            setIsRealtimeActive(false);
+                        }
+                    });
 
                 return () => {
-                    if (wsRef.current) wsRef.current.close();
-                    clearInterval(interval);
+                    supabaseClient.removeChannel(channel);
                 };
-            }, [activeTicket?.status]);
+            }, []);
+
+            // 2. SMART POLLING DỰ PHÒNG (Chỉ kích hoạt khi Realtime ngắt kết nối)
+            useEffect(() => {
+                const interval = setInterval(() => {
+                    if (isRealtimeActive || document.hidden) return;
+
+                    const savedTicketId = localStorage.getItem("active_ticket_id");
+                    if (savedTicketId && checkMyTicketRef.current) {
+                        console.warn("⚠️ Realtime gián đoạn, kiểm tra vé dự phòng...");
+                        checkMyTicketRef.current(true);
+                    }
+                }, 12000);
+
+                return () => clearInterval(interval);
+            }, [isRealtimeActive]);
 
             const handleSelectDept = (dept) => {
                 setSelectedDept(dept);
@@ -317,7 +360,7 @@
             const validateForm = () => {
                 const errors = {};
                 const cleanName = formData.customer_name.trim();
-                const cleanPhone = formData.phone.replace(/\D/g, ""); // Tự động làm sạch SĐT
+                const cleanPhone = formData.phone.replace(/\D/g, "");
 
                 if (!selectedDept) {
                     showToast("Vui lòng chọn dịch vụ cần hỗ trợ!", "error");

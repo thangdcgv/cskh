@@ -19,21 +19,33 @@
 {% block scripts %}
 {{ super() }}
 
-<!-- Inject Dữ liệu Current User từ FastAPI Jinja2 Context -->
+<!-- Inject Dữ liệu Current User & Supabase Config từ FastAPI Jinja2 Context -->
 <script id="user-data" type="application/json">
   {{ current_user | tojson | safe }}
 </script>
 <script>
   const SERVER_CURRENT_USER = JSON.parse(document.getElementById('user-data').textContent || '{}');
-  console.log("✅ CURRENT_USER:", SERVER_CURRENT_USER);
+  window.SUPABASE_URL = "{{ supabase_url or '' }}";
+  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or '' }}";
+  window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
 </script>
 
 {% raw %}
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback } = React;
 const API_BASE = "/api";
-const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${protocol}//${window.location.host}/ws/tickets`;
+
+// Singleton Client khởi tạo 1 lần duy nhất
+const getSupabaseClient = () => {
+  if (window._supabaseInstance) return window._supabaseInstance;
+  const url = window.SUPABASE_URL || '';
+  const key = window.SUPABASE_ANON_KEY || window.SUPABASE_KEY || '';
+  if (url && key && window.supabase) {
+    window._supabaseInstance = window.supabase.createClient(url, key);
+    return window._supabaseInstance;
+  }
+  return null;
+};
 
 // Ánh xạ phòng ban & Role
 const DEPT_NAME = {
@@ -54,6 +66,9 @@ const ROLE_LABEL = {
 const playBeepFallback = () => {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
     [0, 0.15].forEach(delay => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
@@ -65,55 +80,80 @@ const playBeepFallback = () => {
       osc.start(ctx.currentTime + delay);
       osc.stop(ctx.currentTime + delay + 0.1);
     });
-  } catch (e) {}
+  } catch (e) {
+    console.warn("⚠️ AudioContext không thể khởi tạo:", e);
+  }
 };
 
 const playNewSound = (enabled) => {
   if (!enabled) return;
+  console.log("🔔 Đang phát âm thanh vé mới...");
   const audio = new Audio("/static/sounds/co_so_moi.mp3");
   audio.volume = 1.0;
   audio.play()
-    .then(() => console.log("🔊 Phát âm thanh vé mới"))
+    .then(() => console.log("🔊 Phát thành công: co_so_moi.mp3"))
     .catch(err => {
-      console.warn("⚠️ File MP3 lỗi, dùng tiếng Bíp dự phòng:", err.message);
+      console.warn("⚠️ Lỗi file MP3 hoặc bị trình duyệt chặn Autoplay, phát tiếng Bíp dự phòng:", err.message);
       playBeepFallback();
     });
 };
 
 const playTransferSound = (enabled, department) => {
   if (!enabled) return;
-  const deptSound = {
+  console.log("🔀 Đang phát âm thanh chuyển phòng:", department);
+
+  const deptSoundMap = {
     KTSC: "/static/sounds/phong_sua_chua.mp3",
     KTLD: "/static/sounds/phong_lap_dat.mp3",
     KD: "/static/sounds/phong_kinh_doanh.mp3",
     CSKH: "/static/sounds/phong_cskh.mp3"
-  }[department];
-  
+  };
+
+  const targetDeptSound = deptSoundMap[department];
+
   const audio1 = new Audio("/static/sounds/chuyen_phong.mp3");
+  audio1.volume = 1.0;
+  
   audio1.play()
     .then(() => {
-      if (deptSound) {
+      if (targetDeptSound) {
         audio1.onended = () => {
-          setTimeout(() => new Audio(deptSound).play().catch(() => {}), 150);
+          setTimeout(() => {
+            const audio2 = new Audio(targetDeptSound);
+            audio2.volume = 1.0;
+            audio2.play().catch(e => {
+              console.warn("⚠️ Lỗi phát âm thanh tên phòng:", e.message);
+            });
+          }, 150);
         };
       }
     })
-    .catch(() => playBeepFallback());
+    .catch(err => {
+      console.warn("⚠️ Lỗi phát âm thanh chuyển phòng, phát tiếng Bíp dự phòng:", err.message);
+      playBeepFallback();
+    });
 };
 
 function App() {
   const user = SERVER_CURRENT_USER;
   const [loading, setLoading] = useState(true);
-  const [audioOn, setAudioOn] = useState(() => localStorage.getItem("audioOn") === "true");
+
+  // MẶC ĐỊNH BẬT ÂM THANH NẾU CHƯA CÓ LƯU TRONG LOCALSTORAGE
+  const [audioOn, setAudioOn] = useState(() => {
+    const saved = localStorage.getItem("audioOn");
+    return saved === null ? true : saved === "true";
+  });
+
   const [deptFilter, setDeptFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState("all");
   const [tickets, setTickets] = useState([]);
   const [stats, setStats] = useState({ waiting: 0, processing: 0, completed: 0 });
   const [transferTicket, setTransferTicket] = useState(null);
   const [toast, setToast] = useState(null);
-  const [wsConnected, setWsConnected] = useState(false);
   
-  const wsRef = useRef(null);
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
+
+  
   const audioOnRef = useRef(audioOn);
 
   useEffect(() => {
@@ -154,9 +194,10 @@ function App() {
     loadTickets();
   }, [loadTickets]);
 
-  // UNLOCK AUTOPLAY AUDIO
+  // UNLOCK AUTOPLAY AUDIO KHI NGƯỜI DÙNG TƯƠNG TÁC
   useEffect(() => {
     const unlockAudio = () => {
+      // Phát 1 âm thanh beep nhẹ để unlock AudioContext của trình duyệt
       playBeepFallback();
       window.removeEventListener("click", unlockAudio);
       window.removeEventListener("touchstart", unlockAudio);
@@ -169,70 +210,82 @@ function App() {
     };
   }, []);
 
-  // WEBSOCKET REALTIME
+  // 1. SUPABASE REALTIME (Lắng nghe bảng 'tickets')
   useEffect(() => {
-    let reconnectTimer = null;
     let isMounted = true;
+    const supabaseClient = getSupabaseClient();
 
-    const connect = () => {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+    if (!supabaseClient) {
+      console.warn("⚠️ Chưa cấu hình Supabase Client hoặc thiếu thư viện!");
+      setIsRealtimeActive(false);
+      return;
+    }
 
-      ws.onopen = () => {
-        setWsConnected(true);
-        if (loadTicketsRef.current) loadTicketsRef.current();
-      };
+    const channel = supabaseClient
+      .channel('realtime-admin-tickets-v1')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tickets' },
+        (payload) => {
+          if (!isMounted) return;
 
-      ws.onmessage = (event) => {
-        let msg;
-        try { msg = JSON.parse(event.data); } catch { return; }
+          const { eventType, new: newRow, old: oldRow } = payload;
+          console.log("⚡ [REALTIME EVENT]:", eventType, payload);
 
-        switch (msg.type) {
-          case "connected":
-            if (loadTicketsRef.current) loadTicketsRef.current();
-            break;
-
-          case "new_ticket":
+          // TH1: Có vé bốc số mới
+          if (eventType === 'INSERT') {
             playNewSound(audioOnRef.current);
-            // Chỉ cần tải lại danh sách mới nhất từ server
             if (loadTicketsRef.current) loadTicketsRef.current();
-            break;
+          } 
+          
+          // TH2: Cập nhật thông tin / Trạng thái / Chuyển phòng
+          else if (eventType === 'UPDATE') {
+            const isTransferred = oldRow && newRow && oldRow.department && (oldRow.department !== newRow.department);
 
-          case "transfer_ticket":
-            playTransferSound(audioOnRef.current, msg.new_department);
-            if (loadTicketsRef.current) loadTicketsRef.current();
-            break;
+            if (isTransferred) {
+              playTransferSound(audioOnRef.current, newRow.department);
+            }
 
-          case "status_update":
             if (loadTicketsRef.current) loadTicketsRef.current();
-            break;
+          } 
+
+          // TH3: Xóa vé hoặc các thao tác khác
+          else {
+            if (loadTicketsRef.current) loadTicketsRef.current();
+          }
         }
-      };
+      )
+      .subscribe((status) => {
+        if (!isMounted) return;
+        console.log("📡 Trạng thái Supabase Realtime (admin_queue):", status);
 
-      ws.onclose = () => {
-        setWsConnected(false);
-        if (isMounted) reconnectTimer = setTimeout(connect, 3000);
-      };
-
-      ws.onerror = (err) => {
-        ws.close();
-      };
-    };
-
-    connect();
+        if (status === 'SUBSCRIBED') {
+          setIsRealtimeActive(true); // Chỉ giữ 1 state này
+          if (loadTicketsRef.current) loadTicketsRef.current();
+        } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
+          setIsRealtimeActive(false);
+        }
+      });
 
     return () => {
       isMounted = false;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
-      if (wsRef.current) {
-        wsRef.current.onclose = null;
-        wsRef.current.close();
-      }
+      supabaseClient.removeChannel(channel);
     };
   }, []);
 
+  // 2. SMART POLLING DỰ PHÒNG (Chỉ kích hoạt khi Realtime mất kết nối)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isRealtimeActive || document.hidden) return;
+
+      console.warn("⚠️ Realtime hàng chờ bị gián đoạn, đang tải dữ liệu dự phòng...");
+      if (loadTicketsRef.current) loadTicketsRef.current();
+    }, 12000);
+
+    return () => clearInterval(interval);
+  }, [isRealtimeActive]);
+
   // HÀNH ĐỘNG
-  // Tiếp nhận (gọi số) — dùng endpoint call
   const callTicket = async (id) => {
     const res = await fetch(`${API_BASE}/tickets/call/${id}`, {
       method: "POST",
@@ -241,13 +294,12 @@ function App() {
     });
     if (res.ok) {
       showToast("Đã tiếp nhận vé!", "success");
-      loadTickets(); // dự phòng khi WS đứt
+      loadTickets();
     } else {
       showToast("Lỗi khi tiếp nhận vé!", "error");
     }
   };
 
-  // Hoàn thành — vẫn dùng PATCH status
   const updateStatus = async (id, status) => {
     const res = await fetch(`${API_BASE}/tickets/${id}/status`, {
       method: "PATCH",
@@ -256,7 +308,7 @@ function App() {
     });
     if (res.ok) {
       showToast("Đã cập nhật trạng thái!", "success");
-      loadTickets(); // dự phòng khi WS đứt
+      loadTickets();
     } else {
       showToast("Lỗi cập nhật trạng thái!", "error");
     }
@@ -285,6 +337,18 @@ function App() {
       }
     } catch (err) {
       showToast("Lỗi kết nối máy chủ!", "error");
+    }
+  };
+
+  const toggleAudio = () => {
+    const nextState = !audioOn;
+    setAudioOn(nextState);
+    if (nextState) {
+      // Thử phát thử 1 tiếng beep kiểm tra loa
+      playBeepFallback();
+      showToast("🔊 Đã BẬT chuông thông báo!", "success");
+    } else {
+      showToast("🔇 Đã TẮT chuông thông báo", "info");
     }
   };
 
@@ -317,9 +381,11 @@ function App() {
             <div className="flex items-center gap-2">
               <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">KHÁCH HÀNG CHỜ HỖ TRỢ</h1>
               <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full border ${
-                wsConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
+                isRealtimeActive 
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                  : 'bg-rose-500/10 border-rose-500/20 text-rose-400 animate-pulse'
               }`}>
-                {wsConnected ? "● Realtime Online" : "○ Mất kết nối"}
+                {isRealtimeActive ? "● Realtime Online" : "○ Mất kết nối"}
               </span>
             </div>
             <p className="text-xs text-[var(--text-muted)] mt-0.5">
@@ -342,14 +408,14 @@ function App() {
           </a>
 
           <button 
-            onClick={() => setAudioOn(!audioOn)}
-            className={`px-3 py-2 rounded-[var(--radius-btn)] border text-xs font-bold transition-all flex items-center gap-2 ${
+            onClick={toggleAudio}
+            className={`px-3 py-2 rounded-[var(--radius-btn)] border text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
               audioOn 
                 ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400' 
                 : 'bg-slate-800/80 border-[var(--border-color)] text-[var(--text-muted)]'
             }`}
           >
-            <i className={`fa-solid ${audioOn ? 'fa-volume-high' : 'fa-volume-xmark'}`}></i>
+            <i className={`fa-solid ${audioOn ? 'fa-volume-high text-emerald-400' : 'fa-volume-xmark text-slate-400'}`}></i>
             {audioOn ? "Âm thanh: BẬT" : "Âm thanh: TẮT"}
           </button>
         </div>
@@ -362,7 +428,7 @@ function App() {
             <i className="fa-solid fa-bell-slash text-amber-400 text-sm"></i>
             <span>Bật chuông thông báo để nhận âm thanh tức thì khi có số thứ tự mới hoặc nhận chuyển phòng.</span>
           </div>
-          <button onClick={() => setAudioOn(true)} className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs whitespace-nowrap transition-all">
+          <button onClick={toggleAudio} className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs whitespace-nowrap transition-all cursor-pointer">
             Bật Ngay
           </button>
         </div>
@@ -414,7 +480,7 @@ function App() {
               <option value="waiting">Đang chờ</option>
               <option value="processing">Đang xử lý</option>
               <option value="completed">Hoàn thành</option>
-              <option value="cancelled">Đã hủy</option> {/* ✅ Thêm bộ lọc đã hủy */}
+              <option value="cancelled">Đã hủy</option>
             </select>
           </div>
         </div>
@@ -447,7 +513,7 @@ function App() {
                 t.status === 'waiting' ? 'border-l-amber-500' :
                 t.status === 'processing' ? 'border-l-sky-500' :
                 t.status === 'completed' ? 'border-l-emerald-500 opacity-75' :
-                'border-l-rose-500 opacity-60 bg-rose-950/10' /* 🛑 Style cho vé bị hủy */
+                'border-l-rose-500 opacity-60 bg-rose-950/10'
               }`}
             >
               <div>
@@ -456,7 +522,6 @@ function App() {
                     {t.ticket_code}
                   </span>
                   <div className="flex items-center gap-1.5">
-                    {/* Huy hiệu trạng thái hủy nếu có */}
                     {t.status === 'cancelled' && (
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-rose-500/10 border border-rose-500/20 text-rose-400 uppercase">
                         Đã hủy
@@ -500,7 +565,6 @@ function App() {
                   </button>
                 )}
 
-                {/* 🛑 CHỈ HIỆN NÚT CHUYỂN KHI PHIẾU KHÔNG PHẢI LÀ 'completed' VÀ KHÔNG PHẢI LÀ 'cancelled' */}
                 {canTransfer && t.status !== "completed" && t.status !== "cancelled" && (
                   <button 
                     onClick={() => setTransferTicket(t)}

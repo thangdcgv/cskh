@@ -5,18 +5,40 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- 1. CDN SUPABASE JS -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 {% endblock %}
+
 {% block content %}
 <div id="root" class="w-full"></div>
 {% endblock %}
+
 {% block scripts %}
 {{ super() }}
+<!-- 2. CẤU HÌNH BIẾN SUPABASE -->
+<script>
+  window.SUPABASE_URL = "{{ supabase_url or '' }}";
+  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or '' }}";
+  window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
+</script>
+
 {% raw %}
 <script type="text/babel">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 const API_BASE = "/api/reception";
-const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${protocol}//${window.location.host}/ws/tickets`;
+const PHONE_REGEX = /^0[35789]\d{8}$/;
+
+// Singleton khởi tạo Supabase Client duy nhất
+const getSupabaseClient = () => {
+  if (window._supabaseInstance) return window._supabaseInstance;
+  const url = window.SUPABASE_URL || '';
+  const key = window.SUPABASE_ANON_KEY || window.SUPABASE_KEY || '';
+  if (url && key && window.supabase) {
+    window._supabaseInstance = window.supabase.createClient(url, key);
+    return window._supabaseInstance;
+  }
+  return null;
+};
 
 const handleResponse = async (res) => {
   if (res.status === 401) {
@@ -63,13 +85,16 @@ function ReceptionApp() {
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
 
+  // STATE THEO DÕI KẾT NỐI REALTIME
+  const [isRealtimeActive, setIsRealtimeActive] = useState(false);
+
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('received');
   const [records, setRecords] = useState([]);
   const [hotlinePhone, setHotlinePhone] = useState('');
   const [updatingId, setUpdatingId] = useState(null);
 
-  // State Modal Sửa Đơn
+  // STATE MODAL SỬA PHIẾU
   const [editingRecord, setEditingRecord] = useState(null);
   const [editForm, setEditForm] = useState({
     customer_name: '',
@@ -80,9 +105,12 @@ function ReceptionApp() {
   });
   const [isSaving, setIsSaving] = useState(false);
 
-  // State Modal Trả Máy Yêu Cầu Lý Do (Dành cho Đơn đang ở trạng thái 'received')
+  // STATE MODAL BÀN GIAO & TRẢ MÁY
   const [returnModalRecord, setReturnModalRecord] = useState(null);
-  const [returnReason, setReturnReason] = useState('');
+  const [returnForm, setReturnForm] = useState({
+    returned_method: 'Trực tiếp tại cửa hàng',
+    returned_note: ''
+  });
   const [isSubmittingReturn, setIsSubmittingReturn] = useState(false);
 
   const [pagination, setPagination] = useState({
@@ -92,10 +120,10 @@ function ReceptionApp() {
     total_pages: 1
   });
 
-  const searchStateRef = useRef({ searchQuery, page: pagination.page });
+  const searchStateRef = useRef({ searchQuery, page: pagination.page, statusFilter });
   useEffect(() => {
-    searchStateRef.current = { searchQuery, page: pagination.page };
-  }, [searchQuery, pagination.page]);
+    searchStateRef.current = { searchQuery, page: pagination.page, statusFilter };
+  }, [searchQuery, pagination.page, statusFilter]);
 
   const showToast = (message, type = 'success') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -135,7 +163,7 @@ function ReceptionApp() {
       const res = await fetch(`${API_BASE}/search?${params}`);
       const data = await handleResponse(res);
       if (data.success) {
-        setRecords(data.data || []);
+        setRecords((data.data || []).slice(0, 20));
         if (data.pagination) setPagination(data.pagination);
       }
     } catch (err) {
@@ -154,87 +182,102 @@ function ReceptionApp() {
     return () => clearTimeout(timer);
   }, [searchQuery, handleSearch]);
 
+  const handleSearchRef = useRef(handleSearch);
   useEffect(() => {
-    let ws = null;
-    try {
-      ws = new WebSocket(WS_URL);
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'reception_new' || msg.type === 'reception_returned' || msg.type === 'base_sync') {
-            const { searchQuery, page } = searchStateRef.current;
-            handleSearch(searchQuery, page);
-          }
-        } catch (e) {}
-      };
-    } catch (err) {
-      console.warn("Lỗi kết nối WebSocket:", err);
-    }
-    return () => { if (ws) ws.close(); };
+    handleSearchRef.current = handleSearch;
   }, [handleSearch]);
 
-  // ===== BẮT ĐẦU QUY TRÌNH TRẢ MÁY =====
+  // 1. KẾT NỐI REALTIME LẮNG NGHE BẢNG REPAIRS
+  useEffect(() => {
+    const supabaseClient = getSupabaseClient();
+
+    if (!supabaseClient) {
+      console.warn("⚠️ Thiếu cấu hình hoặc thư viện Supabase!");
+      setIsRealtimeActive(false);
+      return;
+    }
+
+    const channel = supabaseClient
+      .channel('reception-realtime-v1')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'repairs' },
+        (payload) => {
+          console.log("⚡ [REALTIME TỨC THÌ] Nhận biến động:", payload);
+
+          if (payload.eventType === 'INSERT') {
+            showToast(`🔔 Có phiếu MỚI [${payload.new.code}] từ Base!`, 'success');
+          } else if (payload.eventType === 'UPDATE') {
+            showToast(`🔄 Phiếu [${payload.new.code}] vừa cập nhật trạng thái!`, 'info');
+          }
+
+          const { searchQuery, page } = searchStateRef.current;
+          if (handleSearchRef.current) {
+            handleSearchRef.current(searchQuery, page);
+          }
+        }
+      )
+      .subscribe((status) => {
+        console.log("📡 Trạng thái Supabase Realtime:", status);
+        if (status === 'SUBSCRIBED') {
+          setIsRealtimeActive(true);
+        } else {
+          setIsRealtimeActive(false);
+        }
+      });
+
+    return () => {
+      supabaseClient.removeChannel(channel);
+    };
+  }, []);
+
+  // 2. SMART POLLING DỰ PHÒNG (Chỉ kích hoạt khi Realtime bị ngắt)
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      if (isRealtimeActive || document.hidden) return;
+
+      console.warn("⚠️ Realtime bị gián đoạn, đang tải dữ liệu dự phòng...");
+      const { searchQuery, page } = searchStateRef.current;
+      if (handleSearchRef.current) {
+        handleSearchRef.current(searchQuery, page);
+      }
+    }, 30000);
+
+    return () => clearInterval(pollInterval);
+  }, [isRealtimeActive]);
+
+  // XỬ LÝ MỞ MODAL BÀN GIAO & TRẢ MÁY
   const handleReturnClick = (record) => {
     const status = (record.status || '').toLowerCase();
 
-    // Quy tắc 1: Nếu đang sửa chữa -> KHÔNG ĐƯỢC TRẢ MÁY
     if (status === 'processing' || status === 'repairing') {
       showToast("⚙ Thiết bị đang trong quá trình sửa chữa! KTV cần hoàn thành hoặc báo hủy sửa trước khi trả máy.", "error");
       return;
     }
 
-    // Quy tắc 2: Nếu đang ở trạng thái Tiếp nhận -> YÊU CẦU NHẬP LÝ DO TRẢ
-    if (status === 'received') {
-      setReturnModalRecord(record);
-      setReturnReason('Khách hàng đổi ý / Mang máy về');
+    setReturnModalRecord(record);
+    setReturnForm({
+      returned_method: 'Trực tiếp tại cửa hàng',
+      returned_note: status === 'received' ? 'Khách hàng đổi ý / Mang máy về' : ''
+    });
+  };
+
+  // NỘP FORM XÁC NHẬN BÀN GIAO & TRẢ MÁY (Gửi returned_method & returned_note)
+  const handleReturnSubmit = async (e) => {
+    e.preventDefault();
+    if (!returnModalRecord) return;
+
+    const cleanNote = returnForm.returned_note.trim();
+    const isReceivedStatus = (returnModalRecord.status || '').toLowerCase() === 'received';
+
+    // VALIDATION FORM BÀN GIAO
+    if (!returnForm.returned_method) {
+      showToast("Vui lòng chọn hình thức bàn giao!", "error");
       return;
     }
 
-    // Quy tắc 3: Nếu Đã sửa xong hoặc Sửa thất bại/Hủy -> Trả trực tiếp
-    executeDirectReturn(record);
-  };
-
-  // Thực thi trả máy trực tiếp
-  const executeDirectReturn = async (record, extraNote = '') => {
-    if (!window.confirm(`Xác nhận trả thiết bị [${record.code}] cho khách ${record.customer_name}?`)) return;
-
-    setUpdatingId(record.id);
-    try {
-      const payload = { status: 'returned' };
-      if (extraNote) {
-        payload.received_note = record.received_note ? `${record.received_note} | Lý do trả: ${extraNote}` : `Lý do trả: ${extraNote}`;
-      }
-
-      let res = await fetch(`${API_BASE}/${record.id}/return`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok && res.status === 404) {
-        res = await fetch(`${API_BASE}/${record.id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-      }
-
-      await handleResponse(res);
-      showToast(`✅ Đã xác nhận trả thiết bị [${record.code}] thành công!`, 'success');
-      handleSearch(searchQuery, pagination.page);
-    } catch (err) {
-      showToast(err.message || "Không thể cập nhật trạng thái trả máy", "error");
-    } finally {
-      setUpdatingId(null);
-    }
-  };
-
-  // Nộp form trả máy có lý do (Dành cho Đơn đang chờ)
-  const handleReturnWithReasonSubmit = async (e) => {
-    e.preventDefault();
-    if (!returnModalRecord) return;
-    if (!returnReason.trim()) {
-      showToast("Vui lòng nhập lý do trả máy!", "error");
+    if (isReceivedStatus && !cleanNote) {
+      showToast("Vui lòng nhập lý do trả máy đối với đơn chưa sửa!", "error");
       return;
     }
 
@@ -242,23 +285,30 @@ function ReceptionApp() {
     try {
       const payload = {
         status: 'returned',
-        received_note: returnModalRecord.received_note 
-          ? `${returnModalRecord.received_note} [Lý do trả: ${returnReason.trim()}]`
-          : `Lý do trả: ${returnReason.trim()}`
+        returned_method: returnForm.returned_method,
+        returned_note: cleanNote || undefined
       };
 
-      const res = await fetch(`${API_BASE}/${returnModalRecord.id}`, {
-        method: 'PUT',
+      let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
 
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`${API_BASE}/${returnModalRecord.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+      }
+
       await handleResponse(res);
-      showToast(`✅ Đã cập nhật lý do & xác nhận trả máy [${returnModalRecord.code}]!`, 'success');
+      showToast(`✅ Đã xác nhận trả thiết bị [${returnModalRecord.code}] thành công!`, 'success');
       setReturnModalRecord(null);
       handleSearch(searchQuery, pagination.page);
     } catch (err) {
-      showToast(err.message || "Không thể trả máy", "error");
+      showToast(err.message || "Không thể cập nhật trạng thái trả máy", "error");
     } finally {
       setIsSubmittingReturn(false);
     }
@@ -275,20 +325,34 @@ function ReceptionApp() {
     });
   };
 
+  // NỘP FORM SỬA PHIẾU TIẾP NHẬN
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     if (!editingRecord) return;
 
-    if (!editForm.customer_name.trim()) {
+    const cleanName = editForm.customer_name.trim();
+    const cleanPhone = editForm.phone.replace(/\D/g, "");
+
+    // VALIDATION FORM SỬA
+    if (!cleanName) {
       showToast("Tên khách hàng không được để trống!", "error");
+      return;
+    }
+    if (cleanName.length < 2) {
+      showToast("Tên khách hàng phải có ít nhất 2 ký tự!", "error");
+      return;
+    }
+
+    if (cleanPhone && !PHONE_REGEX.test(cleanPhone)) {
+      showToast("Số điện thoại không hợp lệ (ví dụ: 0912345678)!", "error");
       return;
     }
 
     setIsSaving(true);
     try {
       const payload = {
-        customer_name: editForm.customer_name.trim(),
-        phone: editForm.phone.trim(),
+        customer_name: cleanName,
+        phone: cleanPhone || undefined,
         address: editForm.address.trim() || undefined,
         note: editForm.note.trim() || undefined,
         received_note: editForm.received_note.trim() || undefined
@@ -393,14 +457,13 @@ function ReceptionApp() {
             </button>
           </div>
 
-          {/* BỘ LỌC TRẠNG THÁI */}
           <div className="flex items-center gap-2 pt-1 overflow-x-auto">
             {[
-              {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
               {val: 'received', label: 'Đang Chờ', icon: 'fa-clock'},
               {val: 'processing', label: 'Đang Sửa', icon: 'fa-gear'},
               {val: 'fixed', label: 'Đã Sửa Xong', icon: 'fa-square-check'},
               {val: 'returned', label: 'Đã Trả Khách', icon: 'fa-circle-check'},
+              {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
             ].map(f => (
               <button key={f.val} onClick={() => setStatusFilter(f.val)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap border transition-all ${
@@ -418,7 +481,6 @@ function ReceptionApp() {
           </div>
         </div>
 
-        {/* BẢN GHI PHIẾU TIẾP NHẬN */}
         {loading && records.length === 0 ? (
           <div className="text-center py-12 text-[var(--text-muted)]">
             <i className="fa-solid fa-spinner animate-spin text-2xl mb-2"></i>
@@ -462,12 +524,12 @@ function ReceptionApp() {
                         {r.address && <div><strong className="text-[var(--text-muted)]">Địa chỉ / Khu vực:</strong> <span className="text-sky-300 font-medium">{r.address}</span></div>}
                         {r.note && <div><strong className="text-[var(--text-muted)]">Yêu cầu / Lỗi:</strong> {r.note}</div>}
                         {r.received_note && <div><strong className="text-[var(--text-muted)]">Tình trạng nhận:</strong> <span className="text-amber-200/90">{r.received_note}</span></div>}
+                        {r.returned_method && <div><strong className="text-[var(--text-muted)]">Hình thức trả:</strong> <span className="text-emerald-300 font-medium">{r.returned_method}</span></div>}
+                        {r.returned_note && <div><strong className="text-[var(--text-muted)]">Ghi chú trả:</strong> <span className="text-emerald-200/90">{r.returned_note}</span></div>}
                       </div>
                     </div>
 
-                    {/* CÁC NÚT THAO TÁC ĐỒNG ĐỀU (GRID 3 CỘT) */}
                     <div className="grid grid-cols-3 gap-2 pt-3 border-t border-[var(--border-color)] mt-3">
-                      {/* 1. NÚT SỬA */}
                       <button onClick={() => openEditModal(r)}
                         className="h-9 w-full bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold text-xs rounded-lg border border-amber-500/30 flex items-center justify-center gap-1.5 transition-all"
                         title="Sửa thông tin phiếu">
@@ -475,7 +537,6 @@ function ReceptionApp() {
                         <span>Sửa</span>
                       </button>
 
-                      {/* 2. NÚT GỬI SMS */}
                       <button onClick={() => sendReceptionSms(r, hotlinePhone)}
                         className="h-9 w-full bg-sky-600/80 hover:bg-sky-500 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all"
                         title="Gửi SMS xác nhận cho khách">
@@ -483,7 +544,6 @@ function ReceptionApp() {
                         <span>Gửi SMS</span>
                       </button>
 
-                      {/* 3. NÚT XÁC NHẬN TRẢ MÁY */}
                       {isReturned ? (
                         <div className="h-9 w-full bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-400 text-[11px] font-bold flex items-center justify-center gap-1">
                           <i className="fa-solid fa-circle-check"></i>
@@ -504,13 +564,13 @@ function ReceptionApp() {
                               ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-400/30 animate-pulse'
                               : 'bg-amber-600 hover:bg-amber-500 text-white'
                           }`}
-                          title={isReceived ? "Trả máy & nhập lý do" : "Xác nhận trả máy cho khách"}>
+                          title={isReceived ? "Trả máy & nhập lý do" : "Xác nhận bàn giao & trả máy"}>
                           {updatingId === r.id ? (
                             <i className="fa-solid fa-spinner animate-spin"></i>
                           ) : (
                             <i className="fa-solid fa-box-check"></i>
                           )}
-                          <span>{isReceived ? 'Trả Máy' : 'Trả Máy'}</span>
+                          <span>Trả Máy</span>
                         </button>
                       )}
                     </div>
@@ -519,7 +579,6 @@ function ReceptionApp() {
               })}
             </div>
 
-            {/* PHÂN TRANG */}
             {pagination.total_pages > 1 && (
               <div className="card p-3.5 flex flex-col sm:flex-row justify-between items-center gap-3 mt-4">
                 <div className="text-xs text-[var(--text-muted)]">
@@ -544,41 +603,78 @@ function ReceptionApp() {
         )}
       </div>
 
-      {/* MODAL CẬP NHẬT LÝ DO TRẢ MÁY (DÀNH CHO ĐƠN Ở TRẠNG THÁI TIẾP NHẬN) */}
+      {/* MODAL XÁC NHẬN BÀN GIAO & TRẢ MÁY */}
       {returnModalRecord && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
-          <div className="card max-w-md w-full p-5 border border-amber-500/40 shadow-2xl bg-[#0e1424]">
+          <div className="card max-w-md w-full p-5 border border-emerald-500/40 shadow-2xl bg-[#0e1424]">
             <div className="flex justify-between items-center mb-3 pb-2 border-b border-[var(--border-color)]">
-              <h3 className="text-sm font-bold text-amber-400 flex items-center gap-2">
-                <i className="fa-solid fa-triangle-exclamation"></i> Xác Nhận Trả Máy [{returnModalRecord.code}]
+              <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2">
+                <i className="fa-solid fa-box-check"></i> Xác Nhận Bàn Giao & Trả Máy [{returnModalRecord.code}]
               </h3>
               <button onClick={() => setReturnModalRecord(null)} className="text-[var(--text-muted)] hover:text-white">
                 <i className="fa-solid fa-xmark text-lg"></i>
               </button>
             </div>
 
-            <p className="text-xs text-slate-300 mb-3">
-              Đơn này đang ở trạng thái <strong>Đang Chờ/Tiếp Nhận</strong>. Vui lòng nhập lý do trả máy cho khách <strong className="text-sky-300">{returnModalRecord.customer_name}</strong>:
-            </p>
+            <div className="space-y-1.5 text-xs bg-[#0a0f1d]/70 p-3 rounded-xl border border-[var(--border-color)] mb-4">
+              <div><strong className="text-[var(--text-muted)]">Khách hàng:</strong> <span className="text-white font-bold">{returnModalRecord.customer_name}</span> ({returnModalRecord.phone || '—'})</div>
+              <div className="flex items-center gap-2">
+                <strong className="text-[var(--text-muted)]">Trạng thái phiếu:</strong> 
+                {getStatusBadge(returnModalRecord.status)}
+              </div>
+            </div>
 
-            <form onSubmit={handleReturnWithReasonSubmit} className="space-y-3.5">
+            <form onSubmit={handleReturnSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1">
-                  Lý Do Trả Máy <span className="text-rose-400">*</span>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1.5">
+                  Hình Thức Bàn Giao <span className="text-rose-400">*</span>
                 </label>
-                <textarea rows="3"
-                  value={returnReason}
-                  onChange={(e) => setReturnReason(e.target.value)}
-                  placeholder="Ví dụ: Khách đổi ý không sửa, Báo giá cao khách mang về..."
-                  className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-amber-400 resize-none" required />
+                <select
+                  value={returnForm.returned_method}
+                  onChange={(e) => setReturnForm({...returnForm, returned_method: e.target.value})}
+                  className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm text-white outline-none focus:border-emerald-400 cursor-pointer"
+                  required
+                >
+                  <option value="Trực tiếp tại cửa hàng">🏪 Trực tiếp tại cửa hàng</option>
+                  <option value="Gửi Chành xe / Bưu điện">🚚 Gửi Chành xe / Bưu điện / CPN</option>
+                  <option value="Giao hàng tận nơi">🛵 GN của công ty đi giao</option>
+                  <option value="Book xe giao hàng">🛵 Shipper tới lấy</option>
+                  <option value="Khác">Khác</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1.5">
+                  Ghi Chú Bàn Giao / Lý Do {returnModalRecord.status === 'received' && <span className="text-rose-400">* (Bắt buộc)</span>}
+                </label>
+                <textarea
+                  rows="3"
+                  value={returnForm.returned_note}
+                  onChange={(e) => setReturnForm({...returnForm, returned_note: e.target.value})}
+                  placeholder="Ví dụ: Giao chành xe..., shipper lấy hàng, khách book,..."
+                  className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm text-white outline-none focus:border-emerald-400 resize-none"
+                  required={returnModalRecord.status === 'received'}
+                />
               </div>
 
               <div className="flex gap-2.5 pt-2 border-t border-[var(--border-color)]">
-                <button type="button" onClick={() => setReturnModalRecord(null)}
-                  className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold">Hủy Bỏ</button>
-                <button type="submit" disabled={isSubmittingReturn}
-                  className="flex-1 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-md">
-                  {isSubmittingReturn ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-box-check"></i>}
+                <button
+                  type="button"
+                  onClick={() => setReturnModalRecord(null)}
+                  className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-300"
+                >
+                  Hủy Bỏ
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingReturn}
+                  className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-md transition-all"
+                >
+                  {isSubmittingReturn ? (
+                    <i className="fa-solid fa-spinner animate-spin"></i>
+                  ) : (
+                    <i className="fa-solid fa-circle-check"></i>
+                  )}
                   Xác Nhận Trả Máy
                 </button>
               </div>
@@ -609,6 +705,7 @@ function ReceptionApp() {
                   <input type="text"
                     value={editForm.customer_name}
                     onChange={(e) => setEditForm({...editForm, customer_name: e.target.value})}
+                    placeholder="Nhập tên khách hàng..."
                     className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)]" required />
                 </div>
 
@@ -617,6 +714,7 @@ function ReceptionApp() {
                   <input type="text"
                     value={editForm.phone}
                     onChange={(e) => setEditForm({...editForm, phone: e.target.value})}
+                    placeholder="VD: 0912345678"
                     className="w-full p-2.5 bg-[#0a0f1d]/80 border border-[var(--border-color)] rounded-lg text-sm outline-none focus:border-[var(--primary-light)] font-monospace" />
                 </div>
               </div>

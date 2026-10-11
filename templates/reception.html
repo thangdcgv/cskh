@@ -231,7 +231,7 @@ function ReceptionApp() {
     };
   }, []);
 
-  // 2. SMART POLLING DỰ PHÒNG (Chỉ kích hoạt khi Realtime bị ngắt)
+  // 2. SMART POLLING DỰ PHÒNG
   useEffect(() => {
     const pollInterval = setInterval(() => {
       if (isRealtimeActive || document.hidden) return;
@@ -267,8 +267,9 @@ function ReceptionApp() {
     e.preventDefault();
     if (!returnModalRecord) return;
 
-    const cleanNote = returnForm.returned_note.trim();
-    const isReceivedStatus = (returnModalRecord.status || '').toLowerCase() === 'received';
+    const rawNote = returnForm.returned_note.trim();
+    const currentStatus = (returnModalRecord.status || '').toLowerCase();
+    const isFixedStatus = currentStatus === 'fixed';
 
     // VALIDATION FORM BÀN GIAO
     if (!returnForm.returned_method) {
@@ -276,9 +277,18 @@ function ReceptionApp() {
       return;
     }
 
-    if (isReceivedStatus && !cleanNote) {
-      showToast("Vui lòng nhập lý do trả máy đối với đơn chưa sửa!", "error");
+    if (!isFixedStatus && !rawNote) {
+      showToast("Vui lòng nhập lý do/ghi chú trả máy đối với đơn chưa sửa!", "error");
       return;
+    }
+
+    // TỰ ĐỘNG GẮN TIỀN TỐ NẾU TRẢ MÁY CHƯA SỬA ĐỂ TRACKING NHẬN DIỆN CHÍNH XÁC 100%
+    let finalReturnedNote = rawNote;
+    if (!isFixedStatus) {
+      const lowerNote = rawNote.toLowerCase();
+      if (!lowerNote.includes('nguyên trạng') && !lowerNote.includes('chưa sửa') && !lowerNote.includes('hủy')) {
+        finalReturnedNote = rawNote ? `[Trả nguyên trạng / Chưa sửa] ${rawNote}` : '[Trả nguyên trạng / Chưa sửa]';
+      }
     }
 
     setIsSubmittingReturn(true);
@@ -286,7 +296,8 @@ function ReceptionApp() {
       const payload = {
         status: 'returned',
         returned_method: returnForm.returned_method,
-        returned_note: cleanNote || undefined
+        returned_note: finalReturnedNote || undefined,
+        is_fixed: isFixedStatus // Đồng bộ cờ sửa xong với Backend
       };
 
       let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
@@ -645,7 +656,7 @@ function ReceptionApp() {
 
               <div>
                 <label className="block text-xs font-bold uppercase text-[var(--text-sub)] mb-1.5">
-                  Ghi Chú Bàn Giao / Lý Do {returnModalRecord.status === 'received' && <span className="text-rose-400">* (Bắt buộc)</span>}
+                  Ghi Chú Bàn Giao / Lý Do {returnModalRecord.status !== 'fixed' && <span className="text-rose-400">* (Bắt buộc)</span>}
                 </label>
                 <textarea
                   rows="3"
@@ -653,7 +664,7 @@ function ReceptionApp() {
                   onChange={(e) => setReturnForm({...returnForm, returned_note: e.target.value})}
                   placeholder="Ví dụ: Giao chành xe..., shipper lấy hàng, khách book,..."
                   className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm text-white outline-none focus:border-emerald-400 resize-none"
-                  required={returnModalRecord.status === 'received'}
+                  required={returnModalRecord.status !== 'fixed'}
                 />
               </div>
 

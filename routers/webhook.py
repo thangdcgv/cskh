@@ -113,34 +113,34 @@ def _validate_status(raw_status: str, status_map: dict, metatype: str = "", stat
     """Chuẩn hóa & ánh xạ trạng thái chính xác theo thứ tự ưu tiên"""
     normalized = raw_status.strip().lower()
     
-    # 1. Khớp chính xác theo Bảng ánh xạ trong DB / Dictionary
+    # 1. Ưu tiên 1: Khớp chính xác theo Bảng ánh xạ trong DB / Dictionary
     if normalized in status_map:
         mapped = status_map[normalized]
         return "processing" if mapped == "repairing" else mapped
 
-    # 2. Khớp cờ hoàn thành / hủy từ Base
+    # 2. Ưu tiên 2: Khớp cờ hoàn thành / hủy từ Base
     if metatype == "done" or state == "done":
         return "fixed"
     if metatype in {"failed", "cancelled"} or state in {"failed", "cancelled"}:
         return "cancelled"
 
-    # 3. Bắt từ khóa TIẾP NHẬN
+    # 3. Ưu tiên 3: Bắt từ khóa TIẾP NHẬN
     if any(kw in normalized for kw in ["thông tin đơn", "tiếp nhận", "nhận máy", "tạo mới", "mới", "reception", "received"]):
         return "received"
 
-    # 4. Bắt từ khóa HOÀN THÀNH
+    # 4. Ưu tiên 4: Bắt từ khóa HOÀN THÀNH
     if any(kw in normalized for kw in ["hoàn thành", "sửa xong", "xong", "đã sửa", "done", "finished", "hoàn tất"]):
         return "fixed"
 
-    # 5. Bắt từ khóa ĐANG SỬA CHỮA
+    # 5. Ưu tiên 5: Bắt từ khóa ĐANG SỬA CHỮA
     if any(kw in normalized for kw in ["tiến hành", "sửa chữa", "đang sửa", "xử lý", "processing"]):
         return "processing"
 
-    # 6. Bắt từ khóa TRẢ MÁY
+    # 6. Ưu tiên 6: Bắt từ khóa TRẢ MÁY
     if any(kw in normalized for kw in ["trả máy", "trả", "bàn giao", "returned"]):
         return "returned"
 
-    # 7. Bắt từ khóa HỦY
+    # 7. Ưu tiên 7: Bắt từ khóa HỦY
     if any(kw in normalized for kw in ["hủy", "cancel", "failed"]):
         return "cancelled"
 
@@ -162,9 +162,6 @@ async def receive_base_webhook(request: Request):
                     payload["custom_fields"] = json.loads(payload["custom_fields"])
                 except Exception:
                     pass
-
-        # IN RAW PAYLOAD RA TERMINAL ĐỂ BẠN SOI TRỰC TIẾP
-        logger.info(f"🔥 [BASE WEBHOOK PAYLOAD]: {json.dumps(payload, ensure_ascii=False)}")
 
         # 2. Xác thực Secret Token
         configured_secret = await get_system_secret()
@@ -204,7 +201,7 @@ async def receive_base_webhook(request: Request):
         else:
             stage_name = payload.get("stage_name") or str(stage_obj or "Tiếp nhận")
 
-        # TRÍCH XUẤT LÝ DO THẤT BẠI & GHI CHÚ THẤT BẠI TỪ BASE POPUP
+        # 4. BÓC TÁCH CHÍNH XÁC THAM SỐ THẤT BẠI TỪ BASE POPUP
         job_data = payload.get("job") if isinstance(payload.get("job"), dict) else {}
         
         base_failed_reason = (
@@ -215,6 +212,11 @@ async def receive_base_webhook(request: Request):
             or job_data.get("fail_reason")
             or ""
         )
+        if base_failed_reason and str(base_failed_reason).strip().lower() != "no value":
+            base_failed_reason = str(base_failed_reason).strip()
+        else:
+            base_failed_reason = ""
+
         base_failed_note = (
             payload.get("failed_note")
             or payload.get("fail_note")
@@ -223,6 +225,10 @@ async def receive_base_webhook(request: Request):
             or job_data.get("fail_note")
             or ""
         )
+        if base_failed_note and str(base_failed_note).strip().lower() != "no value":
+            base_failed_note = str(base_failed_note).strip()
+        else:
+            base_failed_note = ""
 
         # Trích xuất ghi chú chung
         raw_custom_note = (
@@ -243,11 +249,15 @@ async def receive_base_webhook(request: Request):
         else:
             custom_tinh_trang = str(custom_tinh_trang).strip()
 
-        # 4. Ánh xạ trạng thái chính xác
+        # 5. Ánh xạ trạng thái chính xác
         status_map = await get_dynamic_status_map()
         mapped_status = _validate_status(stage_name, status_map, metatype=metatype, state=state)
 
-        # 5. Phân tích thông tin khách hàng
+        # NẾU CÓ THAM SỐ THẤT BẠI TỪ BASE -> ÉP TRẠNG THÁI VỀ CANCELLED
+        if base_failed_reason or base_failed_note:
+            mapped_status = "cancelled"
+
+        # 6. Phân tích thông tin khách hàng từ Task Name & Base Note
         parsed_info = parse_task_name(task_name, base_note)
         customer_name = parsed_info.get("customer_name", "Khách lẻ").strip() or "Khách lẻ"
         phone = parsed_info.get("phone", "").strip()
@@ -255,7 +265,7 @@ async def receive_base_webhook(request: Request):
         note = parsed_info.get("note", "Chưa có yêu cầu").strip() or "Chưa có yêu cầu"
         received_note = parsed_info.get("received_note", "").strip()
 
-        # 6. Kiểm tra sự tồn tại của phiếu trong DB
+        # 7. Kiểm tra sự tồn tại của phiếu trong DB
         existing_res = await asyncio.to_thread(
             lambda: supabase.table("repairs")
             .select("id, code, status, note, received_note")
@@ -274,21 +284,21 @@ async def receive_base_webhook(request: Request):
         if mapped_status == "returned":
             update_payload["returned_date"] = now_iso
 
-        # NẾU TRẠNG THÁI LÀ THẤT BẠI / HỦY (CANCELLED)
-        if mapped_status == "cancelled" or metatype in {"failed", "cancelled"} or state in {"failed", "cancelled"}:
+        # 8. XỬ LÝ DỮ LIỆU ĐỒNG BỘ KHI THẤT BẠI / HỦY SỬA
+        if mapped_status == "cancelled" or base_failed_reason or base_failed_note:
             update_payload["is_fixed"] = False
             update_payload["repair_result"] = "failed"
             
-            cancel_info_parts = []
+            cancel_parts = []
             if base_failed_reason:
-                cancel_info_parts.append(f"Lý do: {base_failed_reason}")
+                cancel_parts.append(f"Lý do: {base_failed_reason}")
             if base_failed_note:
-                cancel_info_parts.append(f"Ghi chú: {base_failed_note}")
+                cancel_parts.append(f"Ghi chú: {base_failed_note}")
                 
-            cancel_str = " | ".join(cancel_info_parts) if cancel_info_parts else "KTV báo sửa thất bại / Hủy sửa"
+            cancel_str = " - ".join(cancel_parts) if cancel_parts else "KTV báo sửa không thành công / Hủy sửa"
             update_payload["failure_reason"] = cancel_str
 
-            # Nối vào received_note để tracking.html và reception.html luôn đọc được
+            # Nối vào received_note để các trang giao diện đọc hiển thị đồng nhất
             curr_received = (existing.get("received_note") or "").strip() if existing else received_note
             if cancel_str not in curr_received:
                 update_payload["received_note"] = f"{curr_received} [{cancel_str}]" if curr_received else f"[{cancel_str}]"
@@ -320,7 +330,7 @@ async def receive_base_webhook(request: Request):
                 .execute()
             )
             ticket_code = existing["code"]
-            logger.info(f"Webhook: Cập nhật phiếu {ticket_code} — Trạng thái mới: {mapped_status} (Giai đoạn Base: '{stage_name}')")
+            logger.info(f"Webhook: Cập nhật phiếu {ticket_code} — Trạng thái: {mapped_status} (Lý do thất bại: '{base_failed_reason}')")
 
         else:
             # --- TẠO PHIẾU MỚI ---
@@ -378,7 +388,7 @@ async def receive_base_webhook(request: Request):
                 else:
                     raise
 
-        # 7. Phát thông báo Realtime
+        # 9. Phát thông báo Realtime tới Client qua WebSocket
         try:
             await manager.broadcast({
                 "type": "base_sync",

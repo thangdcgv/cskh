@@ -9,10 +9,21 @@
 
 <title>{% block title %}Center Hub - Máy In Đại Thành{% endblock %}</title>
 
-<!-- PWA Manifest -->
-<link rel="manifest" href="/static/manifest.json" crossorigin="use-credentials">
-<meta name="theme-color" content="#0d1117">
 
+{% block head %}
+<!-- 1. Favicon hiển thị trên Tab Trình duyệt (Laptop/Điện thoại) -->
+<link rel="icon" type="image/png" href="/static/icons/favicon.png">
+<link rel="shortcut icon" href="/static/icons/favicon.png">
+
+<!-- 2. Logo khi Thêm vào màn hình chính trên iOS / iPhone / Safari -->
+<link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-192.png">
+
+<!-- 3. Cấu hình Manifest cho Android / Chrome / Cốc Cốc / Windows PWA -->
+<link rel="manifest" href="/static/manifest.json">
+<meta name="theme-color" content="#0a0f1d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+{% endblock %}
 <!-- Google Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>

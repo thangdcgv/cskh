@@ -143,7 +143,9 @@ async def login_page(request: Request):
     user = request.session.get("user_id")
     if user:
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse("login.html", {"request": request})
+    
+    # Sửa cú pháp TemplateResponse dùng kwargs rõ ràng
+    return templates.TemplateResponse(request=request, name="login.html")
 
 
 @router.post("/login")
@@ -237,7 +239,6 @@ async def login(
             {"error": "Tài khoản hoặc mật khẩu không chính xác."},
             status_code=401
         )
-
 
 # =========================================================
 # 2. ĐĂNG XUẤT

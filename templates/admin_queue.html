@@ -26,8 +26,8 @@
 <script>
   const SERVER_CURRENT_USER = JSON.parse(document.getElementById('user-data').textContent || '{}');
   window.SUPABASE_URL = "{{ supabase_url or '' }}";
-  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or '' }}";
-  window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
+  window.SUPABASE_KEY = "{{ supabase_key or '' }}"; // ✅ Đã khớp với tên biến trong API
+  window.SUPABASE_ANON_KEY = window.SUPABASE_KEY;
 </script>
 
 {% raw %}
@@ -110,7 +110,6 @@ const playTransferSound = (enabled, department) => {
   };
 
   const targetDeptSound = deptSoundMap[department];
-
   const audio1 = new Audio("/static/sounds/chuyen_phong.mp3");
   audio1.volume = 1.0;
   
@@ -138,7 +137,6 @@ function App() {
   const user = SERVER_CURRENT_USER;
   const [loading, setLoading] = useState(true);
 
-  // MẶC ĐỊNH BẬT ÂM THANH NẾU CHƯA CÓ LƯU TRONG LOCALSTORAGE
   const [audioOn, setAudioOn] = useState(() => {
     const saved = localStorage.getItem("audioOn");
     return saved === null ? true : saved === "true";
@@ -153,17 +151,27 @@ function App() {
   
   const [isRealtimeActive, setIsRealtimeActive] = useState(false);
 
-  
+  const canSeeAll = user && (user.role === "super admin" || user.role === "admin" || user.role === "system admin");
+  const canTransfer = canSeeAll;
+  const effectiveDept = canSeeAll ? deptFilter : (user.department || "KTSC");
+
+  // REFS ĐỂ TRÁNH STALE CLOSURE TRONG SUPABASE REALTIME LISTENERS
   const audioOnRef = useRef(audioOn);
+  const effectiveDeptRef = useRef(effectiveDept);
+  const ticketsRef = useRef(tickets);
 
   useEffect(() => {
     audioOnRef.current = audioOn;
     localStorage.setItem("audioOn", audioOn);
   }, [audioOn]);
 
-  const canSeeAll = user && (user.role === "super admin" || user.role === "admin" || user.role === "system admin");
-  const canTransfer = canSeeAll;
-  const effectiveDept = canSeeAll ? deptFilter : (user.department || "KTSC");
+  useEffect(() => {
+    effectiveDeptRef.current = effectiveDept;
+  }, [effectiveDept]);
+
+  useEffect(() => {
+    ticketsRef.current = tickets;
+  }, [tickets]);
 
   // TẢI DANH SÁCH VÉ
   const loadTickets = useCallback(async () => {
@@ -197,7 +205,6 @@ function App() {
   // UNLOCK AUTOPLAY AUDIO KHI NGƯỜI DÙNG TƯƠNG TÁC
   useEffect(() => {
     const unlockAudio = () => {
-      // Phát 1 âm thanh beep nhẹ để unlock AudioContext của trình duyệt
       playBeepFallback();
       window.removeEventListener("click", unlockAudio);
       window.removeEventListener("touchstart", unlockAudio);
@@ -232,24 +239,37 @@ function App() {
           const { eventType, new: newRow, old: oldRow } = payload;
           console.log("⚡ [REALTIME EVENT]:", eventType, payload);
 
-          // TH1: Có vé bốc số mới
+          const curDept = effectiveDeptRef.current;
+
+          // TRƯỜNG HỢP 1: Có vé bốc số mới
           if (eventType === 'INSERT') {
-            playNewSound(audioOnRef.current);
+            // Chỉ phát chuông nếu vé mới thuộc phòng mình xem (hoặc xem tất cả)
+            if (curDept === 'ALL' || newRow.department === curDept) {
+              playNewSound(audioOnRef.current);
+            }
             if (loadTicketsRef.current) loadTicketsRef.current();
           } 
           
-          // TH2: Cập nhật thông tin / Trạng thái / Chuyển phòng
+          // TRƯỜNG HỢP 2: Cập nhật thông tin / Trạng thái / Chuyển phòng
           else if (eventType === 'UPDATE') {
-            const isTransferred = oldRow && newRow && oldRow.department && (oldRow.department !== newRow.department);
+            // Tìm thông tin vé cũ từ State hiện tại
+            const existingTicket = ticketsRef.current.find(t => t.id === newRow.id);
+            const oldDept = oldRow?.department || existingTicket?.department;
+
+            // Kiểm tra xem vé có thực sự bị đổi phòng ban không
+            const isTransferred = oldDept && newRow.department && (oldDept !== newRow.department);
 
             if (isTransferred) {
-              playTransferSound(audioOnRef.current, newRow.department);
+              // Chỉ phát âm thanh chuyển phòng nếu vé được chuyển tới phòng ban hiện tại
+              if (curDept === 'ALL' || newRow.department === curDept) {
+                playTransferSound(audioOnRef.current, newRow.department);
+              }
             }
 
             if (loadTicketsRef.current) loadTicketsRef.current();
           } 
 
-          // TH3: Xóa vé hoặc các thao tác khác
+          // TRƯỜNG HỢP 3: Xóa vé hoặc các thao tác khác
           else {
             if (loadTicketsRef.current) loadTicketsRef.current();
           }
@@ -260,7 +280,7 @@ function App() {
         console.log("📡 Trạng thái Supabase Realtime (admin_queue):", status);
 
         if (status === 'SUBSCRIBED') {
-          setIsRealtimeActive(true); // Chỉ giữ 1 state này
+          setIsRealtimeActive(true);
           if (loadTicketsRef.current) loadTicketsRef.current();
         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
           setIsRealtimeActive(false);
@@ -344,7 +364,6 @@ function App() {
     const nextState = !audioOn;
     setAudioOn(nextState);
     if (nextState) {
-      // Thử phát thử 1 tiếng beep kiểm tra loa
       playBeepFallback();
       showToast("🔊 Đã BẬT chuông thông báo!", "success");
     } else {

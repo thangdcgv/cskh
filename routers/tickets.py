@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 import asyncio
 from datetime import datetime, timezone
@@ -213,7 +214,10 @@ async def admin_queue_page(
     return templates.TemplateResponse(
         request=request,
         name="admin_queue.html",
-        context={"request": request, "current_user": current_user}
+        context={"request": request, "current_user": current_user,
+                 "supabase_url": os.getenv("SUPABASE_URL", ""),
+                 "supabase_key": os.getenv("SUPABASE_KEY", "") or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")},
+        
     )
 
 

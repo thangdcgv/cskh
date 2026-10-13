@@ -34,15 +34,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/api/reception", tags=["Reception"])
 
 
-# ==================== ENUM & SCHEMAS ====================
-class RepairStatus(str, Enum):
-    RECEIVED = "received"
-    PROCESSING = "processing"
-    FIXED = "fixed"
-    RETURNED = "returned"
-    CANCELLED = "cancelled"
-
-
+# ==================== SCHEMAS ====================
 class ReceiveItemRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
@@ -62,16 +54,17 @@ class UpdateItemRequest(BaseModel):
     address: Optional[str] = Field(None, max_length=500)
     note: Optional[str] = Field(None, max_length=1000)
     received_note: Optional[str] = Field(None, max_length=1000)
-    status: Optional[RepairStatus] = Field(None, description="Trạng thái đơn")
+    status: Optional[str] = Field(None, description="Trạng thái đơn")
 
 
 class ReturnItemRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     status: Optional[str] = Field(None, description="Trạng thái trả")
-    received_note: Optional[str] = Field(None, max_length=1000, description="Lý do trả máy / ghi chú")
+    received_note: Optional[str] = Field(None, max_length=1000)
     returned_note: Optional[str] = Field(None, max_length=1000)
     returned_method: Optional[str] = Field(None, max_length=100)
+    is_fixed: Optional[bool] = Field(None, description="Đã sửa xong hay trả nguyên trạng")
 
 
 # ==================== HELPERS ====================
@@ -186,7 +179,6 @@ async def create_reception_record(
     record = None
     final_code = None
 
-    # Retry chống trùng mã
     for attempt in range(MAX_CODE_RETRY):
         prefix, next_num = await get_next_code()
         next_num += attempt
@@ -200,7 +192,8 @@ async def create_reception_record(
             "note": data.note or "Chưa có yêu cầu",
             "received_note": data.received_note,
             "base_job_id": data.base_job_id,
-            "status": RepairStatus.RECEIVED.value,
+            "status": "received",
+            "current_process": "repair",
             "updated_at": now_utc,
         }
 
@@ -242,25 +235,43 @@ async def create_reception_record(
     }
 
 
-# ==================== 2. TRA CỨU (Phân trang + Lọc) ====================
+# ==================== 2. TRA CỨU & LỌC CHUẨN XÁC ĐA QUY TRÌNH ====================
 @router.get("/search")
 async def search_reception_records(
     query_str: Optional[str] = Query(None, description="SĐT / Tên / Mã phiếu"),
-    status: Optional[RepairStatus] = Query(None, description="Lọc theo trạng thái"),
+    status: Optional[str] = Query("all", description="Lọc theo trạng thái hoặc quy trình"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
-    user: dict = Depends(get_current_user),
 ):
     q = (query_str or "").strip()
     db_query = supabase.table(TABLE).select("*", count="exact")
 
+    # 1. Tìm kiếm theo chuỗi từ khóa
     if q:
         q_esc = escape_postgrest(q)
         db_query = db_query.or_(
             f"phone.ilike.%{q_esc}%,customer_name.ilike.%{q_esc}%,code.ilike.%{q_esc}%"
         )
-    if status:
-        db_query = db_query.eq("status", status.value)
+
+    # 2. Lọc theo trạng thái & quy trình đồng bộ chuẩn xác với Frontend
+    if status and status.strip().lower() != "all":
+        st = status.strip().lower()
+        if st == "received":
+            db_query = db_query.eq("status", "received").or_("current_process.eq.repair,current_process.is.null")
+        elif st in ("processing", "repairing"):
+            db_query = db_query.in_("status", ["processing", "repairing"]).or_("current_process.eq.repair,current_process.is.null")
+        elif st == "storage":
+            db_query = db_query.eq("current_process", "storage").neq("storage_status", "dispatched")
+        elif st == "delivery":
+            db_query = db_query.eq("current_process", "delivery").neq("delivery_status", "delivered")
+        elif st == "fixed":
+            db_query = db_query.eq("status", "fixed").or_("current_process.eq.repair,current_process.is.null")
+        elif st == "returned":
+            db_query = db_query.or_("status.eq.returned,storage_status.eq.dispatched,delivery_status.eq.delivered")
+        elif st == "cancelled":
+            db_query = db_query.eq("status", "cancelled")
+        else:
+            db_query = db_query.eq("status", st)
 
     start = (page - 1) * limit
     end = start + limit - 1
@@ -338,8 +349,9 @@ async def update_reception_record(
     if data.received_note is not None:
         update_payload["received_note"] = data.received_note
     if data.status is not None:
-        update_payload["status"] = data.status.value
-        if data.status == RepairStatus.RETURNED:
+        st_val = str(data.status).strip().lower()
+        update_payload["status"] = st_val
+        if st_val == "returned":
             update_payload["returned_date"] = now_utc
 
     try:
@@ -389,21 +401,29 @@ async def return_item_to_customer(
 
     record = existing.data[0]
     current_status = str(record.get("status") or "").lower()
+    current_process = str(record.get("current_process") or "repair").lower()
 
-    # Ràng buộc 1: Nếu đang sửa chữa -> KHÔNG ĐƯỢC TRẢ MÁY
-    if current_status in ("processing", "repairing"):
+    # Ràng buộc 1: Nếu thuộc Quy trình Giao Nhận -> KHÔNG ĐƯỢC TRẢ MÁY TẠI QUẦY
+    if current_process == "delivery":
+        raise HTTPException(
+            status_code=400,
+            detail="Đơn hàng đang thuộc Quy trình Giao nhận! Việc bàn giao do Shipper/Bên Giao nhận thực hiện."
+        )
+
+    # Ràng buộc 2: Nếu đang sửa chữa -> KHÔNG ĐƯỢC TRẢ MÁY
+    if current_process == "repair" and current_status in ("processing", "repairing"):
         raise HTTPException(
             status_code=400,
             detail="Thiết bị đang trong quá trình sửa chữa! KTV cần hoàn thành hoặc báo hủy sửa trước khi trả máy."
         )
 
-    # Ràng buộc 2: Đã trả rồi -> Báo lỗi
-    if current_status == RepairStatus.RETURNED.value:
+    # Ràng buộc 3: Đã trả rồi -> Báo lỗi
+    if current_status == "returned":
         raise HTTPException(status_code=400, detail="Phiếu này đã được xác nhận trả trước đó.")
 
     now_utc = datetime.now(timezone.utc).isoformat()
     payload = {
-        "status": RepairStatus.RETURNED.value,
+        "status": "returned",
         "returned_date": now_utc,
         "updated_at": now_utc,
     }
@@ -415,6 +435,8 @@ async def return_item_to_customer(
             payload["returned_method"] = data.returned_method
         if data.received_note:
             payload["received_note"] = data.received_note
+        if data.is_fixed is not None:
+            payload["is_fixed"] = data.is_fixed
 
     try:
         res = await asyncio.to_thread(

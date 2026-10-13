@@ -1,11 +1,12 @@
 {% extends "base.html" %}
-{% block title %}Lễ Tân Tiếp Nhận Thiết Bị | Center Hub{% endblock %}
+{% block title %}Lễ Tân Tiếp Nhận & Quản Lý Đơn | Center Hub{% endblock %}
+
 {% block head %}
 {{ super() }}
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<!-- 1. CDN SUPABASE JS -->
+<!-- CDN SUPABASE JS -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 {% endblock %}
 
@@ -15,7 +16,6 @@
 
 {% block scripts %}
 {{ super() }}
-<!-- 2. CẤU HÌNH BIẾN SUPABASE -->
 <script>
   window.SUPABASE_URL = "{{ supabase_url or '' }}";
   window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or '' }}";
@@ -28,7 +28,7 @@ const { useState, useEffect, useRef, useCallback, useMemo } = React;
 const API_BASE = "/api/reception";
 const PHONE_REGEX = /^0[35789]\d{8}$/;
 
-// Singleton khởi tạo Supabase Client duy nhất
+// Singleton khởi tạo Supabase Client
 const getSupabaseClient = () => {
   if (window._supabaseInstance) return window._supabaseInstance;
   const url = window.SUPABASE_URL || '';
@@ -85,16 +85,14 @@ function ReceptionApp() {
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
 
-  // STATE THEO DÕI KẾT NỐI REALTIME
   const [isRealtimeActive, setIsRealtimeActive] = useState(false);
-
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('received');
+  const [statusFilter, setStatusFilter] = useState('all');
   const [records, setRecords] = useState([]);
   const [hotlinePhone, setHotlinePhone] = useState('');
   const [updatingId, setUpdatingId] = useState(null);
 
-  // STATE MODAL SỬA PHIẾU
+  // MODAL SỬA PHIẾU
   const [editingRecord, setEditingRecord] = useState(null);
   const [editForm, setEditForm] = useState({
     customer_name: '',
@@ -105,7 +103,7 @@ function ReceptionApp() {
   });
   const [isSaving, setIsSaving] = useState(false);
 
-  // STATE MODAL BÀN GIAO & TRẢ MÁY
+  // MODAL BÀN GIAO & TRẢ MÁY
   const [returnModalRecord, setReturnModalRecord] = useState(null);
   const [returnForm, setReturnForm] = useState({
     returned_method: 'Trực tiếp tại cửa hàng',
@@ -187,28 +185,24 @@ function ReceptionApp() {
     handleSearchRef.current = handleSearch;
   }, [handleSearch]);
 
-  // 1. KẾT NỐI REALTIME LẮNG NGHE BẢNG REPAIRS
+  // REALTIME SUPABASE
   useEffect(() => {
     const supabaseClient = getSupabaseClient();
-
     if (!supabaseClient) {
-      console.warn("⚠️ Thiếu cấu hình hoặc thư viện Supabase!");
       setIsRealtimeActive(false);
       return;
     }
 
     const channel = supabaseClient
-      .channel('reception-realtime-v1')
+      .channel('reception-realtime-v3')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'repairs' },
         (payload) => {
-          console.log("⚡ [REALTIME TỨC THÌ] Nhận biến động:", payload);
-
           if (payload.eventType === 'INSERT') {
             showToast(`🔔 Có phiếu MỚI [${payload.new.code}] từ Base!`, 'success');
           } else if (payload.eventType === 'UPDATE') {
-            showToast(`🔄 Phiếu [${payload.new.code}] vừa cập nhật trạng thái!`, 'info');
+            showToast(`🔄 Phiếu [${payload.new.code}] vừa cập nhật!`, 'info');
           }
 
           const { searchQuery, page } = searchStateRef.current;
@@ -218,12 +212,7 @@ function ReceptionApp() {
         }
       )
       .subscribe((status) => {
-        console.log("📡 Trạng thái Supabase Realtime:", status);
-        if (status === 'SUBSCRIBED') {
-          setIsRealtimeActive(true);
-        } else {
-          setIsRealtimeActive(false);
-        }
+        setIsRealtimeActive(status === 'SUBSCRIBED');
       });
 
     return () => {
@@ -231,38 +220,44 @@ function ReceptionApp() {
     };
   }, []);
 
-  // 2. SMART POLLING DỰ PHÒNG
+  // SMART POLLING DỰ PHÒNG
   useEffect(() => {
     const pollInterval = setInterval(() => {
       if (isRealtimeActive || document.hidden) return;
-
-      console.warn("⚠️ Realtime bị gián đoạn, đang tải dữ liệu dự phòng...");
       const { searchQuery, page } = searchStateRef.current;
       if (handleSearchRef.current) {
         handleSearchRef.current(searchQuery, page);
       }
     }, 30000);
-
     return () => clearInterval(pollInterval);
   }, [isRealtimeActive]);
 
-  // XỬ LÝ MỞ MODAL BÀN GIAO & TRẢ MÁY
+  // BÀN GIAO & TRẢ MÁY THỦ CÔNG TẠI QUẦY
   const handleReturnClick = (record) => {
     const status = (record.status || '').toLowerCase();
+    const currentProcess = (record.current_process || 'repair').toLowerCase();
 
-    if (status === 'processing' || status === 'repairing') {
+    // RÀNG BUỘC 1: ĐƠN ĐANG Thuộc QUY TRÌNH GIAO NHẬN
+    if (currentProcess === 'delivery') {
+      showToast("🚚 Đơn hàng đang thuộc Quy trình Giao nhận! Không thể trả máy tại quầy lễ tân.", "error");
+      return;
+    }
+
+    // RÀNG BUỘC 2: ĐƠN ĐANG TRONG TIẾN TRÌNH SỬA CHỮA
+    if (currentProcess === 'repair' && (status === 'processing' || status === 'repairing')) {
       showToast("⚙ Thiết bị đang trong quá trình sửa chữa! KTV cần hoàn thành hoặc báo hủy sửa trước khi trả máy.", "error");
       return;
     }
 
-    // Tự động gợi ý lý do nếu phiếu bị KTV báo thất bại từ Base
     let initialNote = '';
     if (record.failure_reason) {
       initialNote = record.failure_reason;
     } else if (status === 'cancelled') {
       initialNote = 'KTV báo sửa không thành công / Hủy sửa';
     } else if (status === 'received') {
-      initialNote = 'Khách hàng đổi ý / Mang máy về';
+      initialNote = 'Khách lấy lại máy nguyên trạng';
+    } else if (currentProcess === 'storage') {
+      initialNote = 'Xuất kho hoàn trả thiết bị cho khách';
     }
 
     setReturnModalRecord(record);
@@ -272,7 +267,6 @@ function ReceptionApp() {
     });
   };
 
-  // NỘP FORM XÁC NHẬN BÀN GIAO & TRẢ MÁY
   const handleReturnSubmit = async (e) => {
     e.preventDefault();
     if (!returnModalRecord) return;
@@ -281,7 +275,6 @@ function ReceptionApp() {
     const currentStatus = (returnModalRecord.status || '').toLowerCase();
     const isFixedStatus = currentStatus === 'fixed';
 
-    // VALIDATION FORM BÀN GIAO
     if (!returnForm.returned_method) {
       showToast("Vui lòng chọn hình thức bàn giao!", "error");
       return;
@@ -292,7 +285,6 @@ function ReceptionApp() {
       return;
     }
 
-    // TỰ ĐỘNG GẮN TIỀN TỐ NẾU TRẢ MÁY CHƯA SỬA ĐỂ TRACKING NHẬN DIỆN CHÍNH XÁC 100%
     let finalReturnedNote = rawNote;
     if (!isFixedStatus) {
       const lowerNote = rawNote.toLowerCase();
@@ -307,7 +299,7 @@ function ReceptionApp() {
         status: 'returned',
         returned_method: returnForm.returned_method,
         returned_note: finalReturnedNote || undefined,
-        is_fixed: isFixedStatus // Đồng bộ cờ sửa xong với Backend
+        is_fixed: isFixedStatus
       };
 
       let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
@@ -346,7 +338,6 @@ function ReceptionApp() {
     });
   };
 
-  // NỘP FORM SỬA PHIẾU TIẾP NHẬN
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     if (!editingRecord) return;
@@ -354,13 +345,8 @@ function ReceptionApp() {
     const cleanName = editForm.customer_name.trim();
     const cleanPhone = editForm.phone.replace(/\D/g, "");
 
-    // VALIDATION FORM SỬA
     if (!cleanName) {
       showToast("Tên khách hàng không được để trống!", "error");
-      return;
-    }
-    if (cleanName.length < 2) {
-      showToast("Tên khách hàng phải có ít nhất 2 ký tự!", "error");
       return;
     }
 
@@ -403,12 +389,36 @@ function ReceptionApp() {
     return new Date(dateStr).toLocaleString('vi-VN');
   };
 
-  const pendingCount = useMemo(() => records.filter(r => r.status === 'received').length, [records]);
+  const pendingCount = useMemo(() => records.filter(r => r.status === 'received' && (r.current_process || 'repair') === 'repair').length, [records]);
 
-  const getStatusBadge = (status) => {
-    switch ((status || '').toLowerCase()) {
-      case 'returned':
-        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-emerald-500/10 border-emerald-500/20 text-emerald-400">✓ Đã Trả Khách</span>;
+  // BADGE TRẠNG THÁI HIỂN THỊ
+  const getStatusBadge = (r) => {
+    const status = (r.status || '').toLowerCase();
+    const process = (r.current_process || 'repair').toLowerCase();
+    const storageStatus = (r.storage_status || '').toLowerCase();
+    const deliveryStatus = (r.delivery_status || '').toLowerCase();
+
+    if (status === 'returned' || deliveryStatus === 'delivered' || storageStatus === 'dispatched') {
+      return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-emerald-500/10 border-emerald-500/20 text-emerald-400">✓ Đã Trả Khách</span>;
+    }
+
+    if (process === 'delivery' || (deliveryStatus && deliveryStatus !== 'delivered')) {
+      if (deliveryStatus === 'delivering') {
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-indigo-500/10 border-indigo-500/20 text-indigo-400 animate-pulse">🚚 Đang Đi Giao</span>;
+      }
+      return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-sky-500/10 border-sky-500/20 text-sky-400">📋 Chờ Giao Hàng</span>;
+    }
+
+    if (process === 'storage' || (storageStatus && storageStatus !== 'dispatched')) {
+      if (storageStatus === 'in_company') {
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-amber-500/10 border-amber-500/20 text-amber-400">📦 Lưu Kho Cty</span>;
+      }
+      if (storageStatus === 'destroyed') {
+        return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-slate-500/10 border-slate-500/20 text-slate-400">🗑️ Đã Tiêu Hủy</span>;
+      }
+    }
+
+    switch (status) {
       case 'fixed':
         return <span className="text-[0.68rem] font-bold px-2.5 py-1 rounded-full border bg-sky-500/10 border-sky-500/20 text-sky-400 animate-pulse">★ Đã Sửa Xong</span>;
       case 'processing':
@@ -443,10 +453,10 @@ function ReceptionApp() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">TIẾP NHẬN THIẾT BỊ MÁY IN</h1>
-              <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full">Đồng bộ Base</span>
+              <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">TRUNG TÂM TIẾP NHẬN & QUẢN LÝ ĐƠN</h1>
+              <span className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-bold bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-full">3 Quy Trình Base</span>
             </div>
-            <p className="text-xs text-[var(--text-muted)] mt-0.5">Quản lý danh sách, chuẩn hóa nội dung & gửi tin nhắn xác nhận cho khách</p>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">Đồng bộ liên hoàn Sửa Chữa (20025) → Lưu Kho (20036) → Giao Nhận (20037)</p>
           </div>
         </div>
         
@@ -458,7 +468,7 @@ function ReceptionApp() {
         )}
       </div>
 
-      {/* DANH SÁCH & BỘ LỌC */}
+      {/* DANH SÁCH & BỘ LỌC ĐA LUỒNG */}
       <div className="space-y-3.5">
         <div className="card p-3.5 sm:p-4 space-y-3">
           <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center justify-between">
@@ -482,20 +492,22 @@ function ReceptionApp() {
 
           <div className="flex items-center gap-2 pt-1 overflow-x-auto">
             {[
+              {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
               {val: 'received', label: 'Đang Chờ', icon: 'fa-clock'},
               {val: 'processing', label: 'Đang Sửa', icon: 'fa-gear'},
+              {val: 'storage', label: 'Lưu Kho Cty', icon: 'fa-warehouse'},
+              {val: 'delivery', label: 'Đang Giao', icon: 'fa-truck-fast'},
               {val: 'fixed', label: 'Đã Sửa Xong', icon: 'fa-square-check'},
-              {val: 'cancelled', label: 'Sửa Thất Bại', icon: 'fa-triangle-exclamation'},
               {val: 'returned', label: 'Đã Trả Khách', icon: 'fa-circle-check'},
-              {val: 'all', label: 'Tất Cả', icon: 'fa-list-ul'},
             ].map(f => (
               <button key={f.val} onClick={() => setStatusFilter(f.val)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap border transition-all ${
                   statusFilter === f.val
                     ? f.val === 'received' ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
                     : f.val === 'processing' ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
+                    : f.val === 'storage' ? 'bg-amber-600/20 border-amber-500/50 text-amber-200'
+                    : f.val === 'delivery' ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
                     : f.val === 'fixed' ? 'bg-sky-500/20 border-sky-500/50 text-sky-300'
-                    : f.val === 'cancelled' ? 'bg-rose-500/20 border-rose-500/50 text-rose-300'
                     : f.val === 'returned' ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
                     : 'bg-slate-700 border-slate-500 text-white'
                     : 'bg-[#0a0f1d]/50 border-[var(--border-color)] text-[var(--text-muted)] hover:text-white'
@@ -522,16 +534,25 @@ function ReceptionApp() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {records.map(r => {
                 const status = (r.status || '').toLowerCase();
-                const isProcessing = status === 'processing' || status === 'repairing';
-                const isReturned = status === 'returned';
-                const isFixed = status === 'fixed';
-                const isReceived = status === 'received';
+                const process = (r.current_process || 'repair').toLowerCase();
+                const storageStatus = (r.storage_status || '').toLowerCase();
+                const deliveryStatus = (r.delivery_status || '').toLowerCase();
+
+                // ĐIỀU KIỆN TRẠNG THÁI HIỂN THỊ
+                const isReturned = status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered';
+                const isDelivery = process === 'delivery' || (deliveryStatus && deliveryStatus !== 'delivered');
+                const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
+                const isFixed = status === 'fixed' && process === 'repair';
+                const isStorage = process === 'storage' && storageStatus !== 'dispatched';
+                const isReceived = status === 'received' && process === 'repair';
                 const isCancelled = status === 'cancelled' || r.is_fixed === false || r.repair_result === 'failed';
 
                 return (
                   <div key={r.id} className={`card p-4 border flex flex-col justify-between transition-all ${
                     isFixed ? 'bg-[#081b29]/90 border-sky-500/40 shadow-lg' :
                     isCancelled ? 'bg-[#210c14]/90 border-rose-500/40 shadow-md' :
+                    isStorage ? 'bg-[#1a170b]/90 border-amber-500/40' :
+                    isDelivery ? 'bg-[#0f1424]/90 border-indigo-500/40' :
                     isReceived ? 'bg-[#0b1329]/90 border-amber-500/30' : ''
                   }`}>
                     <div>
@@ -543,7 +564,7 @@ function ReceptionApp() {
                             <i className="fa-solid fa-phone mr-1"></i>{r.phone || '—'}
                           </p>
                         </div>
-                        {getStatusBadge(r.status)}
+                        {getStatusBadge(r)}
                       </div>
 
                       <div className="space-y-1.5 text-xs bg-[#0a0f1d]/70 p-2.5 rounded-xl border border-[var(--border-color)]">
@@ -552,7 +573,21 @@ function ReceptionApp() {
                         {r.note && <div><strong className="text-[var(--text-muted)]">Yêu cầu / Lỗi:</strong> {r.note}</div>}
                         {r.received_note && <div><strong className="text-[var(--text-muted)]">Tình trạng nhận:</strong> <span className="text-amber-200/90">{r.received_note}</span></div>}
 
-                        {/* KHUNG CẢNH BÁO NẾU KTV BÁO THẤT BẠI TỪ BASE */}
+                        {/* THÔNG TIN NẰM Ở QUY TRÌNH LƯU KHO / GIAO NHẬN */}
+                        {isStorage && (
+                          <div className="mt-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 font-medium">
+                            <i className="fa-solid fa-warehouse mr-1.5"></i>
+                            Thiết bị đang bảo quản tại kho Cty (Job ID: {r.storage_job_id || '—'})
+                          </div>
+                        )}
+
+                        {isDelivery && (
+                          <div className="mt-2 p-2 bg-indigo-500/10 border border-indigo-500/30 rounded-lg text-indigo-300 font-medium">
+                            <i className="fa-solid fa-truck-fast mr-1.5"></i>
+                            Đơn hàng thuộc Quy trình Giao Nhận (Job ID: {r.delivery_job_id || '—'})
+                          </div>
+                        )}
+
                         {(r.failure_reason || isCancelled) && (
                           <div className="mt-2 p-2 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 font-bold">
                             <i className="fa-solid fa-triangle-exclamation mr-1.5 text-rose-400"></i>
@@ -580,11 +615,19 @@ function ReceptionApp() {
                         <span>Gửi SMS</span>
                       </button>
 
+                      {/* XỬ LÝ NÚT THỨ 3 CHUẨN XÁC THEO QUY TRÌNH */}
                       {isReturned ? (
                         <div className="h-9 w-full bg-emerald-500/10 border border-emerald-500/20 rounded-lg text-emerald-400 text-[11px] font-bold flex items-center justify-center gap-1">
                           <i className="fa-solid fa-circle-check"></i>
                           <span>Đã Trả</span>
                         </div>
+                      ) : isDelivery ? (
+                        <button disabled
+                          className="h-9 w-full bg-slate-800/40 border border-slate-700/50 text-slate-400 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1.5 cursor-not-allowed opacity-70"
+                          title="Đơn đang thuộc Quy trình Giao nhận - Không thể trả máy tại quầy">
+                          <i className="fa-solid fa-truck-fast text-indigo-400"></i>
+                          <span>Bên Giao Nhận</span>
+                        </button>
                       ) : isProcessing ? (
                         <button disabled
                           className="h-9 w-full bg-slate-800/40 border border-slate-700/50 text-slate-500 text-[11px] font-bold rounded-lg flex items-center justify-center gap-1 cursor-not-allowed opacity-60"
@@ -598,11 +641,13 @@ function ReceptionApp() {
                           className={`h-9 w-full font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 shadow-md transition-all ${
                             isFixed
                               ? 'bg-emerald-600 hover:bg-emerald-500 text-white ring-2 ring-emerald-400/30 animate-pulse'
+                              : isStorage
+                              ? 'bg-amber-600 hover:bg-amber-500 text-white'
                               : isCancelled
                               ? 'bg-rose-600 hover:bg-rose-500 text-white'
                               : 'bg-amber-600 hover:bg-amber-500 text-white'
                           }`}
-                          title={isReceived ? "Trả máy & nhập lý do" : "Xác nhận bàn giao & trả máy"}>
+                          title="Xác nhận bàn giao & trả máy">
                           {updatingId === r.id ? (
                             <i className="fa-solid fa-spinner animate-spin"></i>
                           ) : (
@@ -658,7 +703,7 @@ function ReceptionApp() {
               <div><strong className="text-[var(--text-muted)]">Khách hàng:</strong> <span className="text-white font-bold">{returnModalRecord.customer_name}</span> ({returnModalRecord.phone || '—'})</div>
               <div className="flex items-center gap-2">
                 <strong className="text-[var(--text-muted)]">Trạng thái phiếu:</strong> 
-                {getStatusBadge(returnModalRecord.status)}
+                {getStatusBadge(returnModalRecord)}
               </div>
             </div>
 
@@ -689,7 +734,7 @@ function ReceptionApp() {
                   rows="3"
                   value={returnForm.returned_note}
                   onChange={(e) => setReturnForm({...returnForm, returned_note: e.target.value})}
-                  placeholder="Ví dụ: Giao chành xe..., shipper lấy hàng, khách book,..."
+                  placeholder="Ví dụ: Khách lấy lại máy nguyên trạng, giao chành xe,..."
                   className="w-full p-2.5 bg-[#0a0f1d]/90 border border-[var(--border-color)] rounded-lg text-sm text-white outline-none focus:border-emerald-400 resize-none"
                   required={returnModalRecord.status !== 'fixed'}
                 />

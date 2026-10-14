@@ -5,7 +5,6 @@ import hashlib
 import logging
 import random
 import re
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -88,59 +87,42 @@ def extract_identifier_code_or_phone(text: str) -> Tuple[Optional[str], Optional
 def validate_status(raw_status: str, status_map: dict, metatype: str = "", state: str = "") -> str:
     """
     Chuẩn hóa & ánh xạ trạng thái chính xác theo thứ tự ưu tiên:
-        1. Ánh xạ từ status_map động
-        2. Kiểm tra metatype / state trực tiếp
-        3. Tìm từ khóa trong tên stage
-        4. Mặc định: "received"
+    1. Ánh xạ từ status_map động
+    2. Kiểm tra metatype / state trực tiếp
+    3. Tìm từ khóa trong tên stage
+    4. Mặc định: "received"
     """
     normalized = (raw_status or "").strip().lower()
 
-    # 🔹 Bước 1: Ánh xạ theo bản đồ ưu tiên cao nhất
     if normalized in status_map:
         mapped = status_map[normalized]
         return "processing" if mapped == "repairing" else mapped
 
-    # 🔹 Bước 2: Kiểm tra trực tiếp metatype / state
     if metatype == "done" or state == "done":
         return "fixed"
     if metatype in {"failed", "cancelled", "archived", "deleted"} or state in {"failed", "cancelled", "archived", "deleted"}:
         return "cancelled"
 
-    # 🔹 Bước 3: Dò từ khóa trong tên stage
-    if any(kw in normalized for kw in [
-        "thông tin đơn", "tiếp nhận", "nhận máy", "tạo mới", "mới",
-        "reception", "received"
-    ]):
+    if any(kw in normalized for kw in ["thông tin đơn", "tiếp nhận", "nhận máy", "tạo mới", "mới", "reception", "received"]):
         return "received"
-    if any(kw in normalized for kw in [
-        "hoàn thành", "sửa xong", "xong", "đã sửa", "done",
-        "finished", "hoàn tất"
-    ]):
+    if any(kw in normalized for kw in ["hoàn thành", "sửa xong", "xong", "đã sửa", "done", "finished", "hoàn tất"]):
         return "fixed"
-    if any(kw in normalized for kw in [
-        "tiến hành", "sửa chữa", "đang sửa", "xử lý", "processing"
-    ]):
+    if any(kw in normalized for kw in ["tiến hành", "sửa chữa", "đang sửa", "xử lý", "processing"]):
         return "processing"
-    if any(kw in normalized for kw in [
-        "trả máy", "trả", "bàn giao", "returned"
-    ]):
+    if any(kw in normalized for kw in ["trả máy", "trả", "bàn giao", "returned"]):
         return "returned"
-    if any(kw in normalized for kw in [
-        "hủy", "cancel", "failed", "deleted", "archive"
-    ]):
+    if any(kw in normalized for kw in ["hủy", "cancel", "failed", "deleted", "archive"]):
         return "cancelled"
 
-    # 🔹 Bước 4: Mặc định khi không khớp gì
     return "received"
 
 
 def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
     """
     Tách thông tin thông minh dựa trên mốc SĐT (Pivot):
-    - TRƯỚC SĐT -> Họ tên khách hàng (Bảo toàn ghi chú xe trong ngoặc)
+    - TRƯỚC SĐT -> Họ tên khách hàng
     - SĐT       -> Chuẩn hóa SĐT
     - SAU SĐT   -> Địa chỉ / Chành xe / Tỉnh thành
-    - note      -> Mặc định "Chưa có yêu cầu"
     """
     clean_base_note = base_note.strip() if base_note else ""
 
@@ -158,7 +140,6 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
     customer_name = "Khách lẻ"
     address = ""
 
-    # Tìm vị trí SĐT làm mốc phân cách trung tâm
     phone_match = PHONE_PATTERN.search(raw_text)
 
     if phone_match:
@@ -166,20 +147,16 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
         phone = normalize_phone(raw_phone)
         start_idx, end_idx = phone_match.span()
 
-        # Đoạn TRƯỚC SĐT -> Tên khách hàng
         left_part = raw_text[:start_idx].strip()
-        left_part = re.sub(r'[\+\-\|\/,;\s]+$', '', left_part).strip()
+        left_part = re.sub(r'[\+\-\|\/,;\s]+\$', '', left_part).strip()
         if left_part:
             customer_name = left_part
 
-        # Đoạn SAU SĐT -> Khu vực / Tỉnh thành / Chành xe / Địa chỉ
         right_part = raw_text[end_idx:].strip()
         right_part = re.sub(r'^[\+\-\|\/,;\s]+', '', right_part).strip()
         if right_part:
             address = right_part
-
     else:
-        # Trường hợp không có SĐT trong Task Name
         separators = r'[\+\-\|\/,;]+'
         segments = [s.strip() for s in re.split(separators, raw_text) if s.strip()]
         if len(segments) >= 2:
@@ -199,8 +176,9 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
         "received_note": clean_base_note
     }
 
+
 def _build_base_cdn_url(fid: str) -> str:
-    """Dựng URL CDN công khai của Base.vn từ fid (đã verify 100%)."""
+    """Dựng URL CDN công khai của Base.vn từ fid"""
     parts = fid.split(":")
     if len(parts) < 8:
         raise ValueError(f"FID không đủ phần (cần >=8): {fid}")
@@ -218,57 +196,16 @@ def _build_base_cdn_url(fid: str) -> str:
     return (f"https://data-gcdn.basecdn.net/{p1}/{p2}/{p3}/{p4}/{p5}/{p6}/{p7}"
             f"/{dir_part}/{hash_dirs}/{md5_2}/{filename}")
 
-def classify_image_field(field_name: str) -> str:
+
+def extract_all_base_images(
+    payload: dict,
+    workflow_id: str,
+    workflow_settings: dict
+) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     """
-    Phân loại trường ảnh thuộc giai đoạn nào dựa trên tên trường.
-    Trả về: received | repair | delivery | storage | other
-    """
-    name = (field_name or "").strip().lower()
-
-    # 🔹 Nhóm Tiếp nhận / Nhận máy
-    if any(k in name for k in [
-        "tiep_nhan", "nhan_may", "nhan_hang", "tiepnhan", "nhanmay",
-        "received", "reception",
-        "tiếp_nhận", "nhận_máy", "nhận_hàng"
-    ]):
-        return "received"
-
-    # 🔹 Nhóm Sửa chữa / KTV / Kiểm tra / Hoàn thành
-    if any(k in name for k in [
-        "sua_chua", "kiem_tra", "hoan_thanh", "hoan_tat", "ktv",
-        "suachua", "kiemtra", "hoanthanh", "hoantat",
-        "repair", "fixed", "done", "finished",
-        "sửa_chữa", "kiểm_tra", "hoàn_thành", "hoàn_tất"
-    ]):
-        return "repair"
-
-    # 🔹 Nhóm Giao nhận / Trả khách / Chành xe
-    if any(k in name for k in [
-        "giao_nhan", "giao_hang", "tra_khach", "chanh_xe",
-        "giaonhan", "giaohang", "trachach", "chanhxe",
-        "delivery", "delivered", "returned",
-        "giao_nhận", "giao_hàng", "trả_khách", "chành_xe"
-    ]):
-        return "delivery"
-
-    # 🔹 Nhóm Lưu kho / Bảo quản
-    if any(k in name for k in [
-        "luu_kho", "bao_quan", "kho",
-        "luukho", "baoquan",
-        "storage",
-        "lưu_kho", "bảo_quản"
-    ]):
-        return "storage"
-
-    # 🔹 Không khớp nhóm nào
-    return "other"
-
-def extract_all_base_images(payload: dict) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-    """
-    Quét ĐỘNG tất cả các trường kết thúc bằng '-fids' trong payload.
-    Trả về:
-        1. Dict phân loại: {'received': [...], 'repair': [...], 'delivery': [...], 'storage': [...]}
-        2. Dict thô: {'tên_trường': [...URLs...], ...}
+    Quét động tất cả các trường kết thúc bằng '-fids' giải mã Base64.
+    Gom toàn bộ ảnh tìm thấy và đưa vào ĐÚNG rổ (bucket) dựa trên Workflow ID.
+    (Loại trừ ảnh trùng lặp thực hiện tại webhook.py bằng cách Set New - Set Old).
     """
     sources = []
     if isinstance(payload, dict):
@@ -281,12 +218,7 @@ def extract_all_base_images(payload: dict) -> Tuple[Dict[str, List[str]], Dict[s
             sources.append(("job.custom_fields", payload["job"]["custom_fields"]))
 
     by_field: Dict[str, List[str]] = {}
-    classified: Dict[str, List[str]] = {
-        "received": [],
-        "repair": [],
-        "delivery": [],
-        "storage": []
-    }
+    all_extracted_urls = []
 
     for src_name, src in sources:
         if not isinstance(src, dict):
@@ -319,37 +251,40 @@ def extract_all_base_images(payload: dict) -> Tuple[Dict[str, List[str]], Dict[s
                         try:
                             url = _build_base_cdn_url(fid_str)
                         except Exception as e:
-                            logger.error(f"❌ Lỗi dựng CDN cho fid={fid_str[:60]}...: {e}")
+                            logger.error(f"❌ Lỗi CDN fid={fid_str[:60]}...: {e}")
                             continue
                     field_urls.append(url)
 
-                by_field[field_clean] = field_urls
-                cat = classify_image_field(field_clean)
-
-                if cat in classified:
-                    classified[cat].extend(field_urls)
-                    logger.info(f"📷 [{src_name}] '{field_clean}' → {cat}: {len(field_urls)} ảnh")
-                else:
-                    logger.warning(f"⚠️ Không phân loại được trường '{field_clean}' ({len(field_urls)} ảnh)")
+                if field_urls:
+                    by_field[field_clean] = field_urls
+                    all_extracted_urls.extend(field_urls)
 
             except Exception as e:
                 logger.error(f"❌ Lỗi giải mã fids tại trường {key_str} ({src_name}): {e}")
 
-    # Loại bỏ ảnh trùng trong từng nhóm
-    for cat in classified:
-        seen = set()
-        unique = []
-        for url in classified[cat]:
-            if url not in seen:
-                seen.add(url)
-                unique.append(url)
-        classified[cat] = unique
+    # Lọc trùng lặp URL trong chính payload hiện tại
+    all_extracted_urls = list(dict.fromkeys(all_extracted_urls))
 
-    total = sum(len(v) for v in classified.values())
-    if total > 0:
-        logger.info(
-            f"✅ Tổng ảnh: nhận={len(classified['received'])} | "
-            f"sửa={len(classified['repair'])} | giao={len(classified['delivery'])} | kho={len(classified['storage'])}"
-        )
+    img_groups = {
+        "received": [],
+        "repair": [],
+        "delivery": [],
+        "storage": []
+    }
 
-    return classified, by_field
+    # Bỏ hết ảnh vào đúng rổ theo Workflow ID hiện tại
+    target_storage = str(workflow_settings.get("workflow_storage_id", "20036")).strip()
+    target_delivery = str(workflow_settings.get("workflow_delivery_id", "20037")).strip()
+
+    if workflow_id == target_storage:
+        img_groups["storage"] = all_extracted_urls
+        logger.info(f"📦 [LƯU KHO] Đã gom {len(all_extracted_urls)} ảnh từ payload")
+    elif workflow_id == target_delivery:
+        img_groups["delivery"] = all_extracted_urls
+        logger.info(f"🚚 [GIAO NHẬN] Đã gom {len(all_extracted_urls)} ảnh từ payload")
+    else:
+        # Quy trình sửa chữa/tiếp nhận mặc định (Deduping sẽ tách biệt received và repair tại webhook)
+        img_groups["repair"] = all_extracted_urls
+        logger.info(f"🛠️ [SỬA CHỮA/TIẾP NHẬN] Đã gom {len(all_extracted_urls)} ảnh từ payload")
+
+    return img_groups, by_field

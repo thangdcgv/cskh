@@ -6,7 +6,7 @@
 {{ super() }}
 <style>
 .page-container {
-  max-width: 960px;
+  max-width: 980px;
   margin: 0 auto;
 }
 .section-card {
@@ -44,7 +44,7 @@
 .badge-returned { background: rgba(52, 211, 153, 0.12); color: #34d399; border-color: rgba(52, 211, 153, 0.25); }
 .badge-cancelled { background: rgba(248, 113, 113, 0.12); color: #f87171; border-color: rgba(248, 113, 113, 0.25); }
 
-/* Form Control Inputs */
+/* Form Inputs */
 .form-input {
   width: 100%;
   padding: 0.6rem 0.85rem;
@@ -142,7 +142,7 @@ tr:hover td {
   border-radius: var(--radius-card);
   padding: 1.5rem;
   width: 100%;
-  max-width: 460px;
+  max-width: 480px;
   transform: scale(0.95) translateY(10px);
   transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
@@ -228,38 +228,55 @@ tr:hover td {
       </div>
       <div>
         <div class="flex items-center gap-2">
-          <h1 className="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">CÀI ĐẶT HỆ THỐNG</h1>
+          <h1 class="text-base sm:text-lg font-black tracking-wide text-[var(--text-main)] uppercase">CÀI ĐẶT HỆ THỐNG</h1>
           <span class="px-2.5 py-0.5 text-[10px] font-bold bg-sky-500/10 border border-sky-500/20 text-sky-400 rounded-full">Quản trị</span>
         </div>
-        <p class="text-xs text-[var(--text-muted)] mt-0.5">Cấu hình kết nối API, mã bí mật xác thực Webhook & Ánh xạ trạng thái sửa chữa</p>
+        <p class="text-xs text-[var(--text-muted)] mt-0.5">Cấu hình kết nối API, ID quy trình Base.vn, mã xác thực Webhook & Ánh xạ trạng thái</p>
       </div>
     </div>
   </div>
 
-  <!-- Section 1: Cấu hình Hệ thống & Xác thực -->
+  <!-- SECTION 1: CẤU HÌNH QUY TRÌNH BASE.VN (WORKFLOW IDS) -->
   <div class="section-card">
     <h2 class="section-title">
-      <i class="fa-solid fa-key text-sky-400"></i> Thông Số Hệ Thống & Mã Xác Thực
+      <i class="fa-solid fa-diagram-project text-purple-400"></i> Mã Quy Trình Base.vn (Workflow IDs)
+    </h2>
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Sửa Chữa</label>
+        <input type="text" id="workflow_repair_id" placeholder="VD: 20025" class="form-input font-monospace">
+        <p class="hint-text">Quy trình xử lý máy sửa chữa mặc định</p>
+      </div>
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Lưu Kho</label>
+        <input type="text" id="workflow_storage_id" placeholder="VD: 20036" class="form-input font-monospace">
+        <p class="hint-text">Quy trình quản lý nhập/xuất kho thiết bị</p>
+      </div>
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Giao Nhận</label>
+        <input type="text" id="workflow_delivery_id" placeholder="VD: 20037" class="form-input font-monospace">
+        <p class="hint-text">Quy trình giao hàng / trả máy khách</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 2: BẢO MẬT & XÁC THỰC WEBHOOK -->
+  <div class="section-card">
+    <h2 class="section-title">
+      <i class="fa-solid fa-shield-halved text-sky-400"></i> Bảo Mật Webhook & Thông Số Hệ Thống
     </h2>
     
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <!-- Hotline SMS -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Shared Secret Token -->
       <div>
-        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">SĐT Hotline SMS</label>
-        <input type="text" id="sms_hotline" placeholder="VD: 0901234567" class="form-input font-monospace">
-        <p class="hint-text">Số liên hệ hiển thị ở cuối tin nhắn SMS xác nhận phiếu</p>
-      </div>
-
-      <!-- Shared URL Secret -->
-      <div>
-        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Shared Secret Token</label>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Shared Secret Token (Webhook)</label>
         <div class="input-group">
           <input type="password" id="base_shared_secret" placeholder="Mã bí mật Webhook..." class="form-input font-monospace">
           <button type="button" onclick="toggleSecret('base_shared_secret')" title="Hiện/Ẩn">
             <i class="fa-regular fa-eye" id="base_shared_secret_icon"></i>
           </button>
         </div>
-        <p class="hint-text">Khớp với header <code>x-base-secret</code> từ Webhook ngoài</p>
+        <p class="hint-text">So khớp với Header <code>x-base-secret</code> để xác thực request từ Base.vn</p>
       </div>
 
       <!-- Base API Access Token -->
@@ -271,26 +288,40 @@ tr:hover td {
             <i class="fa-regular fa-eye" id="base_api_token_icon"></i>
           </button>
         </div>
-        <p class="hint-text">Dùng để đồng bộ dữ liệu trạng thái ngược về hệ thống ngoài</p>
+        <p class="hint-text">Dùng khi gọi ngược API để đồng bộ dữ liệu với Base.vn</p>
+      </div>
+
+      <!-- Hotline SMS -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">SĐT Hotline SMS</label>
+        <input type="text" id="sms_hotline" placeholder="VD: 0901234567" class="form-input font-monospace">
+        <p class="hint-text">Số hotline đính kèm ở cuối tin nhắn SMS xác nhận phiếu</p>
+      </div>
+
+      <!-- Cache TTL -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Thời Gian Cache (Giây)</label>
+        <input type="number" id="cache_ttl_seconds" min="10" max="3600" placeholder="60" class="form-input font-monospace">
+        <p class="hint-text">Thời gian lưu RAM cấu hình tại server (Khuyên dùng: 60s)</p>
       </div>
     </div>
 
-    <!-- Actions -->
+    <!-- Actions Save All Configs -->
     <div class="flex justify-end mt-5 pt-3 border-t border-[var(--border-color)]">
-      <button id="btnSaveConfig" class="btn-default py-2 px-4 text-xs font-bold flex items-center gap-2" onclick="saveAllConfigs()">
+      <button id="btnSaveConfig" class="btn-default py-2.5 px-5 text-xs font-bold flex items-center gap-2" onclick="saveAllConfigs()">
         <i class="fa-solid fa-floppy-disk"></i> <span>Lưu Tất Cả Cấu Hình</span>
       </button>
     </div>
   </div>
 
-  <!-- Section 2: Ánh Xạ Trạng Thái -->
+  <!-- SECTION 3: ÁNH XẠ TRẠNG THÁI -->
   <div class="section-card">
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 pb-3 border-b border-[var(--border-color)]">
       <div>
         <h2 class="section-title mb-0 border-0 p-0">
-          <i class="fa-solid fa-route text-purple-400"></i> Ánh Xạ Trạng Thái Giai Đoạn
+          <i class="fa-solid fa-route text-emerald-400"></i> Ánh Xạ Trạng Thái Giai Đoạn
         </h2>
-        <p class="hint-text mt-1">Khớp tên giai đoạn xử lý từ hệ thống bên ngoài với trạng thái chuẩn của Center Hub</p>
+        <p class="hint-text mt-1">Chuyển đổi tên giai đoạn (Base Stage) sang trạng thái chuẩn của Center Hub</p>
       </div>
       <button class="btn-default text-xs py-2 px-3 flex items-center gap-1.5" onclick="openModal()">
         <i class="fa-solid fa-plus"></i> Thêm Quy Tắc
@@ -301,8 +332,8 @@ tr:hover td {
       <table>
         <thead>
           <tr>
-            <th>Trạng thái nguồn (Base Stage)</th>
-            <th>Trạng thái hệ thống nội bộ</th>
+            <th>Giai đoạn gốc (Base Stage)</th>
+            <th>Trạng thái nội bộ tương ứng</th>
             <th>Mô tả</th>
             <th class="text-right">Thao tác</th>
           </tr>
@@ -310,7 +341,7 @@ tr:hover td {
         <tbody id="mappingTableBody">
           <tr>
             <td colspan="4" class="text-center py-6 text-slate-400 text-xs">
-              <i class="fa-solid fa-spinner animate-spin mr-2"></i> Đang tải danh sách ánh xạ...
+              <i class="fa-solid fa-spinner animate-spin mr-2"></i> Đang tải dữ liệu ánh xạ...
             </td>
           </tr>
         </tbody>
@@ -319,7 +350,7 @@ tr:hover td {
   </div>
 </div>
 
-<!-- Modal Thêm/Sửa Quy Tắc -->
+<!-- Modal Thêm/Sửa Quy Tắc Ánh Xạ -->
 <div id="mappingModal" class="modal-container" onclick="closeModalOnOverlay(event)">
   <div class="modal-box" onclick="event.stopPropagation()">
     <div class="flex justify-between items-center mb-4 pb-2 border-b border-[var(--border-color)]">
@@ -334,7 +365,7 @@ tr:hover td {
     <form onsubmit="event.preventDefault(); submitMapping();" class="space-y-3.5">
       <div>
         <label class="block text-xs font-bold uppercase text-slate-300 mb-1">
-          Tên trạng thái nguồn (Base Stage) <span class="text-rose-400">*</span>
+          Tên giai đoạn nguồn (Base Stage) <span class="text-rose-400">*</span>
         </label>
         <input type="text" id="modal_base_stage" placeholder="VD: Đang kiểm tra, Chờ linh kiện..." class="form-input" required>
       </div>
@@ -343,16 +374,17 @@ tr:hover td {
         <label class="block text-xs font-bold uppercase text-slate-300 mb-1">Trạng thái nội bộ tương ứng</label>
         <select id="modal_system_status" class="form-input">
           <option value="received">Tiếp nhận / Đang chờ (received)</option>
-          <option value="processing">Đang sửa chữa (processing)</option>
+          <option value="processing">Đang xử lý / Kiểm tra (processing)</option>
+          <option value="repairing">Đang sửa chữa (repairing)</option>
           <option value="fixed">Đã sửa xong (fixed)</option>
           <option value="returned">Đã trả máy (returned)</option>
-          <option value="cancelled">Đã hủy (cancelled)</option>
+          <option value="cancelled">Đã hủy / Thất bại (cancelled)</option>
         </select>
       </div>
 
       <div>
-        <label class="block text-xs font-bold uppercase text-slate-300 mb-1">Mô tả ghi chú (tùy chọn)</label>
-        <input type="text" id="modal_description" placeholder="Ghi chú chi tiết mục đích quy tắc..." class="form-input">
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1">Mô tả ghi chú (Tùy chọn)</label>
+        <input type="text" id="modal_description" placeholder="Ghi chú thêm về quy tắc này..." class="form-input">
       </div>
 
       <div class="flex justify-end gap-2 mt-5 pt-3 border-t border-[var(--border-color)]">
@@ -368,6 +400,17 @@ tr:hover td {
 <script>
 const API_BASE = '/api/settings';
 
+// Định nghĩa từ điển danh sách các field cấu hình hệ thống
+const CONFIG_FIELDS = [
+  { id: 'workflow_repair_id', key: 'workflow_repair_id', desc: 'ID quy trình Sửa chữa trên Base.vn' },
+  { id: 'workflow_storage_id', key: 'workflow_storage_id', desc: 'ID quy trình Lưu kho trên Base.vn' },
+  { id: 'workflow_delivery_id', key: 'workflow_delivery_id', desc: 'ID quy trình Giao nhận trên Base.vn' },
+  { id: 'base_shared_secret', key: 'base_shared_secret', desc: 'Mã secret token xác thực Webhook Base.vn' },
+  { id: 'base_api_token', key: 'base_api_token', desc: 'Token kết nối API ngoài' },
+  { id: 'sms_hotline', key: 'sms_hotline', desc: 'Số điện thoại hotline hiển thị trong SMS' },
+  { id: 'cache_ttl_seconds', key: 'cache_ttl_seconds', desc: 'Thời gian cache cấu hình hệ thống (giây)' }
+];
+
 document.addEventListener('DOMContentLoaded', () => {
   loadConfigs();
   loadMappings();
@@ -375,6 +418,17 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Escape') closeModal();
   });
 });
+
+// An toàn HTML escaping
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 // Bật/Tắt ẩn/hiện mật khẩu
 function toggleSecret(id) {
@@ -390,7 +444,7 @@ function toggleSecret(id) {
   }
 }
 
-// Hiển thị Toast Floating Nổi
+// Hiển thị Toast Floating
 let toastTimer = null;
 function showMessage(msg, type = 'success') {
   const toast = document.getElementById('toastFloating');
@@ -409,7 +463,7 @@ function showMessage(msg, type = 'success') {
   }, 4000);
 }
 
-// Tải cấu hình hệ thống
+// 1. Tải cấu hình từ API GET /api/settings/config
 async function loadConfigs() {
   try {
     const res = await fetch(`${API_BASE}/config`);
@@ -417,59 +471,43 @@ async function loadConfigs() {
       window.location.href = '/login';
       return;
     }
-    if (!res.ok) throw new Error('Không thể tải cấu hình từ máy chủ');
-    const data = await res.json();
+    if (!res.ok) throw new Error('Không thể tải cấu hình từ server');
     
-    if (data.sms_hotline) document.getElementById('sms_hotline').value = data.sms_hotline;
-    if (data.base_shared_secret) document.getElementById('base_shared_secret').value = data.base_shared_secret;
-    if (data.base_api_token) document.getElementById('base_api_token').value = data.base_api_token;
+    const configs = await res.json();
+    
+    // Gán dữ liệu vào từng Input
+    CONFIG_FIELDS.forEach(field => {
+      const inputEl = document.getElementById(field.id);
+      if (inputEl && configs[field.key] !== undefined) {
+        inputEl.value = configs[field.key];
+      }
+    });
   } catch (e) {
     console.warn('Cảnh báo tải cấu hình:', e);
   }
 }
 
-// Lưu tất cả cấu hình cùng lúc
-// Lưu tất cả cấu hình (Chỉ gửi những ô có dữ liệu)
+// 2. Lưu toàn bộ cấu hình bằng API Hàng Loạt PUT /api/settings/config/bulk
 async function saveAllConfigs() {
-  const sms_hotline = document.getElementById('sms_hotline').value.trim();
-  const secret = document.getElementById('base_shared_secret').value.trim();
-  const token = document.getElementById('base_api_token').value.trim();
   const btn = document.getElementById('btnSaveConfig');
+  const settingsToUpdate = [];
 
-  // Danh sách các request cần gửi
-  const requests = [];
+  // Thu thập giá trị từ các Input
+  CONFIG_FIELDS.forEach(field => {
+    const el = document.getElementById(field.id);
+    if (el) {
+      const val = el.value.trim();
+      if (val !== '') {
+        settingsToUpdate.push({
+          key: field.key,
+          value: val,
+          description: field.desc
+        });
+      }
+    }
+  });
 
-  if (sms_hotline !== '') {
-    requests.push(
-      fetch(`${API_BASE}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'sms_hotline', value: sms_hotline, description: 'Số điện thoại hotline hiển thị trong tin nhắn SMS' })
-      })
-    );
-  }
-
-  if (secret !== '') {
-    requests.push(
-      fetch(`${API_BASE}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'base_shared_secret', value: secret, description: 'Mã bí mật xác thực Webhook' })
-      })
-    );
-  }
-
-  if (token !== '') {
-    requests.push(
-      fetch(`${API_BASE}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key: 'base_api_token', value: token, description: 'Token kết nối API ngoài' })
-      })
-    );
-  }
-
-  if (requests.length === 0) {
+  if (settingsToUpdate.length === 0) {
     showMessage('Vui lòng nhập ít nhất một thông số cấu hình!', 'error');
     return;
   }
@@ -480,14 +518,19 @@ async function saveAllConfigs() {
       btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> <span>Đang lưu...</span>`;
     }
 
-    const responses = await Promise.all(requests);
-    const hasError = responses.some(res => !res.ok);
+    // Gửi 1 request duy nhất qua API Bulk Update
+    const res = await fetch(`${API_BASE}/config/bulk`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings: settingsToUpdate })
+    });
 
-    if (hasError) {
-      throw new Error('Không thể lưu một số cấu hình. Vui lòng kiểm tra lại!');
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || 'Không thể cập nhật cấu hình');
     }
 
-    showMessage('Đã lưu cấu hình hệ thống thành công!', 'success');
+    showMessage(`Đã cập nhật thành công ${settingsToUpdate.length} thông số cấu hình!`, 'success');
   } catch (e) {
     showMessage(e.message || 'Lỗi khi lưu cấu hình hệ thống!', 'error');
   } finally {
@@ -498,7 +541,7 @@ async function saveAllConfigs() {
   }
 }
 
-// Tải danh sách quy tắc ánh xạ
+// 3. Tải danh sách quy tắc ánh xạ trạng thái
 async function loadMappings() {
   const tbody = document.getElementById('mappingTableBody');
   try {
@@ -513,7 +556,7 @@ async function loadMappings() {
         <tr>
           <td colspan="4" class="text-center py-8 text-slate-400 text-xs">
             <i class="fa-solid fa-folder-open text-2xl mb-2 block opacity-30"></i>
-            Chưa có quy tắc ánh xạ nào. Bấm <strong>"Thêm Quy Tắc"</strong> để khởi tạo.
+            Chưa có quy tắc ánh xạ nào. Bấm <strong>"Thêm Quy Tắc"</strong> để tạo mới.
           </td>
         </tr>
       `;
@@ -522,7 +565,7 @@ async function loadMappings() {
 
     const badgeMap = {
       received: '<span class="status-badge badge-received">Tiếp nhận</span>',
-      processing: '<span class="status-badge badge-processing">Đang sửa chữa</span>',
+      processing: '<span class="status-badge badge-processing">Đang xử lý</span>',
       repairing: '<span class="status-badge badge-processing">Đang sửa chữa</span>',
       fixed: '<span class="status-badge badge-fixed">Đã sửa xong</span>',
       returned: '<span class="status-badge badge-returned">Đã trả máy</span>',
@@ -555,14 +598,6 @@ async function loadMappings() {
   }
 }
 
-// Escaping HTML an toàn
-function escapeHtml(text) {
-  if (!text) return '';
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
 // Điều khiển Modal
 function openModal() {
   document.getElementById('mappingModal').classList.add('active');
@@ -577,7 +612,7 @@ function closeModalOnOverlay(e) {
   if (e.target.id === 'mappingModal') closeModal();
 }
 
-// Thêm / Lưu quy tắc ánh xạ mới
+// 4. Thêm / Cập nhật quy tắc ánh xạ mới (POST /api/settings/status-mappings)
 async function submitMapping() {
   const base_stage = document.getElementById('modal_base_stage').value.trim();
   const system_status = document.getElementById('modal_system_status').value;
@@ -585,7 +620,7 @@ async function submitMapping() {
   const btn = document.getElementById('btnSubmitMapping');
 
   if (!base_stage) {
-    showMessage('Vui lòng nhập tên trạng thái nguồn!', 'error');
+    showMessage('Vui lòng nhập tên giai đoạn nguồn!', 'error');
     return;
   }
 
@@ -608,7 +643,7 @@ async function submitMapping() {
 
     closeModal();
     loadMappings();
-    showMessage(`Đã thêm quy tắc cho giai đoạn "${base_stage}"!`, 'success');
+    showMessage(`Đã lưu quy tắc cho giai đoạn "${base_stage}"!`, 'success');
   } catch (e) {
     showMessage(e.message || 'Không thể lưu quy tắc ánh xạ!', 'error');
   } finally {
@@ -619,7 +654,7 @@ async function submitMapping() {
   }
 }
 
-// Xóa quy tắc ánh xạ
+// 5. Xóa quy tắc ánh xạ (DELETE /api/settings/status-mappings/{id})
 async function deleteMapping(id) {
   if (!confirm('Bạn có chắc chắn muốn xóa quy tắc ánh xạ này không?')) return;
   try {

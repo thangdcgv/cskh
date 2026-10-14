@@ -289,14 +289,6 @@
                                 <div id="iconStep2" class="timeline-icon bg-secondary"><i class="bi bi-gear"></i></div>
                                 <strong class="d-block small text-dark" id="titleStep2">2. Kiểm Tra & Sửa Chữa</strong>
                                 <span class="text-muted small d-block" id="timeRepair">Thiết bị chờ kỹ thuật kiểm tra và xử lý.</span>
-                                
-                                <!-- NÚT & VÙNG CHỨA ẢNH SỬA CHỮA -->
-                                <button id="btnRepairImages" class="btn btn-sm btn-outline-primary mt-2" style="display: none;"></button>
-                                <div id="repairImagesGallery" class="mt-2" style="display: none;"></div>
-
-                                <!-- NÚT & VÙNG CHỨA ẢNH LƯU KHO -->
-                                <button id="btnStorageImages" class="btn btn-sm btn-outline-warning text-dark mt-2" style="display: none;"></button>
-                                <div id="storageImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
 
                             <!-- BƯỚC 3: HOÀN THÀNH XỬ LÝ / ĐẾN ĐỊA CHỈ -->
@@ -305,9 +297,9 @@
                                 <strong class="d-block small text-dark" id="titleStep3">3. Đã Sửa Xong (Sẵn Sàng Bàn Giao)</strong>
                                 <span class="text-muted small d-block" id="timeFixed">Chờ hoàn tất kiểm tra lỗi và đóng gói.</span>
                                 
-                                <!-- NÚT & VÙNG CHỨA ẢNH GIAO NHẬN / XÁC NHẬN CHÀNH XE -->
-                                <button id="btnDeliveryImages" class="btn btn-sm btn-outline-success mt-2" style="display: none;"></button>
-                                <div id="deliveryImagesGallery" class="mt-2" style="display: none;"></div>
+                                <!-- NÚT & VÙNG CHỨA ẢNH SỬA CHỮA -->
+                                <button id="btnRepairImages" class="btn btn-sm btn-outline-primary mt-2" style="display: none;"></button>
+                                <div id="repairImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
 
                             <!-- BƯỚC 4: BÀN GIAO / TRẢ MÁY -->
@@ -315,6 +307,14 @@
                                 <div id="iconStep4" class="timeline-icon bg-secondary"><i class="bi bi-box-seam"></i></div>
                                 <strong class="d-block small text-dark" id="titleStep4">4. Đã Bàn Giao & Trả Khách</strong>
                                 <span class="text-muted small d-block" id="timeReturned">Đang chờ bàn giao cho quý khách.</span>
+
+                                <!-- NÚT ẢNH BÀN GIAO TRỰC TIẾP (TỪ QUY TRÌNH KHO) -->
+                                <button id="btnStorageImages" class="btn btn-sm btn-outline-warning text-dark mt-2 me-2" style="display: none;"></button>
+                                <div id="storageImagesGallery" class="mt-2" style="display: none;"></div>
+
+                                <!-- NÚT ẢNH ĐI GIAO / CHÀNH XE (TỪ QUY TRÌNH GIAO NHẬN) -->
+                                <button id="btnDeliveryImages" class="btn btn-sm btn-outline-success mt-2" style="display: none;"></button>
+                                <div id="deliveryImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
                         </div>
                     </div>
@@ -713,14 +713,14 @@
 
             titleStep1.innerText = "1. Tiếp Nhận Thông Tin";
             titleStep2.innerText = "2. Chuyển Sang Sửa Chữa";
-            titleStep3.innerText = "3. Đã Sửa Xong (Sẵn Sàng Bàn Giao)";
+            titleStep3.innerText = "3. Đã Sửa Xong";
             titleStep4.innerText = "4. Đã Bàn Giao & Trả Khách";
 
             // ======================================================
             // 4. XÂY DỰNG TIMELINE CHUẨN XÁC THEO TỪNG QUY TRÌNH
             // ======================================================
             if (isFinished) {
-                if (process === 'delivery' || deliveryStatus) {
+                if (process === 'delivery' || deliveryStatus) { 
                     step4Node.style.display = 'none';
                     titleStep1.innerText = "1. Tiếp Nhận Đơn Giao Hàng";
                     titleStep2.innerText = "2. Tiến Hành Đi Giao";
@@ -768,9 +768,9 @@
 
                     iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
                     iconStep2.className = 'timeline-icon bg-success'; iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                    timeRepair.innerText = 'Đã hoàn tất quá trình kiểm tra & xử lý.';
+                    timeRepair.innerText = 'Đang trong quá trình kiểm tra & xử lý.';
                     iconStep3.className = 'timeline-icon bg-success'; iconStep3.innerHTML = '<i class="bi bi-check"></i>';
-                    timeFixed.innerText = 'Thiết bị đã xử lý xong, lưu tại công ty.';
+                    timeFixed.innerText = 'Thiết bị đã xử lý xong, đang chờ bàn giao.';
                     iconStep4.className = 'timeline-icon bg-success'; iconStep4.innerHTML = '<i class="bi bi-check-all"></i>';
                     timeReturned.innerText = 'Lễ tân đã bàn giao thành công lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
                 }
@@ -864,14 +864,17 @@
             // ======================================================
             // 5. CẤU HÌNH HIỂN THỊ NÚT XEM ẢNH LAZY-LOAD CẢ 4 BƯỚC
             // ======================================================
+            
+            // 1. Ảnh lúc Lễ tân tiếp nhận máy
             setupLazyImageGallery(
                 'btnReceivedImages', 
                 'receivedImagesGallery', 
-                item.received_images || (st === 'received' ? item.repair_images : []), 
+                item.received_images, 
                 'Tiếp Nhận / Nhận Máy', 
                 'bi bi-camera'
             );
 
+            // 2. Ảnh lúc KTV kiểm tra / Hoàn thành sửa chữa
             setupLazyImageGallery(
                 'btnRepairImages', 
                 'repairImagesGallery', 
@@ -880,19 +883,21 @@
                 'bi bi-image'
             );
 
+            // 3. Ảnh lúc Lễ tân đưa vào kho bảo quản chờ trả
             setupLazyImageGallery(
                 'btnStorageImages', 
                 'storageImagesGallery', 
                 item.storage_images, 
-                'Bảo Quản Tại Kho', 
+                'Bảo Giao Tại Quầy', 
                 'bi bi-warehouse'
             );
 
+            // 4. Ảnh lúc nhân viên đi giao hàng / Gửi chành xe
             setupLazyImageGallery(
                 'btnDeliveryImages', 
                 'deliveryImagesGallery', 
                 item.delivery_images, 
-                'Giao Hàng / Chành Xe', 
+                'Giao Nhận / Trả Khách', 
                 'bi bi-truck'
             );
 

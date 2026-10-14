@@ -540,13 +540,6 @@ body::before {
 {% block scripts %}{% endblock %}
 
 <script>
-// Service Worker
-if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/static/sw.js')
-      .catch(err => console.debug('Service Worker không khả dụng:', err));
-  });
-}
 
 // Khởi tạo Viewer phóng to ảnh an toàn
 document.addEventListener("DOMContentLoaded", function () {

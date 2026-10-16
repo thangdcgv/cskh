@@ -10,6 +10,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
+from routers.auth import AuthRequiredError, DatabaseConnectionError
+
 
 from database import settings
 from websocket_manager import manager
@@ -37,6 +40,9 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("🛑 [SYSTEM] Hệ thống đang dừng...")
 
+def _is_html_request(request: Request) -> bool:
+    accept = request.headers.get("accept", "")
+    return "text/html" in accept or "text/html" in request.headers.get("content-type", "")
 
 # === Khởi tạo Ứng dụng ===
 app = FastAPI(
@@ -184,7 +190,50 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         await manager.disconnect(websocket)
 
+# 1. Bắt lỗi chưa đăng nhập → HTML thì redirect, API thì 401
+@app.exception_handler(AuthRequiredError)
+async def auth_required_handler(request: Request, exc: AuthRequiredError):
+    request.session.clear()
+    if _is_html_request(request):
+        return RedirectResponse(
+            url=f"/login?error={exc.reason}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return JSONResponse(
+        status_code=401,
+        content={"detail": "Phiên làm việc đã hết hạn, vui lòng đăng nhập lại"},
+    )
 
+
+# 2. Bắt lỗi mất kết nối DB → xóa session + về login
+@app.exception_handler(DatabaseConnectionError)
+async def db_error_handler(request: Request, exc: DatabaseConnectionError):
+    logger.error(f"DATABASE CONNECTION LOST: {exc}")
+    try:
+        request.session.clear()
+    except Exception:
+        pass
+    if _is_html_request(request):
+        return RedirectResponse(url="/login?error=db_error", status_code=303)
+    return JSONResponse(status_code=503, content={"detail": "Hệ thống tạm thời gián đoạn"})
+
+
+# 3. Bắt MỌI lỗi 500 còn lại → HTML thì về login, API thì 500 JSON
+@app.exception_handler(Exception)
+async def global_error_handler(request: Request, exc: Exception):
+    logger.error(f"UNHANDLED ERROR on {request.url.path}: {exc}", exc_info=True)
+    # Nếu là lỗi DB/network → xóa session luôn
+    err_msg = str(exc).lower()
+    is_db_error = any(k in err_msg for k in ["connection", "timeout", "supabase", "postgrest", "database", "network"])
+    if is_db_error:
+        try:
+            request.session.clear()
+        except Exception:
+            pass
+    if _is_html_request(request):
+        reason = "db_error" if is_db_error else "server_error"
+        return RedirectResponse(url=f"/login?error={reason}", status_code=303)
+    return JSONResponse(status_code=500, content={"detail": "Có lỗi xảy ra, vui lòng thử lại"})
 # === Custom Exception Handlers (Tránh hiển thị JSON lỗi thô ráp) ===
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):

@@ -539,7 +539,20 @@ body::before {
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" defer></script>
 
 {% block scripts %}{% endblock %}
-
+<script>
+// Bọc fetch gốc: tự động redirect khi 401/503
+const _originalFetch = window.fetch;
+window.fetch = async function(...args) {
+  const res = await _originalFetch.apply(this, args);
+  if (res.status === 401 || res.status === 503) {
+    // Tránh loop nếu đang ở trang login
+    if (!window.location.pathname.startsWith('/login')) {
+      window.location.href = '/login?error=session_expired';
+    }
+  }
+  return res;
+};
+</script>
 <script>
 
 // Khởi tạo Viewer phóng to ảnh an toàn

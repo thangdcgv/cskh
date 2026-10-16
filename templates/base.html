@@ -115,15 +115,12 @@ body::before {
   content: "";
   position: fixed;
   top: 0;
-  left: 50%;
-  transform: translateX(-50%);
+  left: 0;
   width: 100%;
-  max-width: 600px;
   height: 220px;
-  background: radial-gradient(circle, rgba(56, 189, 248, 0.07) 0%, transparent 70%);
+  background: radial-gradient(circle at 50% 0%, rgba(56, 189, 248, 0.07) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
-  transition: max-width 0.3s ease;
 }
 
 .app-header {
@@ -277,12 +274,11 @@ body::before {
   padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom) + 0.75rem);
   padding-left: 0.75rem;
   padding-right: 0.75rem;
-  max-width: 600px;
   width: 100%;
   margin: 0 auto;
   position: relative;
   z-index: 1;
-  transition: max-width 0.3s ease, padding 0.3s ease;
+  transition: padding 0.3s ease;
 }
 
 .bottom-nav {
@@ -408,7 +404,9 @@ body::before {
   text-decoration: none;
 }
 
-/* Responsive */
+/* =========================================
+   RESPONSIVE (ĐÃ TỐI ƯU FULL WIDTH)
+========================================= */
 @media (max-width: 576px) {
   .header-subtitle { display: none; }
   .header-user-greeting span:not(strong) { display: none; }
@@ -421,24 +419,27 @@ body::before {
   body::before { height: 180px; }
 }
 @media (min-width: 768px) {
-  .app-content { max-width: 800px; padding-left: 1rem; padding-right: 1rem; }
-  body::before { max-width: 800px; }
+  .app-content { padding-left: 1rem; padding-right: 1rem; }
   .card { padding: 1rem; }
 }
 @media (min-width: 992px) {
   :root { --bottom-nav-height: 48px; }
   .app-content {
-    max-width: 1280px;
     padding-left: 1.5rem;
     padding-right: 1.5rem;
     padding-top: calc(var(--top-header-height) + 1rem);
     padding-bottom: calc(var(--bottom-nav-height) + 1rem);
   }
-  body::before { max-width: 1280px; }
   .card { padding: 1.15rem; }
   .bottom-nav { justify-content: center; gap: 2.5rem; }
   .nav-item { flex: 0 0 auto; padding: 0 1rem; flex-direction: row; gap: 6px; font-size: 0.75rem; }
   .nav-item.active::after { top: auto; bottom: 0; width: 100%; border-radius: 3px 3px 0 0; }
+}
+@media (min-width: 1440px) {
+  .app-content {
+    padding-left: 2.5rem;
+    padding-right: 2.5rem;
+  }
 }
 </style>
 </head>

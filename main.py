@@ -2,17 +2,19 @@ import logging
 import os
 from pathlib import Path
 from typing import Optional
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, status, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
 from database import settings
 from websocket_manager import manager
-from routers import reception, webhook, tickets, auth, settings as settings_router
+# BỔ SUNG: Import router 'sync' đã viết ở bước trước
+from routers import reception, webhook, tickets, auth, sync, settings as settings_router
 from routers.auth import extract_user_from_session, SUPER_ADMIN_ROLES
 
 logger = logging.getLogger("uvicorn.error")
@@ -27,11 +29,21 @@ SOUNDS_DIR = STATIC_DIR / "sounds"
 ICONS_DIR.mkdir(parents=True, exist_ok=True)
 SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+# === Cấu hình Lifespan (Chạy khi ứng dụng khởi động & tắt) ===
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("🚀 [SYSTEM] Hệ thống Quản lý Sửa chữa & Máy in - Đại Thành đã khởi động thành công!")
+    yield
+    logger.info("🛑 [SYSTEM] Hệ thống đang dừng...")
+
+
 # === Khởi tạo Ứng dụng ===
 app = FastAPI(
     title="Quản lý Sửa chữa & Máy In - Đại Thành",
     description="Hệ thống quản lý tiếp nhận, theo dõi và cấu hình sửa chữa",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # === Cấu hình CORS ===
@@ -54,7 +66,6 @@ app.add_middleware(
 )
 
 # === Mount Static Files & Templates ===
-# Chỉ cần mount 1 lần thư mục /static (đã bao gồm /static/icons và /static/sounds)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -63,7 +74,27 @@ app.include_router(auth.router)
 app.include_router(reception.router)
 app.include_router(webhook.router)
 app.include_router(tickets.router)
+app.include_router(sync.router)            # BỔ SUNG: API đối soát làm sạch dữ liệu
 app.include_router(settings_router.router)
+
+
+# === Fix lỗi 404 Service Worker & Favicon ===
+@app.get("/sw.js", include_in_schema=False)
+async def service_worker():
+    """Xử lý request /sw.js từ trình duyệt để tránh lỗi 404 trong Terminal"""
+    sw_file = STATIC_DIR / "sw.js"
+    if sw_file.exists():
+        return FileResponse(sw_file, media_type="application/javascript")
+    return Response(content="// Service Worker Placeholder", media_type="application/javascript")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Xử lý request /favicon.ico từ trình duyệt"""
+    icon_file = ICONS_DIR / "favicon.ico"
+    if icon_file.exists():
+        return FileResponse(icon_file)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # === Health Check Endpoint ===
@@ -152,3 +183,10 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"Lỗi WebSocket: {e}")
     finally:
         await manager.disconnect(websocket)
+
+
+# === Custom Exception Handlers (Tránh hiển thị JSON lỗi thô ráp) ===
+@app.exception_handler(404)
+async def custom_404_handler(request: Request, exc):
+    """Tự động chuyển hướng về trang chủ khi người dùng gõ sai URL"""
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)

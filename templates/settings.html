@@ -234,6 +234,9 @@ tr:hover td {
         <p class="text-xs text-[var(--text-muted)] mt-0.5">Cấu hình kết nối API, ID quy trình Base.vn, mã xác thực Webhook & Ánh xạ trạng thái</p>
       </div>
     </div>
+    <button onclick="initDefaultSettings()" class="btn-secondary text-xs flex items-center gap-1.5 self-start md:self-auto" title="Tự động khởi tạo các key cấu hình mặc định">
+      <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i> Khởi Tạo Khung Mặc Định
+    </button>
   </div>
 
   <!-- SECTION 1: CẤU HÌNH QUY TRÌNH BASE.VN (WORKFLOW IDS) -->
@@ -260,7 +263,63 @@ tr:hover td {
     </div>
   </div>
 
-  <!-- SECTION 2: BẢO MẬT & XÁC THỰC WEBHOOK -->
+  <!-- SECTION 2: DANH SÁCH BASE API TOKENS (ĐA ỨNG DỤNG) -->
+  <div class="section-card">
+    <h2 class="section-title">
+      <i class="fa-solid fa-key text-amber-400"></i> API Access Tokens (Base.vn Apps)
+    </h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <!-- Repair App Token -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Token App Sửa Chữa (Repair)</label>
+        <div class="input-group">
+          <input type="password" id="base_repair_token" placeholder="Token ứng dụng Repair..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_repair_token')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_repair_token_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Dùng để gọi API đối soát & thao tác trên Workflow Sửa chữa</p>
+      </div>
+
+      <!-- Warranty App Token -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Token App Bảo Hành (Warranty)</label>
+        <div class="input-group">
+          <input type="password" id="base_warranty_token" placeholder="Token ứng dụng Warranty..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_warranty_token')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_warranty_token_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Dùng để kết nối ứng dụng Quản lý Bảo hành</p>
+      </div>
+
+      <!-- Recept & Return App Token -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Token App Nhận - Trả (Recept&Return)</label>
+        <div class="input-group">
+          <input type="password" id="base_recept_token" placeholder="Token ứng dụng Recept&Return..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_recept_token')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_recept_token_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Dùng cho việc nhận máy và trả máy khách hàng</p>
+      </div>
+
+      <!-- Table App Token -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Token Base Table</label>
+        <div class="input-group">
+          <input type="password" id="base_table_token" placeholder="Token Base Table..." class="form-input font-monospace">
+          <button type="button" onclick="toggleSecret('base_table_token')" title="Hiện/Ẩn">
+            <i class="fa-regular fa-eye" id="base_table_token_icon"></i>
+          </button>
+        </div>
+        <p class="hint-text">Dùng khi ghi dữ liệu bảng biểu Base Table</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SECTION 3: BẢO MẬT WEBHOOK & THÔNG SỐ HỆ THỐNG -->
   <div class="section-card">
     <h2 class="section-title">
       <i class="fa-solid fa-shield-halved text-sky-400"></i> Bảo Mật Webhook & Thông Số Hệ Thống
@@ -277,18 +336,6 @@ tr:hover td {
           </button>
         </div>
         <p class="hint-text">So khớp với Header <code>x-base-secret</code> để xác thực request từ Base.vn</p>
-      </div>
-
-      <!-- Base API Access Token -->
-      <div>
-        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Base API Access Token</label>
-        <div class="input-group">
-          <input type="password" id="base_api_token" placeholder="Token truy cập API..." class="form-input font-monospace">
-          <button type="button" onclick="toggleSecret('base_api_token')" title="Hiện/Ẩn">
-            <i class="fa-regular fa-eye" id="base_api_token_icon"></i>
-          </button>
-        </div>
-        <p class="hint-text">Dùng khi gọi ngược API để đồng bộ dữ liệu với Base.vn</p>
       </div>
 
       <!-- Hotline SMS -->
@@ -314,7 +361,7 @@ tr:hover td {
     </div>
   </div>
 
-  <!-- SECTION 3: ÁNH XẠ TRẠNG THÁI -->
+  <!-- SECTION 4: ÁNH XẠ TRẠNG THÁI -->
   <div class="section-card">
     <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 pb-3 border-b border-[var(--border-color)]">
       <div>
@@ -400,16 +447,22 @@ tr:hover td {
 <script>
 const API_BASE = '/api/settings';
 
-// Định nghĩa từ điển danh sách các field cấu hình hệ thống
+// Từ điển định nghĩa đầy đủ các trường cấu hình
 const CONFIG_FIELDS = [
   { id: 'workflow_repair_id', key: 'workflow_repair_id', desc: 'ID quy trình Sửa chữa trên Base.vn' },
   { id: 'workflow_storage_id', key: 'workflow_storage_id', desc: 'ID quy trình Lưu kho trên Base.vn' },
   { id: 'workflow_delivery_id', key: 'workflow_delivery_id', desc: 'ID quy trình Giao nhận trên Base.vn' },
-  { id: 'base_shared_secret', key: 'base_shared_secret', desc: 'Mã secret token xác thực Webhook Base.vn' },
-  { id: 'base_api_token', key: 'base_api_token', desc: 'Token kết nối API ngoài' },
+  { id: 'base_repair_token', key: 'base_repair_token', desc: 'API Key / Token cho ứng dụng Sửa chữa (Repair)' },
+  { id: 'base_warranty_token', key: 'base_warranty_token', desc: 'API Key / Token cho ứng dụng Bảo hành (Warranty)' },
+  { id: 'base_recept_token', key: 'base_recept_token', desc: 'API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)' },
+  { id: 'base_table_token', key: 'base_table_token', desc: 'API Key / Token cho Base Table' },
+  { id: 'base_shared_secret', key: 'base_shared_secret', desc: 'Secret Token xác thực Webhook từ Base.vn' },
   { id: 'sms_hotline', key: 'sms_hotline', desc: 'Số điện thoại hotline hiển thị trong SMS' },
   { id: 'cache_ttl_seconds', key: 'cache_ttl_seconds', desc: 'Thời gian cache cấu hình hệ thống (giây)' }
 ];
+
+// Lưu trữ giá trị ban đầu để chống ghi đè nhầm chuỗi bị che mờ (***)
+let loadedInitialConfigs = {};
 
 document.addEventListener('DOMContentLoaded', () => {
   loadConfigs();
@@ -419,7 +472,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-// An toàn HTML escaping
 function escapeHtml(str) {
   if (!str) return '';
   return String(str)
@@ -430,7 +482,6 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
-// Bật/Tắt ẩn/hiện mật khẩu
 function toggleSecret(id) {
   const el = document.getElementById(id);
   const icon = document.getElementById(`${id}_icon`);
@@ -444,7 +495,6 @@ function toggleSecret(id) {
   }
 }
 
-// Hiển thị Toast Floating
 let toastTimer = null;
 function showMessage(msg, type = 'success') {
   const toast = document.getElementById('toastFloating');
@@ -463,40 +513,72 @@ function showMessage(msg, type = 'success') {
   }, 4000);
 }
 
-// 1. Tải cấu hình từ API GET /api/settings/config
+// 1. Tải cấu hình từ API Admin Detail (GET /api/settings/config/detail)
 async function loadConfigs() {
   try {
-    const res = await fetch(`${API_BASE}/config`);
-    if (res.status === 401) {
-      window.location.href = '/login';
+    const res = await fetch(`${API_BASE}/config/detail`);
+    if (res.status === 401 || res.status === 403) {
+      // Fallback sang endpoint public nếu không phải Admin
+      const pubRes = await fetch(`${API_BASE}/config`);
+      if (pubRes.ok) {
+        const pubData = await pubRes.json();
+        populateFields(pubData);
+      }
       return;
     }
-    if (!res.ok) throw new Error('Không thể tải cấu hình từ server');
+    if (!res.ok) throw new Error('Không thể tải cấu hình chi tiết');
     
-    const configs = await res.json();
+    const dataList = await res.json();
+    const configMap = {};
+    if (Array.isArray(dataList)) {
+      dataList.forEach(item => { configMap[item.key] = item.value; });
+    }
     
-    // Gán dữ liệu vào từng Input
-    CONFIG_FIELDS.forEach(field => {
-      const inputEl = document.getElementById(field.id);
-      if (inputEl && configs[field.key] !== undefined) {
-        inputEl.value = configs[field.key];
-      }
-    });
+    populateFields(configMap);
   } catch (e) {
     console.warn('Cảnh báo tải cấu hình:', e);
   }
 }
 
-// 2. Lưu toàn bộ cấu hình bằng API Hàng Loạt PUT /api/settings/config/bulk
+function populateFields(configMap) {
+  loadedInitialConfigs = { ...configMap };
+  CONFIG_FIELDS.forEach(field => {
+    const inputEl = document.getElementById(field.id);
+    if (inputEl && configMap[field.key] !== undefined) {
+      inputEl.value = configMap[field.key];
+    }
+  });
+}
+
+// 2. Khởi tạo cấu hình mặc định (POST /api/settings/config/init-defaults)
+async function initDefaultSettings() {
+  try {
+    const res = await fetch(`${API_BASE}/config/init-defaults`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Khởi tạo thất bại');
+
+    showMessage(data.message || 'Đã khởi tạo thành công khung cấu hình mặc định!', 'success');
+    loadConfigs();
+  } catch (e) {
+    showMessage(e.message || 'Lỗi khi khởi tạo khung cấu hình!', 'error');
+  }
+}
+
+// 3. Lưu tất cả cấu hình an toàn (PUT /api/settings/config/bulk)
 async function saveAllConfigs() {
   const btn = document.getElementById('btnSaveConfig');
   const settingsToUpdate = [];
 
-  // Thu thập giá trị từ các Input
   CONFIG_FIELDS.forEach(field => {
     const el = document.getElementById(field.id);
     if (el) {
       const val = el.value.trim();
+      
+      // BỎ QUA không gửi nếu giá trị bị che mờ (chứa '***') và người dùng không sửa lại
+      if (val.includes('***') && val === loadedInitialConfigs[field.key]) {
+        return;
+      }
+
       if (val !== '') {
         settingsToUpdate.push({
           key: field.key,
@@ -508,7 +590,7 @@ async function saveAllConfigs() {
   });
 
   if (settingsToUpdate.length === 0) {
-    showMessage('Vui lòng nhập ít nhất một thông số cấu hình!', 'error');
+    showMessage('Không có thay đổi nào mới cần lưu!', 'error');
     return;
   }
 
@@ -518,7 +600,6 @@ async function saveAllConfigs() {
       btn.innerHTML = `<i class="fa-solid fa-spinner animate-spin"></i> <span>Đang lưu...</span>`;
     }
 
-    // Gửi 1 request duy nhất qua API Bulk Update
     const res = await fetch(`${API_BASE}/config/bulk`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -530,7 +611,8 @@ async function saveAllConfigs() {
       throw new Error(data.detail || 'Không thể cập nhật cấu hình');
     }
 
-    showMessage(`Đã cập nhật thành công ${settingsToUpdate.length} thông số cấu hình!`, 'success');
+    showMessage(`Đã lưu thành công ${settingsToUpdate.length} thông số cấu hình!`, 'success');
+    loadConfigs();
   } catch (e) {
     showMessage(e.message || 'Lỗi khi lưu cấu hình hệ thống!', 'error');
   } finally {
@@ -541,7 +623,7 @@ async function saveAllConfigs() {
   }
 }
 
-// 3. Tải danh sách quy tắc ánh xạ trạng thái
+// 4. Tải danh sách quy tắc ánh xạ trạng thái
 async function loadMappings() {
   const tbody = document.getElementById('mappingTableBody');
   try {
@@ -612,7 +694,7 @@ function closeModalOnOverlay(e) {
   if (e.target.id === 'mappingModal') closeModal();
 }
 
-// 4. Thêm / Cập nhật quy tắc ánh xạ mới (POST /api/settings/status-mappings)
+// 5. Thêm / Cập nhật quy tắc ánh xạ mới (POST /api/settings/status-mappings)
 async function submitMapping() {
   const base_stage = document.getElementById('modal_base_stage').value.trim();
   const system_status = document.getElementById('modal_system_status').value;
@@ -654,7 +736,7 @@ async function submitMapping() {
   }
 }
 
-// 5. Xóa quy tắc ánh xạ (DELETE /api/settings/status-mappings/{id})
+// 6. Xóa quy tắc ánh xạ (DELETE /api/settings/status-mappings/{id})
 async function deleteMapping(id) {
   if (!confirm('Bạn có chắc chắn muốn xóa quy tắc ánh xạ này không?')) return;
   try {

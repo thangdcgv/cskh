@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
@@ -130,10 +130,12 @@ async def get_next_code() -> tuple[str, int]:
         .astimezone(timezone.utc)
         .isoformat()
     )
+    # FIX LỖI: Chỉ lọc các mã có tiền tố NT-MMDD- trong ngày
     query = (
         supabase.table(TABLE)
         .select("code")
         .gte("created_at", today_start_utc)
+        .like("code", f"{prefix}%")
         .order("created_at", desc=True)
         .limit(1)
     )
@@ -403,21 +405,18 @@ async def return_item_to_customer(
     current_status = str(record.get("status") or "").lower()
     current_process = str(record.get("current_process") or "repair").lower()
 
-    # Ràng buộc 1: Nếu thuộc Quy trình Giao Nhận -> KHÔNG ĐƯỢC TRẢ MÁY TẠI QUẦY
     if current_process == "delivery":
         raise HTTPException(
             status_code=400,
             detail="Đơn hàng đang thuộc Quy trình Giao nhận! Việc bàn giao do Shipper/Bên Giao nhận thực hiện."
         )
 
-    # Ràng buộc 2: Nếu đang sửa chữa -> KHÔNG ĐƯỢC TRẢ MÁY
     if current_process == "repair" and current_status in ("processing", "repairing"):
         raise HTTPException(
             status_code=400,
             detail="Thiết bị đang trong quá trình sửa chữa! KTV cần hoàn thành hoặc báo hủy sửa trước khi trả máy."
         )
 
-    # Ràng buộc 3: Đã trả rồi -> Báo lỗi
     if current_status == "returned":
         raise HTTPException(status_code=400, detail="Phiếu này đã được xác nhận trả trước đó.")
 
@@ -466,3 +465,58 @@ async def return_item_to_customer(
         "data": updated,
         "sms_info": sms_info,
     }
+
+
+# ==================== 6. XÓA / HỦY PHIẾU (AN TOÀN BẢO BỎ ĐỒNG BỘ) ====================
+@router.delete("/{ticket_id}")
+async def delete_reception_ticket(
+    ticket_id: str,
+    user: dict = Depends(get_current_user),  # Bổ sung xác thực người dùng
+):
+    """
+    Xóa / Hủy phiếu tiếp nhận an toàn (Soft Delete để tránh bị re-create từ Base)
+    """
+    try:
+        # Kiểm tra UUID hợp lệ
+        try:
+            UUID(ticket_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+
+        now_utc = datetime.now(timezone.utc).isoformat()
+
+        # Dùng Soft Delete (chuyển status thành cancelled) thay vì delete() cứng
+        def _soft_delete():
+            return supabase.table(TABLE).update({
+                "status": "cancelled",
+                "failure_reason": "Đã xóa trực tiếp tại Lễ tân",
+                "updated_at": now_utc
+            }).eq("id", ticket_id).execute()
+
+        res = await asyncio.to_thread(_soft_delete)
+        
+        if not res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, 
+                detail="Không tìm thấy phiếu cần xóa"
+            )
+            
+        deleted_record = res.data[0]
+
+        # Broadcast cho các client khác cập nhật giao diện
+        await safe_broadcast({"type": "reception_deleted", "record": deleted_record})
+
+        return {
+            "status": "success", 
+            "message": f"Đã xóa thành công phiếu {deleted_record.get('code', ticket_id)}",
+            "data": deleted_record
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Lỗi khi xóa phiếu: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=f"Lỗi hệ thống khi xóa phiếu: {str(e)}"
+        )

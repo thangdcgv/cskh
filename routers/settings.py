@@ -10,6 +10,21 @@ from routers.auth import get_current_user
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
+ALLOWED_STATUSES = {"received", "processing", "repairing", "fixed", "returned", "cancelled"}
+
+# Danh sách các Key chuẩn dùng cho Base Workflow & System Sync
+DEFAULT_SYSTEM_KEYS = [
+    {"key": "base_repair_token", "value": "", "description": "API Key / Token cho ứng dụng Sửa chữa (Repair)"},
+    {"key": "base_warranty_token", "value": "", "description": "API Key / Token cho ứng dụng Bảo hành (Warranty)"},
+    {"key": "base_recept_token", "value": "", "description": "API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)"},
+    {"key": "base_table_token", "value": "", "description": "API Key / Token cho Base Table"},
+    {"key": "workflow_repair_id", "value": "20025", "description": "Workflow ID quy trình Sửa chữa trên Base"},
+    {"key": "workflow_storage_id", "value": "20036", "description": "Workflow ID quy trình Lưu kho trên Base"},
+    {"key": "workflow_delivery_id", "value": "20037", "description": "Workflow ID quy trình Giao nhận trên Base"},
+    {"key": "base_shared_secret", "value": "", "description": "Secret Token xác thực Webhook từ Base gửi về"},
+    {"key": "cache_ttl_seconds", "value": "60", "description": "Thời gian lưu Cache RAM cấu hình (giây)"},
+]
+
 
 # =========================================================
 # SCHEMAS
@@ -40,13 +55,20 @@ class StatusMappingCreate(BaseModel):
     @field_validator("system_status")
     @classmethod
     def validate_system_status(cls, v: str) -> str:
-        allowed = {"received", "processing", "repairing", "fixed", "returned", "cancelled"}
         v_clean = v.lower().strip()
-        if v_clean not in allowed:
+        if v_clean not in ALLOWED_STATUSES:
             raise ValueError(
-                f"Trạng thái không hợp lệ. Các trạng thái cho phép: {', '.join(sorted(allowed))}"
+                f"Trạng thái không hợp lệ. Các trạng thái cho phép: {', '.join(sorted(ALLOWED_STATUSES))}"
             )
         return v_clean
+
+
+class StatusMappingBulkUpdate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    mappings: List[StatusMappingCreate] = Field(
+        ..., min_length=1, description="Danh sách ánh xạ trạng thái cần lưu"
+    )
 
 
 # =========================================================
@@ -69,6 +91,13 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def mask_secret(val: str) -> str:
+    """Che giấu chuỗi Token/Secret nếu không phải Admin xem trực tiếp"""
+    if not val or len(val) < 8:
+        return "********"
+    return f"{val[:3]}***{val[-4:]}"
+
+
 # =========================================================
 # 1. CẤU HÌNH HỆ THỐNG (SYSTEM SETTINGS)
 # =========================================================
@@ -76,13 +105,21 @@ def utc_now_iso() -> str:
 async def get_system_configs(_: dict = Depends(get_current_user)):
     """
     Lấy toàn bộ cấu hình dưới dạng Key-Value { "key": "value" }.
-    Dùng cho các Client/User cần đọc nhanh cấu hình hệ thống.
+    Tự động che giấu các chuỗi Token/Secret đối với End-User.
     """
     try:
         res = await asyncio.to_thread(
             lambda: supabase.table("system_settings").select("key, value").execute()
         )
-        configs = {item["key"]: item["value"] for item in (res.data or [])}
+        configs = {}
+        for item in (res.data or []):
+            k = item["key"]
+            v = item["value"]
+            # Che giấu Token nhạy cảm
+            if any(secret_kw in k.lower() for secret_kw in ["token", "secret", "password"]):
+                configs[k] = mask_secret(v)
+            else:
+                configs[k] = v
         return configs
     except Exception as e:
         raise HTTPException(
@@ -94,8 +131,8 @@ async def get_system_configs(_: dict = Depends(get_current_user)):
 @router.get("/config/detail")
 async def get_system_configs_detail(current_user: dict = Depends(require_admin)):
     """
-    Lấy danh sách chi tiết các cấu hình (Gồm description, updated_at, updated_by).
-    Dùng riêng cho trang Quản trị Admin UI.
+    Lấy danh sách chi tiết các cấu hình (Bao gồm giá trị gốc, description, updated_at).
+    Dùng riêng cho Admin UI để hiển thị và chỉnh sửa Form.
     """
     try:
         res = await asyncio.to_thread(
@@ -106,6 +143,51 @@ async def get_system_configs_detail(current_user: dict = Depends(require_admin))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Lỗi tải danh sách chi tiết cấu hình: {str(e)}"
+        )
+
+
+@router.post("/config/init-defaults")
+async def initialize_default_settings(current_user: dict = Depends(require_admin)):
+    """
+    Khởi tạo mẫu các Key cấu hình mặc định (Repair Token, Warranty Token, Workflow IDs...)
+    Nếu Key đã tồn tại thì giữ nguyên giá trị cũ.
+    """
+    try:
+        user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
+        now = utc_now_iso()
+
+        # 1. Kiểm tra các key đã có trong DB
+        existing_res = await asyncio.to_thread(
+            lambda: supabase.table("system_settings").select("key").execute()
+        )
+        existing_keys = {item["key"] for item in (existing_res.data or [])}
+
+        # 2. Lọc danh sách key chưa tạo
+        records_to_insert = []
+        for default_item in DEFAULT_SYSTEM_KEYS:
+            if default_item["key"] not in existing_keys:
+                records_to_insert.append({
+                    "key": default_item["key"],
+                    "value": default_item["value"],
+                    "description": default_item["description"],
+                    "updated_at": now,
+                    "updated_by": user_id,
+                })
+
+        if records_to_insert:
+            await asyncio.to_thread(
+                lambda: supabase.table("system_settings").insert(records_to_insert).execute()
+            )
+
+        return {
+            "status": "success",
+            "message": f"Đã khởi tạo thành công {len(records_to_insert)} khóa cấu hình mặc định",
+            "inserted_keys": [item["key"] for item in records_to_insert]
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi khởi tạo cấu hình mặc định: {str(e)}"
         )
 
 
@@ -154,9 +236,7 @@ async def update_bulk_system_configs(
     payload: SystemSettingBulkUpdate,
     current_user: dict = Depends(require_admin)
 ):
-    """
-    Cập nhật hàng loạt nhiều khóa cấu hình cùng lúc (Dùng khi submit Admin Settings Form).
-    """
+    """Cập nhật hàng loạt nhiều khóa cấu hình cùng lúc (Dùng khi submit Admin Settings Form)"""
     try:
         user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
         now = utc_now_iso()
@@ -246,7 +326,7 @@ async def save_status_mapping(
     mapping: StatusMappingCreate,
     current_user: dict = Depends(require_admin)
 ):
-    """Thêm mới hoặc cập nhật ánh xạ trạng thái theo base_stage (Upsert)"""
+    """Thêm mới hoặc cập nhật 1 ánh xạ trạng thái theo base_stage (Upsert)"""
     try:
         user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
         data = {
@@ -277,6 +357,44 @@ async def save_status_mapping(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Lỗi lưu ánh xạ: {str(e)}"
+        )
+
+
+@router.put("/status-mappings/bulk")
+async def save_bulk_status_mappings(
+    payload: StatusMappingBulkUpdate,
+    current_user: dict = Depends(require_admin)
+):
+    """Cập nhật hàng loạt nhiều ánh xạ trạng thái cùng lúc cho Admin UI"""
+    try:
+        user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
+        now = utc_now_iso()
+
+        records = []
+        for item in payload.mappings:
+            records.append({
+                "base_stage": item.base_stage,
+                "system_status": item.system_status,
+                "description": item.description,
+                "updated_at": now,
+                "updated_by": user_id,
+            })
+
+        res = await asyncio.to_thread(
+            lambda: supabase.table("status_mappings").upsert(records, on_conflict="base_stage").execute()
+        )
+
+        return {
+            "status": "success",
+            "message": f"Đã cập nhật {len(records)} ánh xạ trạng thái thành công",
+            "data": res.data or []
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi lưu ánh xạ hàng loạt: {str(e)}"
         )
 
 

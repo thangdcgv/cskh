@@ -122,12 +122,15 @@ async def require_login(request: Request) -> Dict[str, Any]:
 get_current_user = require_login
 
 
-async def get_current_user_or_redirect(request: Request) -> Optional[Dict[str, Any]]:
-    """Lấy user hiện tại, nếu không hợp lệ thì dọn dẹp session và trả về None"""
-    try:
-        return await require_login(request)
-    except HTTPException:
-        return None
+async def get_current_user_or_redirect(request: Request):
+    user = extract_user_from_session(request)
+    if not user:
+        # Thay vì return None, hãy raise HTTPException hoặc Redirect trực tiếp
+        raise HTTPException(
+            status_code=307,
+            headers={"Location": "/login"}
+        )
+    return user
 
 
 def get_redirect_url_by_role(role: str) -> str:

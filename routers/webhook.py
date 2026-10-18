@@ -451,10 +451,16 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 mapped_status = "cancelled"
 
             target_process = "repair"
-            if existing_ticket:
-                curr_p = str(existing_ticket.get("current_process") or "repair").lower()
-                if curr_p in {"storage", "delivery"}:
-                    target_process = curr_p
+            if not workflow_id and existing_ticket:
+                stored_delivery_job_id = str(existing_ticket.get("delivery_job_id") or "").strip()
+                stored_storage_job_id = str(existing_ticket.get("storage_job_id") or "").strip()
+                
+                if job_id and job_id == stored_delivery_job_id:
+                    workflow_id = workflow_delivery
+                elif job_id and job_id == stored_storage_job_id:
+                    workflow_id = workflow_storage
+                else:
+                    workflow_id = workflow_repair
 
             update_payload = {
                 "status": mapped_status,

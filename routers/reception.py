@@ -112,7 +112,7 @@ def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[di
         return None
     cfg = _get_sms_settings()
     hotline = cfg["sms_hotline"]
-    tracking_domain = cfg["tracking_domain"]
+    tracking_domain = cfg["tracking_domain"].rstrip('/')
     company = cfg["company_name"]
     phone_clean = normalize_phone(phone)
     now_str = datetime.now(VN_TZ).strftime("%H:%M %d/%m/%Y")
@@ -298,13 +298,10 @@ async def search_reception_records(
 # ==================== 3. CHI TIẾT PHIẾU ====================
 @router.get("/{record_id}")
 async def get_reception_record(record_id: str, user: dict = Depends(get_current_user)):
-    try:
-        UUID(record_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+    str_id = str(record_id)
     try:
         res = await asyncio.to_thread(
-            supabase.table(TABLE).select("*").eq("id", record_id).limit(1).execute
+            supabase.table(TABLE).select("*").eq("id", str_id).limit(1).execute
         )
     except Exception as e:
         logger.error(f"Lỗi lấy chi tiết phiếu: {e}", exc_info=True)
@@ -342,12 +339,15 @@ async def update_reception_record(
     if data.status is not None:
         st_val = str(data.status).strip().lower()
         if st_val == "repairing":
-            st_val = "processing"  # ✅ Ánh xạ về giá trị hợp lệ trong CHECK constraint
+            st_val = "processing"
+            
+        # CHẶN ĐƯỜNG TẮT TRẢ MÁY
+        if st_val == "returned":
+            raise HTTPException(status_code=400, detail="Không được phép chuyển trạng thái 'returned' qua API Cập nhật. Vui lòng sử dụng API Trả Máy riêng.")
+            
         if st_val not in ALLOWED_STATUSES:
             raise HTTPException(status_code=400, detail=f"Trạng thái không hợp lệ: {st_val}")
         update_payload["status"] = st_val
-        if st_val == "returned":
-            update_payload["returned_date"] = now_utc
 
     try:
         res = await asyncio.to_thread(
@@ -369,7 +369,8 @@ async def update_reception_record(
 @router.post("/return/{record_id}")
 async def return_item_to_customer(
     record_id: str,
-    data: Optional[ReturnItemRequest] = None,
+    # Sửa lại thành khai báo default bằng class Pydantic
+    data: ReturnItemRequest = ReturnItemRequest(),
     user: dict = Depends(get_current_user),
 ):
     try:
@@ -400,15 +401,14 @@ async def return_item_to_customer(
 
     now_utc = datetime.now(timezone.utc).isoformat()
     payload = {"status": "returned", "returned_date": now_utc, "updated_at": now_utc}
-    if data:
-        if data.returned_note:
-            payload["returned_note"] = data.returned_note
-        if data.returned_method:
-            payload["returned_method"] = data.returned_method
-        if data.received_note:
-            payload["received_note"] = data.received_note
-        if data.is_fixed is not None:
-            payload["is_fixed"] = data.is_fixed
+    if data.returned_note:
+        payload["returned_note"] = data.returned_note
+    if data.returned_method:
+        payload["returned_method"] = data.returned_method
+    if data.received_note:
+        payload["received_note"] = data.received_note
+    if data.is_fixed is not None:
+        payload["is_fixed"] = data.is_fixed
 
     try:
         res = await asyncio.to_thread(

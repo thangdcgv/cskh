@@ -103,10 +103,14 @@ async def public_search_ticket(keyword: str):
         raise HTTPException(status_code=400, detail="Vui lòng nhập từ khóa tra cứu")
 
     try:
+        # 🟢 ĐÃ BỔ SUNG ĐẦY ĐỦ CÁC CỘT HÌNH ẢNH & THÔNG TIN QUY TRÌNH CHO TRACKING.HTML
         res = await asyncio.to_thread(
             lambda: supabase.table("repairs")
             .select(
-                "code, customer_name, phone, note, received_note, status, current_process, created_at, updated_at"
+                "code, customer_name, phone, note, received_note, status, current_process, "
+                "created_at, updated_at, returned_date, returned_method, returned_note, "
+                "failure_reason, is_fixed, repair_result, storage_status, delivery_status, "
+                "received_images, repair_images, storage_images, delivery_images"
             )
             .or_(f"phone.eq.{kw},code.eq.{kw}")
             .order("created_at", desc=True)
@@ -131,7 +135,7 @@ app.include_router(webhook.router)
 app.include_router(tickets.router)
 app.include_router(sync.router)
 app.include_router(settings_router.router)
-app.include_router(public_router)  # 🟢 BỔ SUNG: Đăng ký router tra cứu công khai
+app.include_router(public_router)
 
 
 # === Fix lỗi 404 Service Worker & Favicon ===
@@ -157,7 +161,7 @@ async def health_check():
     return {"status": "ok", "app": "repair-management"}
 
 
-# === Giao diện Trang chủ / Tiếp nhận ===
+# === Giao diện Trang chủ / Tiếp nhận (Yêu cầu đăng nhập nội bộ) ===
 @app.get("/", response_class=HTMLResponse)
 async def home_dashboard(request: Request):
     user = extract_user_from_session(request)
@@ -286,8 +290,10 @@ async def global_error_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Có lỗi xảy ra, vui lòng thử lại"})
 
 
-# 4. Custom 404 Handler
+# 4. Custom 404 Handler (🟢 ĐÃ SỬA: Chuyển hướng về /tracking thay vì / để không bị bắt đăng nhập)
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
-    """Tự động chuyển hướng về trang chủ khi gõ sai URL"""
-    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    """Tự động chuyển hướng về trang tra cứu công khai khi gõ sai URL"""
+    if _is_html_request(request):
+        return RedirectResponse(url="/tracking", status_code=status.HTTP_303_SEE_OTHER)
+    return JSONResponse(status_code=404, content={"detail": "Trang hoặc tài nguyên không tồn tại"})

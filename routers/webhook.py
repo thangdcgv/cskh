@@ -40,6 +40,17 @@ _last_reconcile_time = {
 }
 RECONCILE_COOLDOWN = 120.0  # Chờ 120 giây (2 phút) giữa các lần quét
 
+# Giá trị "rỗng" mà Base hay gửi về
+INVALID_BASE_VALUES = {"no value", "null", "none", "0", "false", ""}
+
+# Các chuỗi ghi chú mặc định (không phải ghi chú thật) -> không ghi đè ghi chú cũ
+PLACEHOLDER_NOTES = {"chưa ghi chú", "chưa ghi nhận"}
+
+
+def clean_base_value(v) -> str:
+    s = str(v if v is not None else "").strip()
+    return "" if s.lower() in INVALID_BASE_VALUES else s
+
 
 async def safe_background_reconcile(app_name: str):
     """
@@ -48,18 +59,18 @@ async def safe_background_reconcile(app_name: str):
     """
     global _last_reconcile_time
     current_time = time.time()
-    
+
     # Nếu chưa qua thời gian chờ, bỏ qua để không làm quá tải API
     if current_time - _last_reconcile_time.get(app_name, 0) < RECONCILE_COOLDOWN:
         return
-    
+
     _last_reconcile_time[app_name] = current_time
-    
+
     try:
-        # Import hàm reconcile từ router sync của bạn. 
+        # Import hàm reconcile từ router sync.
         # LƯU Ý: Sửa lại tên thư mục (routers.xxx) cho đúng với cấu trúc dự án của bạn nếu cần
-        from routers.sync import reconcile_tickets 
-        
+        from routers.sync import reconcile_tickets
+
         logger.info(f"🔄 [AUTO-SYNC] Kích hoạt đối soát ngầm quét phiếu rác cho quy trình: {app_name}")
         await reconcile_tickets(app_name=app_name)
     except Exception as e:
@@ -73,7 +84,7 @@ async def get_system_settings() -> Dict[str, str]:
     """Tải toàn bộ cấu hình từ system_settings (có caching an toàn)"""
     global _settings_cache, _settings_updated
     now = datetime.now(timezone.utc).timestamp()
-    
+
     ttl = 60.0
     if _settings_cache and "cache_ttl_seconds" in _settings_cache:
         try:
@@ -226,7 +237,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or job_data.get("title")
             or ""
         ).strip()
-        
+
         state = str(payload.get("state") or job_data.get("state") or "").strip().lower()
 
         # Trích xuất Workflow ID
@@ -268,16 +279,27 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         extracted_code, extracted_phone = extract_identifier_code_or_phone(task_name)
         existing_ticket = await find_existing_repair_ticket(job_id, extracted_code, extracted_phone)
 
-        # Chuẩn hóa Workflow ID theo phiếu cũ nếu có
+        # Chuẩn hóa Workflow ID (CHỈ MỘT KHỐI DUY NHẤT):
+        # - Job trùng storage_job_id / delivery_job_id đã lưu -> chắc chắn thuộc quy trình đó.
+        # - Ngược lại tin workflow_id trong payload. KHÔNG ghi đè theo current_process,
+        #   vì sẽ nuốt nhầm các lần kéo thẻ của job Sửa chữa khi phiếu đã sang giai đoạn sau.
+        # - Chỉ khi payload không có workflow_id và job không phải job sửa chữa của phiếu
+        #   thì mới đoán theo current_process.
         if existing_ticket:
-            curr_proc = str(existing_ticket.get("current_process") or "").strip().lower()
+            stored_base_job_id = str(existing_ticket.get("base_job_id") or "").strip()
             stored_delivery_job_id = str(existing_ticket.get("delivery_job_id") or "").strip()
             stored_storage_job_id = str(existing_ticket.get("storage_job_id") or "").strip()
 
-            if job_id == stored_delivery_job_id or curr_proc == "delivery":
+            if stored_delivery_job_id and job_id == stored_delivery_job_id:
                 workflow_id = workflow_delivery
-            elif job_id == stored_storage_job_id or curr_proc == "storage":
+            elif stored_storage_job_id and job_id == stored_storage_job_id:
                 workflow_id = workflow_storage
+            elif not workflow_id and job_id != stored_base_job_id:
+                curr_proc = str(existing_ticket.get("current_process") or "").strip().lower()
+                if curr_proc == "delivery":
+                    workflow_id = workflow_delivery
+                elif curr_proc == "storage":
+                    workflow_id = workflow_storage
 
         if not workflow_id:
             workflow_id = workflow_repair
@@ -297,7 +319,13 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         ticket_code = existing_ticket.get("code") if existing_ticket else None
 
         # 5. Bóc tách nội dung
-        raw_custom_note = payload.get("custom_dia_chi") or payload.get("custom_ghi_chu") or payload.get("description") or job_data.get("description")
+        custom_fields_data = payload.get("custom_fields") if isinstance(payload.get("custom_fields"), dict) else {}
+
+        raw_custom_note = (
+            payload.get("custom_dia_chi") or custom_fields_data.get("dia_chi")
+            or payload.get("custom_ghi_chu") or custom_fields_data.get("ghi_chu")
+            or payload.get("description") or job_data.get("description")
+        )
         if raw_custom_note and str(raw_custom_note).strip().lower() != "no value":
             base_note = str(raw_custom_note).strip()
         else:
@@ -310,17 +338,19 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         extracted_req_note = parsed_info.get("note", "").strip()
         extracted_rec_note = parsed_info.get("received_note", "").strip()
 
+        req_note_is_real = bool(extracted_req_note) and extracted_req_note.lower() not in PLACEHOLDER_NOTES
+
         if existing_ticket:
             final_customer_name = extracted_name if (extracted_name and extracted_name != "Khách lẻ") else existing_ticket.get("customer_name")
             final_phone = extracted_phone_norm if extracted_phone_norm else existing_ticket.get("phone")
             final_address = extracted_addr if extracted_addr else existing_ticket.get("address")
-            final_note = extracted_req_note if (extracted_req_note and extracted_req_note != "Chưa ghi nhận") else existing_ticket.get("note")
+            final_note = extracted_req_note if req_note_is_real else existing_ticket.get("note")
             final_received_note = extracted_rec_note if extracted_rec_note else existing_ticket.get("received_note")
         else:
             final_customer_name = extracted_name or "Khách lẻ"
             final_phone = extracted_phone_norm
             final_address = extracted_addr
-            final_note = extracted_req_note or "Chưa ghi nhận"
+            final_note = extracted_req_note or "Chưa ghi chú"
             final_received_note = extracted_rec_note
 
         # 6. Trích xuất hình ảnh
@@ -437,30 +467,34 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         # 6C. QUY TRÌNH SỬA CHỮA MẶC ĐỊNH
         # =========================================================
         else:
-            base_failed_reason = (payload.get("failed_reason") or payload.get("fail_reason") or job_data.get("failed_reason") or "").strip()
-            base_failed_note = (payload.get("failed_note") or payload.get("fail_note") or job_data.get("failed_note") or "").strip()
-            if base_failed_reason.lower() == "no value": base_failed_reason = ""
-            if base_failed_note.lower() == "no value": base_failed_note = ""
-
-            custom_tinh_trang = payload.get("custom_tinh_trang_thiet_bi") or ""
-            custom_tinh_trang = "" if str(custom_tinh_trang).strip().lower() == "no value" else str(custom_tinh_trang).strip()
+            base_failed_reason = clean_base_value(
+                payload.get("failed_reason") or payload.get("fail_reason") or job_data.get("failed_reason")
+            )
+            base_failed_note = clean_base_value(
+                payload.get("failed_note") or payload.get("fail_note") or job_data.get("failed_note")
+            )
+            custom_tinh_trang = clean_base_value(
+                payload.get("custom_tinh_trang_thiet_bi") or custom_fields_data.get("tinh_trang_thiet_bi")
+            )
 
             status_map = await get_dynamic_status_map()
             mapped_status = validate_status(stage_name, status_map, metatype=metatype, state=state) or "received"
-            if base_failed_reason or base_failed_note:
+
+            # Chỉ coi là thất bại thật khi Base báo state/metatype = failed.
+            # Có failed_reason KHÔNG có nghĩa là đơn đang thất bại (có thể là dữ liệu cũ khi lùi bước).
+            if state == "failed" or metatype == "failed":
                 mapped_status = "cancelled"
 
+            logger.info(
+                f"[DEBUG-STATUS] stage='{stage_name}' metatype='{metatype}' state='{state}' "
+                f"failed_reason='{base_failed_reason}' -> mapped='{mapped_status}'"
+            )
+
             target_process = "repair"
-            if not workflow_id and existing_ticket:
-                stored_delivery_job_id = str(existing_ticket.get("delivery_job_id") or "").strip()
-                stored_storage_job_id = str(existing_ticket.get("storage_job_id") or "").strip()
-                
-                if job_id and job_id == stored_delivery_job_id:
-                    workflow_id = workflow_delivery
-                elif job_id and job_id == stored_storage_job_id:
-                    workflow_id = workflow_storage
-                else:
-                    workflow_id = workflow_repair
+            if existing_ticket:
+                curr_p = str(existing_ticket.get("current_process") or "repair").lower()
+                if curr_p in {"storage", "delivery"}:
+                    target_process = curr_p
 
             update_payload = {
                 "status": mapped_status,
@@ -473,6 +507,17 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 "updated_at": now_iso,
             }
 
+            # Base có thể tạo job sửa chữa MỚI (id mới) khi chuyển ngược quy trình.
+            # Luôn trỏ phiếu về job sửa chữa hiện tại, nếu không reconcile sẽ coi job cũ là "đã bị xóa".
+            if existing_ticket:
+                old_base_job_id = str(existing_ticket.get("base_job_id") or "").strip()
+                if old_base_job_id != job_id:
+                    update_payload["base_job_id"] = job_id
+                    logger.info(
+                        f"🔁 [SỬA CHỮA] Phiếu {existing_ticket.get('code')}: base_job_id '{old_base_job_id}' -> '{job_id}'"
+                    )
+
+            # Hình ảnh
             repair_imgs = img_groups.get("repair", [])
             if mapped_status == "received":
                 new_received_imgs = get_new_images(repair_imgs, old_received)
@@ -486,23 +531,59 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             if mapped_status == "returned":
                 update_payload["returned_date"] = now_iso
 
-            if mapped_status == "cancelled" or base_failed_reason or base_failed_note:
+            # ---------- Thất bại thật vs lùi bước ----------
+            if mapped_status == "cancelled":
                 update_payload["is_fixed"] = False
                 update_payload["repair_result"] = "failed"
                 cancel_parts = []
-                if base_failed_reason: cancel_parts.append(f"Lý do: {base_failed_reason}")
-                if base_failed_note: cancel_parts.append(f"Ghi chú: {base_failed_note}")
+                if base_failed_reason:
+                    cancel_parts.append(f"Lý do: {base_failed_reason}")
+                if base_failed_note:
+                    cancel_parts.append(f"Ghi chú: {base_failed_note}")
                 cancel_str = " - ".join(cancel_parts) if cancel_parts else "KTV báo hủy sửa"
                 update_payload["failure_reason"] = cancel_str
-                
-                curr_received = (existing_ticket.get("received_note") or "").strip() if existing_ticket else final_received_note
-                if cancel_str not in curr_received:
-                    update_payload["received_note"] = f"{curr_received} [{cancel_str}]" if curr_received else f"[{cancel_str}]"
 
+                curr_received = (
+                    (existing_ticket.get("received_note") or "").strip()
+                    if existing_ticket else (final_received_note or "")
+                )
+                if cancel_str not in curr_received:
+                    update_payload["received_note"] = f"{curr_received} [{cancel_str}]".strip()
+
+            elif existing_ticket and target_process == "repair":
+                # Đơn đang "sống" -> xóa dấu vết thất bại / hoàn tất cũ nếu có
+                old_failure = (existing_ticket.get("failure_reason") or "").strip()
+                if existing_ticket.get("repair_result") == "failed" or old_failure:
+                    update_payload["is_fixed"] = None
+                    update_payload["repair_result"] = None
+                    update_payload["failure_reason"] = None
+
+                    # Xóa đúng đoạn "[<failure_reason>]" đã từng được nối vào received_note
+                    rn = update_payload.get("received_note") or ""
+                    if old_failure:
+                        rn = rn.replace(f"[{old_failure}]", "")
+                    update_payload["received_note"] = rn.strip()
+
+                if mapped_status != "returned" and existing_ticket.get("returned_date"):
+                    update_payload["returned_date"] = None
+
+                # Có lý do từ Base khi lùi bước -> ghi vào note cho KTV/lễ tân biết
+                if base_failed_reason or base_failed_note:
+                    revert_parts = []
+                    if base_failed_reason:
+                        revert_parts.append(f"Lý do lùi bước: {base_failed_reason}")
+                    if base_failed_note:
+                        revert_parts.append(f"Ghi chú: {base_failed_note}")
+                    revert_str = " | ".join(revert_parts)
+                    curr_note = update_payload.get("note") or ""
+                    if revert_str not in curr_note:
+                        update_payload["note"] = f"{curr_note}\n[{revert_str}]".strip()
+
+            # ---------- Ghi DB ----------
             if existing_ticket:
                 if mapped_status in {"fixed", "returned"} and custom_tinh_trang:
                     ktv_text = f"Tình trạng KTV báo: {custom_tinh_trang}"
-                    curr_note = final_note or (existing_ticket.get("note") or "").strip()
+                    curr_note = update_payload.get("note") or (existing_ticket.get("note") or "").strip()
                     if ktv_text not in curr_note:
                         update_payload["note"] = f"{curr_note} | {ktv_text}" if curr_note else ktv_text
 
@@ -510,21 +591,28 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                     lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
                 )
                 ticket_code = existing_ticket["code"]
-                logger.info(f"🛠️ [SỬA CHỮA] Cập nhật phiếu {ticket_code} thành công")
+                logger.info(f"🛠️ [SỬA CHỮA] Cập nhật phiếu {ticket_code} (Status: {mapped_status})")
             else:
                 if mapped_status in {"fixed", "returned"} and custom_tinh_trang:
                     ktv_text = f"Tình trạng KTV báo: {custom_tinh_trang}"
-                    final_note = f"{final_note} | {ktv_text}" if final_note else ktv_text
+                    base = update_payload.get("note") or final_note or ""
+                    update_payload["note"] = f"{base} | {ktv_text}" if base else ktv_text
 
-                ticket_code = extracted_code or generate_ticket_code()
+                if extracted_code:
+                    ticket_code = extracted_code
+                elif asyncio.iscoroutinefunction(generate_ticket_code):
+                    ticket_code = await generate_ticket_code()
+                else:
+                    ticket_code = generate_ticket_code()
+
                 new_record = {
                     "base_job_id": job_id,
                     "code": ticket_code,
                     "customer_name": final_customer_name,
                     "phone": final_phone,
                     "address": final_address,
-                    "note": final_note,
-                    "received_note": update_payload.get("received_note", final_received_note),
+                    "note": update_payload.get("note"),
+                    "received_note": update_payload.get("received_note"),
                     "status": mapped_status,
                     "current_process": "repair",
                     "is_fixed": update_payload.get("is_fixed"),
@@ -545,9 +633,13 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 except Exception as insert_err:
                     if "duplicate" in str(insert_err).lower():
                         logger.info(f"Webhook: Trùng job_id {job_id} -> Đang cập nhật lại")
-                        ex = await asyncio.to_thread(lambda: supabase.table("repairs").select("id, code").eq("base_job_id", job_id).limit(1).execute())
+                        ex = await asyncio.to_thread(
+                            lambda: supabase.table("repairs").select("id, code").eq("base_job_id", job_id).limit(1).execute()
+                        )
                         if ex.data:
-                            await asyncio.to_thread(lambda: supabase.table("repairs").update(update_payload).eq("id", ex.data[0]["id"]).execute())
+                            await asyncio.to_thread(
+                                lambda: supabase.table("repairs").update(update_payload).eq("id", ex.data[0]["id"]).execute()
+                            )
                             ticket_code = ex.data[0]["code"]
                     else:
                         raise
@@ -561,7 +653,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         elif str(workflow_id) == str(workflow_delivery):
             current_app_name = "delivery"
 
-        # Đẩy tiến trình đối soát (quét rác) vào background. 
+        # Đẩy tiến trình đối soát (quét rác) vào background.
         # Việc này không block luồng xử lý chính nên API trả về rất nhanh.
         bg_tasks.add_task(safe_background_reconcile, current_app_name)
 

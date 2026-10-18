@@ -314,13 +314,13 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             final_customer_name = extracted_name if (extracted_name and extracted_name != "Khách lẻ") else existing_ticket.get("customer_name")
             final_phone = extracted_phone_norm if extracted_phone_norm else existing_ticket.get("phone")
             final_address = extracted_addr if extracted_addr else existing_ticket.get("address")
-            final_note = extracted_req_note if (extracted_req_note and extracted_req_note != "Chưa có yêu cầu") else existing_ticket.get("note")
+            final_note = extracted_req_note if (extracted_req_note and extracted_req_note != "Chưa ghi nhận") else existing_ticket.get("note")
             final_received_note = extracted_rec_note if extracted_rec_note else existing_ticket.get("received_note")
         else:
             final_customer_name = extracted_name or "Khách lẻ"
             final_phone = extracted_phone_norm
             final_address = extracted_addr
-            final_note = extracted_req_note or "Chưa có yêu cầu"
+            final_note = extracted_req_note or "Chưa ghi nhận"
             final_received_note = extracted_rec_note
 
         # 6. Trích xuất hình ảnh

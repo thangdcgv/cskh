@@ -344,7 +344,19 @@ tr:hover td {
         <input type="text" id="sms_hotline" placeholder="VD: 0901234567" class="form-input font-monospace">
         <p class="hint-text">Số hotline đính kèm ở cuối tin nhắn SMS xác nhận phiếu</p>
       </div>
+      <!-- Tên Công Ty -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Tên Công Ty / Cửa Hàng</label>
+        <input type="text" id="company_name" placeholder="VD: May in Dai Thanh" class="form-input font-monospace">
+        <p class="hint-text">Hiển thị ở đầu tin nhắn SMS xác nhận (VD: May in Dai Thanh tao phieu...)</p>
+      </div>
 
+      <!-- Tracking Domain -->
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Tên Miền Tra Cứu (Tracking Domain)</label>
+        <input type="text" id="tracking_domain" placeholder="VD: cskh-nu.vercel.app" class="form-input font-monospace">
+        <p class="hint-text">Tên miền trang tra cứu tiến độ đính kèm trong SMS</p>
+      </div>
       <!-- Cache TTL -->
       <div>
         <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">Thời Gian Cache (Giây)</label>
@@ -458,6 +470,8 @@ const CONFIG_FIELDS = [
   { id: 'base_table_token', key: 'base_table_token', desc: 'API Key / Token cho Base Table' },
   { id: 'base_shared_secret', key: 'base_shared_secret', desc: 'Secret Token xác thực Webhook từ Base.vn' },
   { id: 'sms_hotline', key: 'sms_hotline', desc: 'Số điện thoại hotline hiển thị trong SMS' },
+  { id: 'company_name', key: 'company_name', desc: 'Tên thương hiệu/công ty hiển thị trong SMS' },
+  { id: 'tracking_domain', key: 'tracking_domain', desc: 'Tên miền trang tra cứu tiến độ đơn hàng' },
   { id: 'cache_ttl_seconds', key: 'cache_ttl_seconds', desc: 'Thời gian cache cấu hình hệ thống (giây)' }
 ];
 

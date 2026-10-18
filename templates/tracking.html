@@ -242,7 +242,7 @@
                             <!-- YÊU CẦU CỦA KHÁCH -->
                             <div class="col-12 col-md-6 border-top pt-2">
                                 <span class="text-muted small d-block"><i class="bi bi-tools text-brand-red me-1"></i>Yêu cầu sửa chữa / Báo lỗi:</span>
-                                <strong id="resCustomerReq" class="d-block text-dark small mt-1">Chưa có yêu cầu</strong>
+                                <strong id="resCustomerReq" class="d-block text-dark small mt-1">Chưa ghi nhận</strong>
                             </div>
 
                             <!-- TÌNH TRẠNG NHẬN MÁY -->
@@ -487,17 +487,30 @@
             const spinner = document.getElementById('searchSpinner');
             const searchBtn = document.getElementById('searchBtn');
 
-            btnText.style.display = 'none';
-            spinner.style.display = 'inline-block';
-            searchBtn.disabled = true;
+            // Màn hình chờ
+            if (btnText) btnText.style.display = 'none';
+            if (spinner) spinner.style.display = 'inline-block';
+            if (searchBtn) searchBtn.disabled = true;
 
-            document.getElementById('resultContainer').style.display = 'none';
-            document.getElementById('multiResultContainer').style.display = 'none';
-            document.getElementById('notFoundContainer').style.display = 'none';
+            // Reset các khung hiển thị
+            const resultContainer = document.getElementById('resultContainer');
+            const multiResultContainer = document.getElementById('multiResultContainer');
+            const notFoundContainer = document.getElementById('notFoundContainer');
+
+            if (resultContainer) resultContainer.style.display = 'none';
+            if (multiResultContainer) multiResultContainer.style.display = 'none';
+            if (notFoundContainer) notFoundContainer.style.display = 'none';
 
             try {
-                const res = await fetch(`/api/reception/search?query_str=${encodeURIComponent(query)}&limit=10`);
-                
+                // ✅ Đã sửa biến cleanKw -> query
+                const res = await fetch(`/api/public/tracking/${encodeURIComponent(query)}`);
+
+                // ✅ Xử lý riêng trường hợp không tìm thấy (HTTP 404)
+                if (res.status === 404) {
+                    if (notFoundContainer) notFoundContainer.style.display = 'block';
+                    return;
+                }
+
                 if (!res.ok) {
                     throw new Error(`Lỗi phản hồi từ máy chủ (HTTP ${res.status})`);
                 }
@@ -508,23 +521,27 @@
                     currentSearchResults = result.data;
 
                     if (currentSearchResults.length === 1) {
-                        document.getElementById('backToListWrapper').style.display = 'none';
+                        const backWrapper = document.getElementById('backToListWrapper');
+                        if (backWrapper) backWrapper.style.display = 'none';
                         displayTicketDetail(currentSearchResults[0]);
                     } else {
                         renderTicketList(currentSearchResults);
                     }
                     
-                    document.getElementById('mainCardArea').scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    const mainCardArea = document.getElementById('mainCardArea');
+                    if (mainCardArea) {
+                        mainCardArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }
                 } else {
-                    document.getElementById('notFoundContainer').style.display = 'block';
+                    if (notFoundContainer) notFoundContainer.style.display = 'block';
                 }
             } catch (err) {
                 console.error('Search error:', err);
                 alert('Không thể kết nối đến hệ thống tra cứu. Vui lòng thử lại sau!');
             } finally {
-                btnText.style.display = 'inline-block';
-                spinner.style.display = 'none';
-                searchBtn.disabled = false;
+                if (btnText) btnText.style.display = 'inline-block';
+                if (spinner) spinner.style.display = 'none';
+                if (searchBtn) searchBtn.disabled = false;
             }
         }
 
@@ -616,7 +633,7 @@
             document.getElementById('resCustomer').innerText = item.customer_name || 'Khách lẻ';
             document.getElementById('resPhone').innerText = item.phone || '';
             
-            document.getElementById('resCustomerReq').innerText = item.note || 'Chưa có yêu cầu';
+            document.getElementById('resCustomerReq').innerText = item.note || 'Chưa ghi nhận';
             document.getElementById('resNote').innerText = item.received_note || 'Bình thường';
 
             const st = (item.status || '').toLowerCase();

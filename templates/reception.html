@@ -76,20 +76,27 @@ const removeAccents = (str) => {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
 };
 
-const sendReceptionSms = (record, hotline = '') => {
+const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
   if (!record || !record.phone) return;
   const cleanPhone = record.phone.replace(/[\s\-\.]/g, '');
   const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
   const cleanCustomerName = removeAccents(record.customer_name || '');
   const noteStr = removeAccents(record.received_note || record.note || 'Binh thuong').trim();
   
-  const trackingUrl = `${window.location.origin}/tracking?search=${record.code || cleanPhone}`;
-  const lhPart = hotline ? ` .LH: ${hotline}` : '';
-  const smsText = `May in Dai Thanh da tao phieu [${record.code}] ghi nhan thiet bi KH ${cleanCustomerName} luc ${nowStr}. Tinh trang: ${noteStr}. Tra cuu tien do tai: ${trackingUrl}${lhPart}`;
+  const domain = trackingDomain || 'cskh-nu.vercel.app/tracking';
+  const lhPart = hotline ? `. LH: ${hotline}` : '';
+  const smsText = (
+    `May in Dai Thanh tao phieu [${record.code}] ghi nhan thiet bi KH ${cleanCustomerName} ` +
+    `luc ${nowStr}. Tinh trang: ${noteStr}. ` +
+    `Tra cuu: ${domain}/tracking/${cleanPhone}${lhPart}`
+  );
   
   const encodedText = encodeURIComponent(smsText);
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const targetLink = isIOS ? `sms:${cleanPhone}&body=${encodedText}` : `sms:${cleanPhone}?body=${encodedText}`;
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const targetLink = isIOS 
+    ? `sms:${cleanPhone}&body=${encodedText}` 
+    : `sms:${cleanPhone}?body=${encodedText}`;
   window.location.href = targetLink;
 };
 
@@ -212,7 +219,7 @@ function ReceptionApp() {
   // KÍCH HOẠT MODAL XÓA
   const openDeleteModal = (record) => {
     const isCreator = record.created_by && record.created_by === currentUser.username;
-    const isAdmin = currentUser.role === 'admin' || currentUser.role === 'super admin' || currentUser.role === 'system admin';
+    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
 
     if (!isAdmin && !isCreator) {
       return showToast("⚠️ Bạn không có quyền xóa phiếu này!", "error");
@@ -224,22 +231,10 @@ function ReceptionApp() {
   const handleDeleteConfirm = async () => {
     if (!deleteModalRecord) return;
     setIsDeleting(true);
-
     try {
-      let res = await fetch(`${API_BASE}/${deleteModalRecord.id}`, { method: 'DELETE' });
-
-      // Fallback nếu API Backend chưa mở DELETE route
-      if (!res.ok) {
-        const supabaseClient = getSupabaseClient();
-        if (supabaseClient) {
-          const { error } = await supabaseClient.from('repairs').delete().eq('id', deleteModalRecord.id);
-          if (error) throw new Error(error.message);
-        } else {
-          await handleResponse(res);
-        }
-      }
-
-      showToast(`🗑️ Đã xóa vĩnh viễn phiếu [${deleteModalRecord.code}]!`, 'success');
+      const res = await fetch(`${API_BASE}/${deleteModalRecord.id}`, { method: 'DELETE' });
+      await handleResponse(res);  // ✅ Chỉ dùng API (soft delete), không xóa cứng
+      showToast(`Đã hủy phiếu [${deleteModalRecord.code}]!`, 'success');
       setDeleteModalRecord(null);
       handleSearch(searchQuery);
     } catch (err) {
@@ -262,14 +257,31 @@ function ReceptionApp() {
     e.preventDefault();
     setIsSubmittingReturn(true);
     try {
-      const payload = { status: 'returned', returned_method: returnForm.returned_method, returned_note: returnForm.returned_note, is_fixed: returnModalRecord.status === 'fixed' };
-      let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (!res.ok) res = await fetch(`${API_BASE}/${returnModalRecord.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const payload = { 
+        status: 'returned', 
+        returned_method: returnForm.returned_method, 
+        returned_note: returnForm.returned_note, 
+        is_fixed: returnModalRecord.status === 'fixed' 
+      };
+      let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      // ✅ Fallback PUT chỉ gửi status (không có field khác → không lỗi 422)
+      if (!res.ok) {
+        res = await fetch(`${API_BASE}/${returnModalRecord.id}`, {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'returned' })
+        });
+      }
       await handleResponse(res);
-      showToast(`✅ Đã xác nhận trả thiết bị!`, 'success');
+      showToast(`Đã xác nhận trả thiết bị!`, 'success');
       setReturnModalRecord(null);
       handleSearch(searchQuery);
-    } catch (err) { showToast(err.message, "error"); } finally { setIsSubmittingReturn(false); }
+    } catch (err) { 
+      showToast(err.message, "error"); 
+    } finally { 
+      setIsSubmittingReturn(false); 
+    }
   };
 
   const openEditModal = (record) => {
@@ -389,7 +401,7 @@ function ReceptionApp() {
                     const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
 
                     const isCreator = r.created_by && r.created_by === currentUser.username;
-                    const isAdmin = currentUser.role === 'admin' || currentUser.role === 'super admin' || currentUser.role === 'system admin';
+                    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase())
                     const canDelete = isAdmin || isCreator;
 
                     return (

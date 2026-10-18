@@ -131,7 +131,7 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
             "customer_name": "Khách lẻ",
             "phone": "",
             "address": "",
-            "note": "Chưa có yêu cầu",
+            "note": "Chưa ghi nhận",
             "received_note": clean_base_note
         }
 
@@ -172,7 +172,7 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
         "customer_name": customer_name,
         "phone": phone,
         "address": address,
-        "note": "Chưa có yêu cầu",
+        "note": "Chưa ghi nhận",
         "received_note": clean_base_note
     }
 

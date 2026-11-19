@@ -82,20 +82,20 @@ const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
   const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
   const cleanCustomerName = removeAccents(record.customer_name || '');
   const noteStr = removeAccents(record.received_note || record.note || 'Binh thuong').trim();
-  
-  const domain = trackingDomain || 'cskh-nu.vercel.app/tracking';
+
+  const domain = trackingDomain || 'cskh-nu.vercel.app';
   const lhPart = hotline ? `. LH: ${hotline}` : '';
   const smsText = (
     `May in Dai Thanh tao phieu [${record.code}] ghi nhan thiet bi KH ${cleanCustomerName} ` +
     `luc ${nowStr}. Tinh trang: ${noteStr}. ` +
     `Tra cuu: ${domain}/tracking/${cleanPhone}${lhPart}`
   );
-  
+
   const encodedText = encodeURIComponent(smsText);
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || 
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
                 (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const targetLink = isIOS 
-    ? `sms:${cleanPhone}&body=${encodedText}` 
+  const targetLink = isIOS
+    ? `sms:${cleanPhone}&body=${encodedText}`
     : `sms:${cleanPhone}?body=${encodedText}`;
   window.location.href = targetLink;
 };
@@ -104,11 +104,12 @@ function ReceptionApp() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const toastTimerRef = useRef(null);
+  const searchReqIdRef = useRef(0);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [records, setRecords] = useState([]);
   const [hotlinePhone, setHotlinePhone] = useState('');
-  const [activeWorkflow, setActiveWorkflow] = useState('repair'); 
+  const [activeWorkflow, setActiveWorkflow] = useState('repair');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const [editingRecord, setEditingRecord] = useState(null);
@@ -144,6 +145,7 @@ function ReceptionApp() {
   }, []);
 
   const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
+    const reqId = ++searchReqIdRef.current;
     try {
       setLoading(true);
       const params = new URLSearchParams({
@@ -154,22 +156,32 @@ function ReceptionApp() {
       });
       const res = await fetch(`${API_BASE}/search?${params}`);
       const data = await handleResponse(res);
-      if (data.success) {
+      if (reqId === searchReqIdRef.current && data.success) {
         setRecords(data.data || []);
       }
     } catch (err) {
-      showToast(err.message || "Lỗi kết nối!", "error");
+      if (reqId === searchReqIdRef.current) {
+        showToast(err.message || "Lỗi kết nối!", "error");
+      }
     } finally {
-      setLoading(false);
+      if (reqId === searchReqIdRef.current) {
+        setLoading(false);
+      }
     }
   }, [activeWorkflow]);
 
-  useEffect(() => { handleSearch(''); }, [handleSearch]);
-
+  // Tải ngay khi đổi quy trình
   useEffect(() => {
-    const timer = setTimeout(() => handleSearch(searchQuery), 400);
+    handleSearch(searchQuery, activeWorkflow);
+  }, [activeWorkflow]);
+
+  // Debounce khi gõ ô tìm kiếm
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      handleSearch(searchQuery, activeWorkflow);
+    }, 350);
     return () => clearTimeout(timer);
-  }, [searchQuery, handleSearch]);
+  }, [searchQuery]);
 
   const handleSearchRef = useRef(handleSearch);
   useEffect(() => { handleSearchRef.current = handleSearch; }, [handleSearch]);
@@ -181,23 +193,52 @@ function ReceptionApp() {
     const channel = supabaseClient
       .channel('reception-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'repairs' }, () => {
-        if (handleSearchRef.current) handleSearchRef.current(searchQuery);
+        if (handleSearchRef.current) handleSearchRef.current(searchQuery, activeWorkflow);
       })
       .subscribe();
 
     return () => { supabaseClient.removeChannel(channel); };
-  }, [searchQuery]);
+  }, [searchQuery, activeWorkflow]);
 
   const kanbanColumns = useMemo(() => {
     if (activeWorkflow === 'repair') {
       const repairRecords = records.filter(r => (r.current_process || 'repair').toLowerCase() === 'repair');
       return [
-        { id: 'received', title: '1. Thông tin Đơn sửa', colorClass: 'border-t-4 border-amber-500', headerBg: 'bg-[#181208]', textColor: 'text-amber-400', items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'received') },
-        { id: 'processing', title: '2. Tiến hành kiểm tra', colorClass: 'border-t-4 border-purple-500', headerBg: 'bg-[#120a1a]', textColor: 'text-purple-400', items: repairRecords.filter(r => ['processing', 'repairing'].includes((r.status || '').toLowerCase())) },
-        { id: 'fixed', title: '3. Hoàn thành sửa', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'fixed') },
-        { id: 'failed', title: '4. Thất bại / Hủy sửa', colorClass: 'border-t-4 border-rose-500', headerBg: 'bg-[#1c080d]', textColor: 'text-rose-400', items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'cancelled' || r.repair_result === 'failed') }
+        {
+          id: 'received',
+          title: '1. Thông tin Đơn sửa',
+          colorClass: 'border-t-4 border-amber-500',
+          headerBg: 'bg-[#181208]',
+          textColor: 'text-amber-400',
+          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'received')
+        },
+        {
+          id: 'processing',
+          title: '2. Tiến hành kiểm tra',
+          colorClass: 'border-t-4 border-purple-500',
+          headerBg: 'bg-[#120a1a]',
+          textColor: 'text-purple-400',
+          items: repairRecords.filter(r => ['processing', 'repairing'].includes((r.status || '').toLowerCase()))
+        },
+        {
+          id: 'fixed',
+          title: '3. Hoàn thành sửa',
+          colorClass: 'border-t-4 border-emerald-500',
+          headerBg: 'bg-[#061711]',
+          textColor: 'text-emerald-400',
+          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'fixed')
+        },
+        {
+          id: 'failed',
+          title: '4. Thất bại / Hủy sửa',
+          colorClass: 'border-t-4 border-rose-500',
+          headerBg: 'bg-[#1c080d]',
+          textColor: 'text-rose-400',
+          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'cancelled' || r.repair_result === 'failed')
+        }
       ];
     }
+
     if (activeWorkflow === 'storage') {
       const storageRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'storage');
       return [
@@ -227,17 +268,71 @@ function ReceptionApp() {
         }
       ];
     }
+
     if (activeWorkflow === 'delivery') {
       const deliveryRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'delivery');
       return [
-        { id: 'delivery_pending', title: '1. Chờ Phân Công', colorClass: 'border-t-4 border-amber-500', headerBg: 'bg-[#181208]', textColor: 'text-amber-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'pending') },
-        { id: 'delivering', title: '2. Đang Trên Đường Giao', colorClass: 'border-t-4 border-indigo-500', headerBg: 'bg-[#0e0e26]', textColor: 'text-indigo-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivering') },
-        { id: 'delivered', title: '3. Đã Bàn Giao Xong', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivered') }
+        {
+          id: 'delivery_pending',
+          title: '1. Thông Tin Đơn',
+          colorClass: 'border-t-4 border-amber-500',
+          headerBg: 'bg-[#181208]',
+          textColor: 'text-amber-400',
+          items: deliveryRecords.filter(r => !['delivering', 'delivered', 'failed'].includes((r.delivery_status || '').toLowerCase()))
+        },
+        {
+          id: 'delivering',
+          title: '2. Xử lý đơn hàng',
+          colorClass: 'border-t-4 border-indigo-500',
+          headerBg: 'bg-[#0e0e26]',
+          textColor: 'text-indigo-400',
+          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivering')
+        },
+        {
+          id: 'delivered',
+          title: '3. Hoàn thành',
+          colorClass: 'border-t-4 border-emerald-500',
+          headerBg: 'bg-[#061711]',
+          textColor: 'text-emerald-400',
+          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivered')
+        },
+        {
+          id: 'delivery_failed',
+          title: '4. Thất bại',
+          colorClass: 'border-t-4 border-rose-500',
+          headerBg: 'bg-[#1c080d]',
+          textColor: 'text-rose-400',
+          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'failed')
+        }
       ];
     }
+
     return [
-      { id: 'all_received', title: 'Đang Xử Lý', colorClass: 'border-t-4 border-sky-500', headerBg: 'bg-[#081524]', textColor: 'text-sky-400', items: records.filter(r => r.status !== 'returned' && r.status !== 'cancelled' && (r.storage_status || '').toLowerCase() !== 'destroyed') },
-      { id: 'all_returned', title: 'Đã Bàn Giao', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: records.filter(r => r.status === 'returned' || (r.storage_status || '').toLowerCase() === 'dispatched' || (r.delivery_status || '').toLowerCase() === 'delivered') }
+      {
+        id: 'all_received',
+        title: 'Đang Xử Lý',
+        colorClass: 'border-t-4 border-sky-500',
+        headerBg: 'bg-[#081524]',
+        textColor: 'text-sky-400',
+        items: records.filter(r =>
+          r.status !== 'returned' &&
+          r.status !== 'cancelled' &&
+          (r.storage_status || '').toLowerCase() !== 'destroyed' &&
+          (r.delivery_status || '').toLowerCase() !== 'failed'
+        )
+      },
+      {
+        id: 'all_returned',
+        title: 'Đã Bàn Giao',
+        colorClass: 'border-t-4 border-emerald-500',
+        headerBg: 'bg-[#061711]',
+        textColor: 'text-emerald-400',
+        items: records.filter(r =>
+          r.status === 'returned' ||
+          (r.storage_status || '').toLowerCase() === 'dispatched' ||
+          (r.delivery_status || '').toLowerCase() === 'delivered'
+        )
+      }
     ];
   }, [records, activeWorkflow]);
 
@@ -259,7 +354,7 @@ function ReceptionApp() {
       await handleResponse(res);
       showToast(`Đã hủy phiếu [${deleteModalRecord.code}]!`, 'success');
       setDeleteModalRecord(null);
-      handleSearch(searchQuery);
+      handleSearch(searchQuery, activeWorkflow);
     } catch (err) {
       showToast(err.message || "Lỗi khi xóa phiếu!", "error");
     } finally {
@@ -271,10 +366,13 @@ function ReceptionApp() {
     const status = (record.status || '').toLowerCase();
     const currentProcess = (record.current_process || 'repair').toLowerCase();
     const storageStatus = (record.storage_status || '').toLowerCase();
+    const deliveryStatus = (record.delivery_status || '').toLowerCase();
 
     if (storageStatus === 'destroyed') return showToast("🔥 Thiết bị đã được xác nhận tiêu hủy!", "error");
+    if (deliveryStatus === 'failed') return showToast("⚠️ Đơn giao nhận đang ở trạng thái thất bại!", "error");
     if (currentProcess === 'delivery') return showToast("🚚 Đang thuộc Quy trình Giao nhận!", "error");
     if (currentProcess === 'repair' && (status === 'processing' || status === 'repairing')) return showToast("⚙ Thiết bị đang sửa!", "error");
+
     setReturnModalRecord(record);
     setReturnForm({ returned_method: 'Trực tiếp tại cửa hàng', returned_note: '' });
   };
@@ -283,10 +381,10 @@ function ReceptionApp() {
     e.preventDefault();
     setIsSubmittingReturn(true);
     try {
-      const payload = { 
-        returned_method: returnForm.returned_method, 
-        returned_note: returnForm.returned_note, 
-        is_fixed: returnModalRecord.status === 'fixed' 
+      const payload = {
+        returned_method: returnForm.returned_method,
+        returned_note: returnForm.returned_note,
+        is_fixed: returnModalRecord.status === 'fixed'
       };
       const res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
         method: 'POST',
@@ -296,29 +394,43 @@ function ReceptionApp() {
       await handleResponse(res);
       showToast(`✅ Đã xác nhận trả thiết bị!`, 'success');
       setReturnModalRecord(null);
-      handleSearch(searchQuery);
-    } catch (err) { 
-      showToast(err.message, "error"); 
-    } finally { 
-      setIsSubmittingReturn(false); 
+      handleSearch(searchQuery, activeWorkflow);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsSubmittingReturn(false);
     }
   };
 
   const openEditModal = (record) => {
     setEditingRecord(record);
-    setEditForm({ customer_name: record.customer_name || '', phone: record.phone || '', address: record.address || '', note: record.note || '', received_note: record.received_note || '' });
+    setEditForm({
+      customer_name: record.customer_name || '',
+      phone: record.phone || '',
+      address: record.address || '',
+      note: record.note || '',
+      received_note: record.received_note || ''
+    });
   };
 
   const handleEditSubmit = async (e) => {
     e.preventDefault();
     setIsSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/${editingRecord.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editForm) });
+      const res = await fetch(`${API_BASE}/${editingRecord.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editForm)
+      });
       await handleResponse(res);
-      showToast(`✅ Đã cập nhật!`, 'success');
+      showToast(`✅ Đã cập nhật phiếu [${editingRecord.code}]!`, 'success');
       setEditingRecord(null);
-      handleSearch(searchQuery);
-    } catch (err) { showToast(err.message, "error"); } finally { setIsSaving(false); }
+      handleSearch(searchQuery, activeWorkflow);
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -336,7 +448,7 @@ function ReceptionApp() {
       {/* THANH TÌM KIẾM, TOGGLE MENU & TAB MOBILE */}
       <div className="mb-4 shrink-0 space-y-3">
         <div className="flex items-center gap-3">
-          <button 
+          <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             className="hidden md:flex w-10 h-10 shrink-0 items-center justify-center bg-[#0f1424] border border-slate-700 rounded-lg hover:bg-sky-600/20 hover:text-sky-400 hover:border-sky-500/50 text-slate-400 transition-all shadow-sm"
             title={isSidebarOpen ? "Thu gọn Menu" : "Mở rộng Menu"}
@@ -346,18 +458,25 @@ function ReceptionApp() {
 
           <div className="relative w-full max-w-md">
             <i className={`fa-solid ${loading ? 'fa-spinner animate-spin text-sky-400' : 'fa-magnifying-glass text-gray-400'} absolute left-3.5 top-2.5 text-sm`}></i>
-            <input type="text" placeholder="Tìm SĐT, tên khách, mã phiếu..."
-              value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-[#0a0f1d]/70 border border-slate-700 rounded-lg text-sm text-white focus:border-sky-400 outline-none" />
+            <input
+              type="text"
+              placeholder="Tìm SĐT, tên khách, mã phiếu..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-4 py-2 bg-[#0a0f1d]/70 border border-slate-700 rounded-lg text-sm text-white focus:border-sky-400 outline-none"
+            />
           </div>
         </div>
 
         <div className="md:hidden flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
           {WORKFLOWS.map(wf => (
-            <button key={wf.id} onClick={() => setActiveWorkflow(wf.id)}
+            <button
+              key={wf.id}
+              onClick={() => setActiveWorkflow(wf.id)}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap flex items-center gap-1.5 border transition-all ${
                 activeWorkflow === wf.id ? 'bg-sky-600 border-sky-400 text-white shadow-md' : 'bg-[#0f1424] border-slate-800 text-gray-400 hover:text-white'
-              }`}>
+              }`}
+            >
               <i className={`fa-solid ${wf.icon}`}></i> <span>{wf.name}</span>
             </button>
           ))}
@@ -366,7 +485,7 @@ function ReceptionApp() {
 
       {/* BỐ CỤC CHÍNH (SIDEBAR + KANBAN) */}
       <div className="flex-1 flex overflow-hidden">
-        
+
         {/* MENU TRÁI */}
         <div className={`hidden md:flex flex-col bg-[#0f1424] rounded-xl border-slate-800 shrink-0 shadow-xl overflow-hidden transition-all duration-300 ease-in-out ${
           isSidebarOpen ? 'w-56 p-3 mr-4 border opacity-100' : 'w-0 p-0 mr-0 border-0 opacity-0'
@@ -380,10 +499,13 @@ function ReceptionApp() {
               {WORKFLOWS.map(wf => {
                 const isActive = activeWorkflow === wf.id;
                 return (
-                  <button key={wf.id} onClick={() => setActiveWorkflow(wf.id)}
+                  <button
+                    key={wf.id}
+                    onClick={() => setActiveWorkflow(wf.id)}
                     className={`w-full p-2.5 rounded-lg text-xs font-bold flex items-center justify-between transition-all border ${
                       isActive ? 'bg-sky-600/20 border-sky-500/50 text-sky-300 shadow-inner' : 'border-transparent text-gray-400 hover:bg-slate-800/60 hover:text-slate-200'
-                    }`}>
+                    }`}
+                  >
                     <div className="flex items-center gap-2.5">
                       <i className={`fa-solid ${wf.icon} text-sm ${isActive ? 'text-sky-400' : 'text-gray-500'}`}></i> <span>{wf.name}</span>
                     </div>
@@ -399,7 +521,7 @@ function ReceptionApp() {
         <div className="kanban-container hide-scrollbar flex-1 items-start">
           {kanbanColumns.map(col => (
             <div key={col.id} className={`kanban-col min-w-[280px] sm:min-w-[320px] flex-1 shrink-0 flex flex-col bg-[#0f1424] rounded-xl border border-slate-800 shadow-lg overflow-hidden ${col.colorClass}`}>
-              
+
               <div className={`p-3 border-b border-slate-800 sticky top-0 z-10 flex justify-between items-center ${col.headerBg}`}>
                 <h3 className={`font-bold text-xs sm:text-sm ${col.textColor}`}>{col.title}</h3>
                 <span className="bg-black/40 text-gray-300 px-2 py-0.5 rounded-full text-[10px] font-black border border-slate-700">
@@ -421,8 +543,9 @@ function ReceptionApp() {
                     const deliveryStatus = (r.delivery_status || '').toLowerCase();
 
                     const isDestroyed = storageStatus === 'destroyed';
-                    const isReturned = !isDestroyed && (status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered');
-                    const isDelivery = process === 'delivery' || (deliveryStatus && deliveryStatus !== 'delivered');
+                    const isDeliveryFailed = process === 'delivery' && deliveryStatus === 'failed';
+                    const isReturned = !isDestroyed && !isDeliveryFailed && (status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered');
+                    const isDelivery = process === 'delivery' || (deliveryStatus && !['delivered', 'failed'].includes(deliveryStatus));
                     const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
 
                     const isCreator = r.created_by && r.created_by === currentUser.username;
@@ -431,7 +554,7 @@ function ReceptionApp() {
 
                     return (
                       <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative group">
-                        
+
                         {/* NÚT XÓA Ở GÓC PHẢI THẺ */}
                         {canDelete && (
                           <button
@@ -448,7 +571,7 @@ function ReceptionApp() {
                             <span className="text-[10px] w-fit bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-600 font-monospace font-bold">
                               {r.code}
                             </span>
-                            
+
                             {process === 'delivery' ? (
                               <span className="text-[9px] w-fit bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/30 font-semibold">🚚 Q.Trình Giao Nhận</span>
                             ) : process === 'storage' ? (
@@ -459,22 +582,29 @@ function ReceptionApp() {
                           </div>
                           <span className="text-[10px] text-gray-400 font-monospace">{r.created_at ? new Date(r.created_at).toLocaleDateString('vi-VN') : '—'}</span>
                         </div>
-                        
+
                         <h4 className="font-bold text-sm text-white">{r.customer_name}</h4>
                         <p className="text-[11px] text-gray-400 mt-0.5 font-monospace"><i className="fa-solid fa-phone mr-1"></i>{r.phone || '—'}</p>
-                        
+
                         <div className="mt-2 text-[11px] bg-black/20 p-2 rounded border border-slate-700/50 space-y-1">
                           <div><span className="text-gray-400">Lỗi báo: </span><span className="text-amber-100 font-medium">{r.note || 'Không có'}</span></div>
                           {r.received_note && <div><span className="text-gray-400">Nhận máy: </span><span className="text-slate-300">{r.received_note}</span></div>}
-                          {r.address && <div><span className="text-gray-400">Thông tin: </span><span className="text-sky-300">{r.address}</span></div>}
+                          {r.address && (
+                            <div>
+                              <span className="text-gray-400">{process === 'delivery' ? 'Chành xe / ĐC: ' : 'Thông tin: '}</span>
+                              <span className="text-sky-300">{r.address}</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="mt-3 flex gap-1.5 pt-3 border-t border-slate-700/50">
-                          <button onClick={() => openEditModal(r)} className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all"><i className="fa-solid fa-pen"></i></button>
+                          <button onClick={() => openEditModal(r)} className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all" title="Sửa thông tin"><i className="fa-solid fa-pen"></i></button>
                           <button onClick={() => sendReceptionSms(r, hotlinePhone)} className="flex-[2] h-8 bg-sky-600/80 hover:bg-sky-500 text-white rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1"><i className="fa-solid fa-sms"></i> SMS</button>
-                          
+
                           {isDestroyed ? (
                             <div className="flex-[2] h-8 flex items-center justify-center bg-rose-950/70 text-rose-400 rounded text-[11px] font-bold border border-rose-500/30"><i className="fa-solid fa-ban mr-1"></i> Tiêu Hủy</div>
+                          ) : isDeliveryFailed ? (
+                            <div className="flex-[2] h-8 flex items-center justify-center bg-rose-950/70 text-rose-400 rounded text-[11px] font-bold border border-rose-500/30"><i className="fa-solid fa-circle-xmark mr-1"></i> Giao Thất Bại</div>
                           ) : isReturned ? (
                             <div className="flex-[2] h-8 flex items-center justify-center bg-emerald-900/50 text-emerald-400 rounded text-[11px] font-bold border border-emerald-500/30"><i className="fa-solid fa-circle-check mr-1"></i> Đã Trả</div>
                           ) : isDelivery ? (
@@ -516,18 +646,18 @@ function ReceptionApp() {
             </div>
 
             <div className="flex gap-2 pt-1">
-              <button 
-                type="button" 
-                onClick={() => setDeleteModalRecord(null)} 
+              <button
+                type="button"
+                onClick={() => setDeleteModalRecord(null)}
                 disabled={isDeleting}
                 className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-300 transition-all"
               >
                 Hủy Bỏ
               </button>
-              <button 
-                type="button" 
-                onClick={handleDeleteConfirm} 
-                disabled={isDeleting} 
+              <button
+                type="button"
+                onClick={handleDeleteConfirm}
+                disabled={isDeleting}
                 className="flex-[1.5] py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5"
               >
                 {isDeleting ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-trash-can"></i>}
@@ -562,15 +692,32 @@ function ReceptionApp() {
       {/* MODAL SỬA PHIẾU */}
       {editingRecord && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0e1424] max-w-md w-full p-5 border border-slate-700 rounded-xl">
-            <h3 className="text-sm font-bold text-sky-400 mb-3"><i className="fa-solid fa-pen"></i> Sửa Phiếu [{editingRecord.code}]</h3>
+          <div className="bg-[#0e1424] max-w-md w-full p-5 border border-slate-700 rounded-xl space-y-3">
+            <h3 className="text-sm font-bold text-sky-400"><i className="fa-solid fa-pen"></i> Sửa Phiếu [{editingRecord.code}]</h3>
             <form onSubmit={handleEditSubmit} className="space-y-3">
-              <input placeholder="Họ tên" value={editForm.customer_name} onChange={e=>setEditForm({...editForm, customer_name: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white" />
-              <input placeholder="SĐT" value={editForm.phone} onChange={e=>setEditForm({...editForm, phone: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white" />
-              <input placeholder="Lỗi" value={editForm.note} onChange={e=>setEditForm({...editForm, note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white" />
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setEditingRecord(null)} className="flex-1 py-2 bg-slate-700 rounded text-xs font-bold text-white">Hủy</button>
-                <button type="submit" disabled={isSaving} className="flex-[2] py-2 bg-sky-600 rounded text-xs font-bold text-white">Lưu Lại</button>
+              <div>
+                <label className="block text-[11px] text-gray-400 mb-1">Tên khách hàng</label>
+                <input placeholder="Họ tên" value={editForm.customer_name} onChange={e=>setEditForm({...editForm, customer_name: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-400 mb-1">Số điện thoại</label>
+                <input placeholder="SĐT" value={editForm.phone} onChange={e=>setEditForm({...editForm, phone: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-400 mb-1">Địa chỉ / Thông tin chành xe</label>
+                <input placeholder="Địa chỉ hoặc thông tin chành xe" value={editForm.address} onChange={e=>setEditForm({...editForm, address: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-400 mb-1">Lỗi / Nội dung yêu cầu</label>
+                <input placeholder="Lỗi báo" value={editForm.note} onChange={e=>setEditForm({...editForm, note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-400 mb-1">Ghi chú nhận máy / tình trạng kèm theo</label>
+                <input placeholder="Ghi chú nhận máy" value={editForm.received_note} onChange={e=>setEditForm({...editForm, received_note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button type="button" onClick={() => setEditingRecord(null)} className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 rounded text-xs font-bold text-white">Hủy</button>
+                <button type="submit" disabled={isSaving} className="flex-[2] py-2 bg-sky-600 hover:bg-sky-500 rounded text-xs font-bold text-white">{isSaving ? "Đang lưu..." : "Lưu Lại"}</button>
               </div>
             </form>
           </div>

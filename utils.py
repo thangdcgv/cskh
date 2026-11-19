@@ -273,8 +273,8 @@ def extract_all_base_images(
     }
 
     # Bỏ hết ảnh vào đúng rổ theo Workflow ID hiện tại
-    target_storage = str(workflow_settings.get("workflow_storage_id", "20036")).strip()
-    target_delivery = str(workflow_settings.get("workflow_delivery_id", "20037")).strip()
+    target_storage = str(workflow_settings.get("workflow_storage_id", "18720")).strip()
+    target_delivery = str(workflow_settings.get("workflow_delivery_id", "18249")).strip()
 
     if workflow_id == target_storage:
         img_groups["storage"] = all_extracted_urls

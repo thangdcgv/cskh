@@ -193,9 +193,9 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
     try:
         # Lấy cấu hình hệ thống
         settings = await get_system_settings()
-        workflow_repair = settings.get("workflow_repair_id") or settings.get("workflow_repair", "20025")
-        workflow_storage = settings.get("workflow_storage_id") or settings.get("workflow_storage", "20036")
-        workflow_delivery = settings.get("workflow_delivery_id") or settings.get("workflow_delivery", "20037")
+        workflow_repair = settings.get("workflow_repair_id") or settings.get("workflow_repair", "18190")
+        workflow_storage = settings.get("workflow_storage_id") or settings.get("workflow_storage", "18720")
+        workflow_delivery = settings.get("workflow_delivery_id") or settings.get("workflow_delivery", "18249")
         configured_secret = settings.get("base_shared_secret", "")
 
         # 1. Parse Request Body

@@ -248,12 +248,16 @@ async def create_reception_record(
 async def search_reception_records(
     query_str: Optional[str] = Query(None),
     status: Optional[str] = Query("all"),
+    workflow: Optional[str] = Query("all"),
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=200),
     user: dict = Depends(get_current_user),
 ):
     q = (query_str or "").strip()
     db_query = supabase.table(TABLE).select("*", count="exact")
+
+    if workflow and workflow.strip().lower() in {"repair", "storage", "delivery"}:
+        db_query = db_query.eq("current_process", workflow.strip().lower())
 
     if q:
         q_esc = escape_postgrest(q)

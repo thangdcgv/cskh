@@ -29,8 +29,8 @@
 {% block scripts %}
 {{ super() }}
 <script>
-  window.SUPABASE_URL = "{{ supabase_url or '' }}";
-  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or '' }}";
+  window.SUPABASE_URL = "{{ supabase_url or SUPABASE_URL or '' }}";
+  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or SUPABASE_KEY or '' }}";
   window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
   window.CURRENT_USER = {
     role: "{{ current_user.role or session.get('role', 'admin') }}",
@@ -45,7 +45,7 @@ const API_BASE = "/api/reception";
 
 const WORKFLOWS = [
   { id: 'repair', name: 'Sửa Chữa - Bảo Hành', icon: 'fa-screwdriver-wrench' },
-  { id: 'storage', name: 'Lưu Kho Công Ty', icon: 'fa-warehouse' },
+  { id: 'storage', name: 'Lưu Kho Sửa Chữa', icon: 'fa-warehouse' },
   { id: 'delivery', name: 'Giao Nhận Hàng', icon: 'fa-truck-fast' },
   { id: 'all', name: 'Tất Cả Đơn Hàng', icon: 'fa-layer-group' }
 ];
@@ -119,7 +119,6 @@ function ReceptionApp() {
   const [returnForm, setReturnForm] = useState({ returned_method: 'Trực tiếp tại cửa hàng', returned_note: '' });
   const [isSubmittingReturn, setIsSubmittingReturn] = useState(false);
 
-  // STATE DÀNH RIÊNG CHO MODAL XÓA CẨN THẬN
   const [deleteModalRecord, setDeleteModalRecord] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -144,10 +143,15 @@ function ReceptionApp() {
     fetchHotline();
   }, []);
 
-  const handleSearch = useCallback(async (queryStr) => {
+  const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
     try {
       setLoading(true);
-      const params = new URLSearchParams({ query_str: queryStr || '', page: 1, limit: 100 });
+      const params = new URLSearchParams({
+        query_str: queryStr || '',
+        workflow: wf || 'all',
+        page: 1,
+        limit: 200
+      });
       const res = await fetch(`${API_BASE}/search?${params}`);
       const data = await handleResponse(res);
       if (data.success) {
@@ -158,9 +162,9 @@ function ReceptionApp() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [activeWorkflow]);
 
-  useEffect(() => { handleSearch(''); }, []);
+  useEffect(() => { handleSearch(''); }, [handleSearch]);
 
   useEffect(() => {
     const timer = setTimeout(() => handleSearch(searchQuery), 400);
@@ -176,7 +180,7 @@ function ReceptionApp() {
 
     const channel = supabaseClient
       .channel('reception-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'repairs' }, (payload) => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'repairs' }, () => {
         if (handleSearchRef.current) handleSearchRef.current(searchQuery);
       })
       .subscribe();
@@ -197,26 +201,46 @@ function ReceptionApp() {
     if (activeWorkflow === 'storage') {
       const storageRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'storage');
       return [
-        { id: 'storage_pending', title: 'Chờ Nhập Kho', colorClass: 'border-t-4 border-amber-500', headerBg: 'bg-[#181208]', textColor: 'text-amber-400', items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'pending') },
-        { id: 'storage_in', title: 'Bảo Quản Tại Kho', colorClass: 'border-t-4 border-sky-500', headerBg: 'bg-[#081524]', textColor: 'text-sky-400', items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'in_company') },
-        { id: 'storage_out', title: 'Đã Xuất Kho / Trả', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'dispatched') }
+        {
+          id: 'storage_in_company',
+          title: '1. Máy Sửa Ở Cty',
+          colorClass: 'border-t-4 border-amber-500',
+          headerBg: 'bg-[#181208]',
+          textColor: 'text-amber-400',
+          items: storageRecords.filter(r => !['dispatched', 'destroyed'].includes((r.storage_status || '').toLowerCase()))
+        },
+        {
+          id: 'storage_dispatched',
+          title: '2. Đã Gửi Trả Máy',
+          colorClass: 'border-t-4 border-emerald-500',
+          headerBg: 'bg-[#061711]',
+          textColor: 'text-emerald-400',
+          items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'dispatched')
+        },
+        {
+          id: 'storage_destroyed',
+          title: '3. Tiêu hủy',
+          colorClass: 'border-t-4 border-rose-500',
+          headerBg: 'bg-[#1c080d]',
+          textColor: 'text-rose-400',
+          items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'destroyed')
+        }
       ];
     }
     if (activeWorkflow === 'delivery') {
       const deliveryRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'delivery');
       return [
-        { id: 'delivery_pending', title: 'Chờ Phân Công', colorClass: 'border-t-4 border-amber-500', headerBg: 'bg-[#181208]', textColor: 'text-amber-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'pending') },
-        { id: 'delivering', title: 'Đang Trên Đường Giao', colorClass: 'border-t-4 border-indigo-500', headerBg: 'bg-[#0e0e26]', textColor: 'text-indigo-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivering') },
-        { id: 'delivered', title: 'Đã Bàn Giao Xong', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivered') }
+        { id: 'delivery_pending', title: '1. Chờ Phân Công', colorClass: 'border-t-4 border-amber-500', headerBg: 'bg-[#181208]', textColor: 'text-amber-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'pending') },
+        { id: 'delivering', title: '2. Đang Trên Đường Giao', colorClass: 'border-t-4 border-indigo-500', headerBg: 'bg-[#0e0e26]', textColor: 'text-indigo-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivering') },
+        { id: 'delivered', title: '3. Đã Bàn Giao Xong', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivered') }
       ];
     }
     return [
-      { id: 'all_received', title: 'Đang Xử Lý', colorClass: 'border-t-4 border-sky-500', headerBg: 'bg-[#081524]', textColor: 'text-sky-400', items: records.filter(r => r.status !== 'returned') },
-      { id: 'all_returned', title: 'Đã Bàn Giao', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: records.filter(r => r.status === 'returned') }
+      { id: 'all_received', title: 'Đang Xử Lý', colorClass: 'border-t-4 border-sky-500', headerBg: 'bg-[#081524]', textColor: 'text-sky-400', items: records.filter(r => r.status !== 'returned' && r.status !== 'cancelled' && (r.storage_status || '').toLowerCase() !== 'destroyed') },
+      { id: 'all_returned', title: 'Đã Bàn Giao', colorClass: 'border-t-4 border-emerald-500', headerBg: 'bg-[#061711]', textColor: 'text-emerald-400', items: records.filter(r => r.status === 'returned' || (r.storage_status || '').toLowerCase() === 'dispatched' || (r.delivery_status || '').toLowerCase() === 'delivered') }
     ];
   }, [records, activeWorkflow]);
 
-  // KÍCH HOẠT MODAL XÓA
   const openDeleteModal = (record) => {
     const isCreator = record.created_by && record.created_by === currentUser.username;
     const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
@@ -227,13 +251,12 @@ function ReceptionApp() {
     setDeleteModalRecord(record);
   };
 
-  // THỰC THI XÓA SAU KHIN NGƯỜI DÙNG BẤM "XÓA VĨNH VIỄN" TRÊN MODAL
   const handleDeleteConfirm = async () => {
     if (!deleteModalRecord) return;
     setIsDeleting(true);
     try {
       const res = await fetch(`${API_BASE}/${deleteModalRecord.id}`, { method: 'DELETE' });
-      await handleResponse(res);  // ✅ Chỉ dùng API (soft delete), không xóa cứng
+      await handleResponse(res);
       showToast(`Đã hủy phiếu [${deleteModalRecord.code}]!`, 'success');
       setDeleteModalRecord(null);
       handleSearch(searchQuery);
@@ -247,6 +270,9 @@ function ReceptionApp() {
   const handleReturnClick = (record) => {
     const status = (record.status || '').toLowerCase();
     const currentProcess = (record.current_process || 'repair').toLowerCase();
+    const storageStatus = (record.storage_status || '').toLowerCase();
+
+    if (storageStatus === 'destroyed') return showToast("🔥 Thiết bị đã được xác nhận tiêu hủy!", "error");
     if (currentProcess === 'delivery') return showToast("🚚 Đang thuộc Quy trình Giao nhận!", "error");
     if (currentProcess === 'repair' && (status === 'processing' || status === 'repairing')) return showToast("⚙ Thiết bị đang sửa!", "error");
     setReturnModalRecord(record);
@@ -258,23 +284,17 @@ function ReceptionApp() {
     setIsSubmittingReturn(true);
     try {
       const payload = { 
-        status: 'returned', 
         returned_method: returnForm.returned_method, 
         returned_note: returnForm.returned_note, 
         is_fixed: returnModalRecord.status === 'fixed' 
       };
-      let res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      const res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
       });
-      // ✅ Fallback PUT chỉ gửi status (không có field khác → không lỗi 422)
-      if (!res.ok) {
-        res = await fetch(`${API_BASE}/${returnModalRecord.id}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: 'returned' })
-        });
-      }
       await handleResponse(res);
-      showToast(`Đã xác nhận trả thiết bị!`, 'success');
+      showToast(`✅ Đã xác nhận trả thiết bị!`, 'success');
       setReturnModalRecord(null);
       handleSearch(searchQuery);
     } catch (err) { 
@@ -304,7 +324,11 @@ function ReceptionApp() {
   return (
     <div className="w-full flex flex-col h-[calc(100vh-140px)] max-w-full">
       {toast && (
-        <div className="fixed top-16 right-4 z-50 p-4 rounded-xl shadow-2xl bg-emerald-900 border border-emerald-500 text-emerald-100 flex items-center gap-3">
+        <div className={`fixed top-16 right-4 z-50 p-4 rounded-xl shadow-2xl border flex items-center gap-3 ${
+          toast.type === 'error'
+            ? 'bg-rose-950 border-rose-500 text-rose-100'
+            : 'bg-emerald-950 border-emerald-500 text-emerald-100'
+        }`}>
           <span className="text-sm font-semibold">{toast.message}</span>
         </div>
       )}
@@ -371,7 +395,7 @@ function ReceptionApp() {
           </div>
         </div>
 
-        {/* BẢNG KANBAN CUỘN ĐỒNG BỘ CẢ 4 CỘT */}
+        {/* BẢNG KANBAN CUỘN ĐỒNG BỘ */}
         <div className="kanban-container hide-scrollbar flex-1 items-start">
           {kanbanColumns.map(col => (
             <div key={col.id} className={`kanban-col min-w-[280px] sm:min-w-[320px] flex-1 shrink-0 flex flex-col bg-[#0f1424] rounded-xl border border-slate-800 shadow-lg overflow-hidden ${col.colorClass}`}>
@@ -396,12 +420,13 @@ function ReceptionApp() {
                     const storageStatus = (r.storage_status || '').toLowerCase();
                     const deliveryStatus = (r.delivery_status || '').toLowerCase();
 
-                    const isReturned = status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered';
+                    const isDestroyed = storageStatus === 'destroyed';
+                    const isReturned = !isDestroyed && (status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered');
                     const isDelivery = process === 'delivery' || (deliveryStatus && deliveryStatus !== 'delivered');
                     const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
 
                     const isCreator = r.created_by && r.created_by === currentUser.username;
-                    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase())
+                    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
                     const canDelete = isAdmin || isCreator;
 
                     return (
@@ -427,7 +452,7 @@ function ReceptionApp() {
                             {process === 'delivery' ? (
                               <span className="text-[9px] w-fit bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/30 font-semibold">🚚 Q.Trình Giao Nhận</span>
                             ) : process === 'storage' ? (
-                              <span className="text-[9px] w-fit bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 font-semibold">📦 Q.Trình Lưu Kho</span>
+                              <span className="text-[9px] w-fit bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 font-semibold">📦 Lưu Kho Sửa Chữa</span>
                             ) : (
                               <span className="text-[9px] w-fit bg-sky-500/20 text-sky-300 px-1.5 py-0.5 rounded border border-sky-500/30 font-semibold">⚙ Q.Trình Sửa Chữa</span>
                             )}
@@ -448,7 +473,9 @@ function ReceptionApp() {
                           <button onClick={() => openEditModal(r)} className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all"><i className="fa-solid fa-pen"></i></button>
                           <button onClick={() => sendReceptionSms(r, hotlinePhone)} className="flex-[2] h-8 bg-sky-600/80 hover:bg-sky-500 text-white rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1"><i className="fa-solid fa-sms"></i> SMS</button>
                           
-                          {isReturned ? (
+                          {isDestroyed ? (
+                            <div className="flex-[2] h-8 flex items-center justify-center bg-rose-950/70 text-rose-400 rounded text-[11px] font-bold border border-rose-500/30"><i className="fa-solid fa-ban mr-1"></i> Tiêu Hủy</div>
+                          ) : isReturned ? (
                             <div className="flex-[2] h-8 flex items-center justify-center bg-emerald-900/50 text-emerald-400 rounded text-[11px] font-bold border border-emerald-500/30"><i className="fa-solid fa-circle-check mr-1"></i> Đã Trả</div>
                           ) : isDelivery ? (
                             <button disabled className="flex-[2] h-8 flex items-center justify-center bg-slate-800/60 text-slate-400 rounded text-[10px] font-bold border border-slate-700/50 cursor-not-allowed opacity-70"><i className="fa-solid fa-truck-fast mr-1 text-indigo-400"></i> Giao Nhận</button>

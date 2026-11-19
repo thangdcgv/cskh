@@ -152,26 +152,56 @@ async def get_dynamic_status_map() -> dict:
     }
 
 
-async def find_existing_repair_ticket(job_id: str, code: Optional[str]):
+async def find_existing_repair_ticket(
+    candidate_job_ids: list[str],
+    code: Optional[str],
+    phone: Optional[str],
+    allow_phone_match: bool = False,
+):
     """
-    Tìm phiếu đã tồn tại trong CSDL theo Job ID hoặc Mã phiếu.
-    Lưu ý: Không khớp theo SĐT đơn lẻ để tránh ghi đè phiếu cũ khi khách quen quay lại sửa máy khác.
+    Tìm phiếu đã tồn tại trong CSDL:
+    1. Khớp theo danh sách Job ID (job hiện tại hoặc job gốc trước khi forward).
+    2. Khớp theo Mã phiếu (code).
+    3. Nếu là luồng chuyển tiếp (Lưu kho / Giao nhận / [Fwd]), khớp phiếu ĐANG MỞ gần nhất theo SĐT.
     """
-    def _query():
-        res = (
-            supabase.table("repairs")
-            .select("*")
-            .or_(f"base_job_id.eq.{job_id},storage_job_id.eq.{job_id},delivery_job_id.eq.{job_id}")
-            .limit(1)
-            .execute()
-        )
-        if res.data:
-            return res.data[0]
+    clean_ids = [jid for jid in dict.fromkeys(candidate_job_ids) if jid and jid.lower() != "none"]
 
+    def _query():
+        # 1. Khớp theo Job ID
+        for jid in clean_ids:
+            res = (
+                supabase.table("repairs")
+                .select("*")
+                .or_(f"base_job_id.eq.{jid},storage_job_id.eq.{jid},delivery_job_id.eq.{jid}")
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                return res.data[0]
+
+        # 2. Khớp qua Mã phiếu
         if code:
             res_code = supabase.table("repairs").select("*").eq("code", code).limit(1).execute()
             if res_code.data:
                 return res_code.data[0]
+
+        # 3. Khớp phiếu đang hoạt động theo SĐT khi chuyển tiếp sang Lưu kho / Giao nhận
+        if allow_phone_match and phone:
+            phone_variants = [phone]
+            if phone.startswith("0") and len(phone) == 10:
+                phone_variants.append("84" + phone[1:])
+
+            res_phone = (
+                supabase.table("repairs")
+                .select("*")
+                .in_("phone", phone_variants)
+                .not_.in_("status", ["returned", "cancelled"])
+                .order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if res_phone.data:
+                return res_phone.data[0]
 
         return None
 
@@ -257,6 +287,8 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or job_data.get("workflow_id")
             or job_data.get("wf_id")
             or (workflow_obj.get("id") if isinstance(workflow_obj, dict) else None)
+            or payload.get("target_container_id")
+            or payload.get("container_id")
             or payload.get("source_container_id")
             or ""
         )
@@ -279,9 +311,28 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
 
         logger.info(f"⚡ [WEBHOOK] WF: '{workflow_id}' | Stage: '{stage_name}' | Job: '{job_id}'")
 
-        # 4. Tìm phiếu đã tồn tại trong CSDL
+        # 4. Tìm phiếu đã tồn tại trong CSDL (gom cả ID gốc nếu Base gửi kèm khi forward)
+        parent_job_id = str(
+            payload.get("parent_id")
+            or payload.get("source_job_id")
+            or payload.get("origin_job_id")
+            or job_data.get("parent_id")
+            or ""
+        ).strip()
+
         extracted_code, extracted_phone = extract_identifier_code_or_phone(task_name)
-        existing_ticket = await find_existing_repair_ticket(job_id, extracted_code)
+        extracted_phone_norm = normalize_phone(extracted_phone or "") or None
+        is_forwarded_or_downstream = (
+            str(workflow_id) in {str(workflow_storage), str(workflow_delivery)}
+            or "[fwd]" in task_name.lower()
+        )
+
+        existing_ticket = await find_existing_repair_ticket(
+            candidate_job_ids=[job_id, parent_job_id],
+            code=extracted_code,
+            phone=extracted_phone_norm,
+            allow_phone_match=is_forwarded_or_downstream,
+        )
 
         # Chuẩn hóa Workflow ID
         if existing_ticket:

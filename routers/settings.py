@@ -11,9 +11,11 @@ from routers.auth import get_current_user
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
 ALLOWED_STATUSES = {"received", "processing", "repairing", "fixed", "returned", "cancelled"}
+ALLOWED_TERM_TYPES = {"VALID", "INVALID", "NOTE"}
 
-# Danh sách các Key chuẩn dùng cho Base Workflow & System Sync
+# Danh sách các Key chuẩn dùng cho Base Workflow, System Sync & Trang Bảo hành
 DEFAULT_SYSTEM_KEYS = [
+    # --- System & Base Sync Tokens ---
     {"key": "base_repair_token", "value": "", "description": "API Key / Token cho ứng dụng Sửa chữa (Repair)"},
     {"key": "base_warranty_token", "value": "", "description": "API Key / Token cho ứng dụng Bảo hành (Warranty)"},
     {"key": "base_recept_token", "value": "", "description": "API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)"},
@@ -23,6 +25,17 @@ DEFAULT_SYSTEM_KEYS = [
     {"key": "workflow_delivery_id", "value": "20037", "description": "Workflow ID quy trình Giao nhận trên Base"},
     {"key": "base_shared_secret", "value": "", "description": "Secret Token xác thực Webhook từ Base gửi về"},
     {"key": "cache_ttl_seconds", "value": "60", "description": "Thời gian lưu Cache RAM cấu hình (giây)"},
+    
+    # --- Thông tin Doanh nghiệp & Trang bảo hành công khai ---
+    {"key": "company_name", "value": "CÔNG TY TNHH MÁY IN ĐẠI THÀNH", "description": "Tên công ty hiển thị footer/header"},
+    {"key": "company_address", "value": "29/31 Nguyễn Văn Khối, P. Thông Tây Hội, TP.HCM", "description": "Địa chỉ trụ sở công ty"},
+    {"key": "hotline_warranty", "value": "0795570381", "description": "Hotline Kỹ thuật bảo hành"},
+    {"key": "hotline_repair", "value": "0795570382", "description": "Hotline Kỹ thuật sửa chữa"},
+    {"key": "hotline_feedback", "value": "0938580406", "description": "Hotline Phản ánh dịch vụ / Quản lý"},
+    {"key": "website_main", "value": "https://www.mayindaithanh.com", "description": "Website chính thức 1"},
+    {"key": "website_sub", "value": "https://www.mayinsaigon.com", "description": "Website chính thức 2"},
+    {"key": "guide_url", "value": "https://printer-guide.onrender.com", "description": "Đường dẫn Thư viện Hướng dẫn & Xử lý lỗi"},
+    {"key": "logo_url", "value": "https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png", "description": "Đường dẫn Logo công ty hiển thị trên giao diện"},
 ]
 
 
@@ -71,6 +84,26 @@ class StatusMappingBulkUpdate(BaseModel):
     )
 
 
+class WarrantyTermItem(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    id: Optional[str] = Field(None, description="UUID điều khoản (nếu cập nhật)")
+    term_type: str = Field(..., description="Loại điều khoản: VALID, INVALID, NOTE")
+    content: str = Field(..., min_length=1, description="Nội dung điều khoản")
+    display_order: int = Field(0, ge=0, description="Thứ tự hiển thị")
+    is_active: bool = Field(True, description="Trạng thái kích hoạt")
+
+    @field_validator("term_type")
+    @classmethod
+    def validate_term_type(cls, v: str) -> str:
+        v_clean = v.upper().strip()
+        if v_clean not in ALLOWED_TERM_TYPES:
+            raise ValueError(
+                f"Loại điều khoản không hợp lệ. Các loại hợp lệ: {', '.join(sorted(ALLOWED_TERM_TYPES))}"
+            )
+        return v_clean
+
+
 # =========================================================
 # PHÂN QUYỀN & HELPER
 # =========================================================
@@ -101,6 +134,36 @@ def mask_secret(val: str) -> str:
 # =========================================================
 # 1. CẤU HÌNH HỆ THỐNG (SYSTEM SETTINGS)
 # =========================================================
+@router.get("/public-config")
+async def get_public_system_configs():
+    """
+    Lấy các thông tin cấu hình công khai (Tên công ty, Hotline, Logo, Địa chỉ, Website).
+    API này KHÔNG YÊU CẦU ĐĂNG NHẬP, phục vụ trực tiếp cho trang Tra cứu bảo hành.
+    """
+    PUBLIC_KEYS = {
+        "company_name",
+        "company_address",
+        "hotline_warranty",
+        "hotline_repair",
+        "hotline_feedback",
+        "website_main",
+        "website_sub",
+        "guide_url",
+        "logo_url",
+    }
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table("system_settings").select("key, value").in_("key", list(PUBLIC_KEYS)).execute()
+        )
+        configs = {item["key"]: item["value"] for item in (res.data or [])}
+        return configs
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi tải cấu hình công khai: {str(e)}"
+        )
+
+
 @router.get("/config")
 async def get_system_configs(_: dict = Depends(get_current_user)):
     """
@@ -149,7 +212,7 @@ async def get_system_configs_detail(current_user: dict = Depends(require_admin))
 @router.post("/config/init-defaults")
 async def initialize_default_settings(current_user: dict = Depends(require_admin)):
     """
-    Khởi tạo mẫu các Key cấu hình mặc định (Repair Token, Warranty Token, Workflow IDs...)
+    Khởi tạo mẫu các Key cấu hình mặc định (Tokens, Workflow IDs, Thông tin Công ty...)
     Nếu Key đã tồn tại thì giữ nguyên giá trị cũ.
     """
     try:
@@ -427,4 +490,100 @@ async def delete_status_mapping(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Lỗi xóa ánh xạ: {str(e)}"
+        )
+
+
+# =========================================================
+# 3. ĐIỀU KHOẢN BẢO HÀNH (WARRANTY TERMS)
+# =========================================================
+@router.get("/warranty-terms")
+async def get_warranty_terms():
+    """
+    Lấy danh sách các điều khoản & lưu ý bảo hành đang kích hoạt (is_active = True).
+    Public API dùng cho trang tra cứu bảo hành.
+    """
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table("warranty_terms")
+            .select("*")
+            .eq("is_active", True)
+            .order("display_order", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi tải danh sách điều khoản bảo hành: {str(e)}"
+        )
+
+
+@router.get("/warranty-terms/admin")
+async def get_warranty_terms_admin(current_user: dict = Depends(require_admin)):
+    """Lấy toàn bộ danh sách điều khoản bảo hành bao gồm cả bị ẩn (Admin UI)"""
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table("warranty_terms")
+            .select("*")
+            .order("term_type")
+            .order("display_order", desc=False)
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi tải danh sách điều khoản bảo hành admin: {str(e)}"
+        )
+
+
+@router.post("/warranty-terms")
+async def save_warranty_term(
+    term: WarrantyTermItem,
+    current_user: dict = Depends(require_admin)
+):
+    """Thêm mới hoặc cập nhật 1 điều khoản bảo hành (VALID, INVALID, NOTE)"""
+    try:
+        data = {
+            "term_type": term.term_type,
+            "content": term.content,
+            "display_order": term.display_order,
+            "is_active": term.is_active,
+        }
+        if term.id:
+            data["id"] = term.id
+
+        res = await asyncio.to_thread(
+            lambda: supabase.table("warranty_terms").upsert(data).execute()
+        )
+        return {
+            "status": "success",
+            "message": "Đã lưu điều khoản bảo hành thành công",
+            "data": res.data[0] if res.data else None
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi lưu điều khoản bảo hành: {str(e)}"
+        )
+
+
+@router.delete("/warranty-terms/{term_id}")
+async def delete_warranty_term(
+    term_id: str,
+    current_user: dict = Depends(require_admin)
+):
+    """Xóa 1 điều khoản bảo hành theo UUID"""
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("warranty_terms").delete().eq("id", term_id).execute()
+        )
+        return {
+            "status": "success",
+            "message": "Đã xóa điều khoản bảo hành thành công"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Lỗi xóa điều khoản bảo hành: {str(e)}"
         )

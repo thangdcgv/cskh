@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hệ Thống Bảo Hành Điện Tử - Máy In Đại Thành</title>
+    
+    <!-- Google Font Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    
+    <!-- FontAwesome 6 -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+
+    <style>
+        :root {
+            --primary-color: #E30613;
+            --text-main: #0F172A;
+            --text-muted: #475569;
+            --bg-body: #FFFFFF;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            background-color: var(--bg-body) !important;
+            color: var(--text-main) !important;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+            -webkit-font-smoothing: antialiased !important;
+            margin: 0;
+            padding: 0;
+            overflow-x: hidden;
+        }
+
+        .st-app-container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 3rem 1.25rem 2rem 1.25rem;
+        }
+
+        /* HEADER SECTION */
+        .modern-header {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            margin-bottom: 30px;
+            position: relative;
+        }
+
+        @media (min-width: 850px) {
+            .modern-header {
+                flex-direction: row; 
+                min-height: 120px;
+            }
+            .header-logo-container {
+                position: absolute;
+                left: 0;
+                top: 50%;
+                transform: translateY(-50%);
+            }
+        }
+
+        .header-logo-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 15px;
+        }
+
+        @media (min-width: 850px) {
+            .header-logo-container { margin-bottom: 0; }
+        }
+
+        .modern-logo {
+            width: clamp(80px, 10vw, 130px);
+            height: auto;
+            filter: drop-shadow(0 2px 2px rgba(0,0,0,0.15));
+        }
+
+        .header-text-container {
+            text-align: center;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        /* ĐÃ SỬA CẢNH BÁO CSS DÒNG 102 */
+        .modern-title {
+            background: linear-gradient(90deg, #E30613 0%, #FFDE00 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-size: clamp(20px, 4.5vw, 40px);
+            font-weight: 800;
+            text-transform: uppercase;
+            margin: 0;
+            line-height: 1.2;
+            letter-spacing: -0.5px;
+        }
+
+        .brand-slogan {
+            color: #E30613;
+            font-size: clamp(13px, 2vw, 18px);
+            font-weight: 600;
+            font-style: italic;
+            margin-top: 5px;
+            white-space: nowrap;
+        }
+
+        .gold-stars {
+            color: #FFDE00 !important;
+            font-size: 22px !important;
+            margin-top: 10px;
+            letter-spacing: 5px;
+            text-shadow: 0 0 10px rgba(255, 222, 0, 0.4), 1px 1px 2px rgba(0,0,0,0.1);
+        }
+
+        /* FORM TÌM KIẾM */
+        .st-search-box {
+            margin-bottom: 25px;
+        }
+        .st-search-label {
+            color: #334155 !important;
+            font-weight: 600 !important;
+            font-size: 14px !important;
+            margin-bottom: 6px;
+            display: block;
+        }
+        .st-input-group {
+            display: flex;
+            gap: 10px;
+        }
+        .st-input-group input {
+            background: #FFFFFF !important;
+            color: var(--text-main) !important;
+            border: 1px solid #CBD5E1 !important;
+            border-radius: 6px !important;
+            padding: 0.65rem 1rem !important;
+            font-size: 15px !important;
+            transition: all 0.25s ease !important;
+        }
+        .st-input-group input:focus {
+            border-color: var(--primary-color) !important;
+            box-shadow: 0 0 6px rgba(227, 6, 19, 0.3) !important;
+            outline: none;
+        }
+        .st-btn-submit {
+            background-color: #FFFFFF !important;
+            color: var(--primary-color) !important;
+            border: 1px solid #CBD5E1 !important;
+            border-radius: 6px !important;
+            font-weight: 600 !important;
+            padding: 0 28px !important;
+            transition: all 0.2s ease !important;
+            white-space: nowrap;
+        }
+        .st-btn-submit:hover {
+            border-color: var(--primary-color) !important;
+            background-color: #FFF5F5 !important;
+        }
+
+        /* CARD BẢO HÀNH */
+        .ticket-card-st {
+            background: #FFFFFF;
+            border: 1px solid #E2E8F0;
+            border-radius: 16px;
+            padding: 22px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.06);
+            margin-bottom: 25px;
+            position: relative;
+            overflow: hidden;
+            color: #0F172A;
+        }
+        .ticket-card-st::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 4px;
+            background: linear-gradient(90deg, #C40000, #E30613, #FFC400);
+        }
+
+        /* METRICS 3 CỘT */
+        .st-metric-card {
+            background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFC 100%) !important;
+            border: 1px solid #E2E8F0 !important;
+            border-top: 3px solid #E30613 !important;
+            padding: 18px !important;
+            border-radius: 10px !important;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.04), 0 8px 18px rgba(0,0,0,0.03) !important;
+            height: 100%;
+            transition: all 0.25s ease;
+        }
+        .st-metric-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 14px rgba(0,0,0,0.06), 0 12px 28px rgba(0,0,0,0.05) !important;
+        }
+        .st-metric-label {
+            font-size: 13px !important;
+            color: #64748B !important;
+            font-weight: 600 !important;
+            margin-bottom: 4px;
+        }
+        .st-metric-value {
+            font-size: 22px !important;
+            font-weight: 800 !important;
+            color: #0F172A !important;
+            line-height: 1.2;
+        }
+        .st-metric-delta {
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            margin-top: 4px;
+        }
+        .delta-green { color: #059669 !important; }
+        .delta-red { color: #DC2626 !important; }
+        .delta-off { color: #64748B !important; }
+
+        .st-caption {
+            font-size: 12px;
+            color: #64748B;
+            margin-top: 6px;
+        }
+
+        /* ACCORDIONS / EXPANDERS */
+        .st-expander {
+            background-color: #FFFFFF !important;
+            border: 1px solid #E2E8F0 !important;
+            border-radius: 8px !important;
+            margin-bottom: 1rem !important;
+            overflow: hidden;
+        }
+        .st-expander-header {
+            padding: 12px 16px;
+            font-weight: 600;
+            color: #0F172A;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #FFFFFF;
+            transition: background 0.2s;
+            user-select: none;
+        }
+        .st-expander-header:hover {
+            background: #F8FAFC;
+            color: var(--primary-color);
+        }
+        .st-expander-content {
+            padding: 18px;
+            border-top: 1px solid #F1F5F9;
+            background: #FFFFFF;
+            color: #334155;
+        }
+
+        /* NÚT TẢI FILE */
+        .st-btn-download {
+            background-color: #FFFFFF !important;
+            color: #1E293B !important;
+            border: 1px solid #D1D5DB !important;
+            border-radius: 8px !important;
+            height: 45px !important;
+            width: 100% !important;
+            font-weight: 600 !important;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05) !important;
+            transition: all 0.3s ease !important;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-decoration: none !important;
+        }
+        .st-btn-download:hover {
+            border-color: #E30613 !important;
+            color: #E30613 !important;
+            background-color: #FFF5F5 !important;
+            box-shadow: 0 4px 6px rgba(227, 6, 19, 0.1) !important;
+        }
+
+        /* FOOTER */
+        .footer-container-st {
+            background-color: #FFFFFF;
+            border-top: 3px solid #FFDE00;
+            padding: 30px 15px;
+            color: #1F2937;
+            margin-top: 50px;
+            border-radius: 20px 20px 0 0;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.05);
+        }
+        .guide-banner {
+            background: linear-gradient(135deg, #1E3A8A 0%, #2563EB 100%);
+            color: #FFFFFF;
+            padding: 18px 20px;
+            border-radius: 14px;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 15px;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+        }
+        .guide-banner-title {
+            font-size: 1.05rem;
+            font-weight: 800;
+            margin-bottom: 4px;
+            color: #FFFFFF;
+        }
+        .guide-banner-desc {
+            font-size: 0.85rem;
+            color: #E0F2FE;
+        }
+        .guide-btn {
+            background-color: #FFDE00;
+            color: #1F2937 !important;
+            font-weight: 700;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-decoration: none !important;
+            font-size: 0.875rem;
+            white-space: nowrap;
+            transition: all 0.2s ease;
+        }
+        .guide-btn:hover {
+            background-color: #FFE53B;
+            transform: translateY(-2px);
+        }
+
+        .footer-flex {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .footer-section { flex: 1; min-width: 250px; }
+        .footer-title {
+            color: #E30613;
+            font-weight: 800;
+            font-size: 1.1rem;
+            text-transform: uppercase;
+            margin-bottom: 12px;
+        }
+        .footer-info { font-size: 0.9rem; margin: 8px 0; color: #4B5563; }
+        .footer-info a { color: #E30613; text-decoration: none; font-weight: 600; }
+        .footer-info a:hover { text-decoration: underline; }
+
+        .copyright-box {
+            background-color: #F9FAFB;
+            padding: 16px;
+            margin-top: 25px;
+            border-radius: 12px;
+            font-size: 0.8rem;
+            color: #6B7280;
+            border: 1px solid #E5E7EB;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+<div class="st-app-container">
+
+    <!-- HEADER -->
+    <div class="modern-header">
+        <div class="header-logo-container">
+            <img src="https://ejbillnpxxiubbiyyaxn.supabase.co/storage/v1/object/public/publicLogo/LOGO.png" 
+                 onerror="this.src='https://mayindaithanh.com/wp-content/uploads/2021/05/logo-dai-thanh.png'" 
+                 class="modern-logo" alt="Logo Đại Thành">
+        </div>
+        <div class="header-text-container">
+            <div class="modern-title">HỆ THỐNG BẢO HÀNH ĐIỆN TỬ</div>
+            <div class="brand-slogan">Tra cứu thông tin bảo hành nhanh chóng & chính xác</div>
+            <div class="gold-stars">★★★★★</div>
+        </div>
+    </div>
+
+    <div style="margin-bottom: 25px;"></div>
+
+    <!-- Ô TÌM KIẾM -->
+    <div class="st-search-box">
+        <label class="st-search-label">Nhập số Seri trên máy để kiểm tra:</label>
+        <form method="GET" action="/warranty/lookup">
+            <div class="st-input-group">
+                <input type="text" name="q" value="{{ search_query }}" placeholder="Ví dụ: AGWH12345 hoặc XB52021234" class="form-control" required>
+                <button type="submit" class="st-btn-submit">Tra cứu</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- KẾT QUẢ TÌM KIẾM -->
+    {% if search_query %}
+        {% if results %}
+            <h3 class="fw-bold mb-3" style="color: #0F172A; font-size: 1.25rem;">📱 Kết quả: Tìm thấy {{ results|length }} thiết bị</h3>
+
+            {% for item in results %}
+            {% set comp = item.computed %}
+            {% set st = comp.status_obj %}
+
+            <div class="st-expander">
+                <div class="st-expander-header" onclick="toggleExpander('exp-{{ item.id }}')">
+                    <span>📦 <b>{{ item.model_name }}</b> | S/N: <span style="font-family: monospace; color: #C40000; font-weight:700;">{{ item.serial_number }}</span></span>
+                    <i class="fa-solid fa-chevron-down text-muted" id="icon-exp-{{ item.id }}"></i>
+                </div>
+
+                <div class="st-expander-content" id="exp-{{ item.id }}">
+                    
+                    <div class="ticket-card-st">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div>
+                                <div style="color:#E30613;font-weight:800;font-size:12px;text-transform:uppercase;letter-spacing:1.5px;margin-bottom:4px">PHIẾU BẢO HÀNH ĐIỆN TỬ</div>
+                                <div style="font-size:24px;color:#1E293B;font-weight:700;line-height:1.2">{{ item.model_name }}</div>
+                            </div>
+                            <div style="background:#FFECEC;color:#C40000;padding:6px 14px;border-radius:20px;font-size:11px;font-weight:700;border:1px solid #FCA5A5">
+                                {{ (item.condition or 'MỚI') | upper }} - {{ (item.category or 'MÁY IN PHUN') | upper }}
+                            </div>
+                        </div>
+
+                        {% if (comp.is_inkjet or comp.is_dot_matrix) and comp.head_months > 0 %}
+                            <div style="margin-top:12px;padding:12px;background:#FFFBEB;border:1px solid #FEF3C7;border-radius:10px;font-size:13px;color:#92400E;font-weight:600;line-height:1.6;">
+                                <div class="d-flex align-items-center gap-2">🛠️ Thân máy: {{ comp.body_text }}</div>
+                                <div class="d-flex align-items-center gap-2">{{ comp.sub_icon }} {{ comp.sub_label }}: {{ comp.head_text }}</div>
+                                <div style="margin-top:6px;padding-top:6px;border-top:1px dashed #FEF3C7;font-size:11px;color:#B45309;font-weight:400;font-style:italic;">
+                                    (Bảo hành áp dụng theo điều kiện nào đến trước)
+                                </div>
+                            </div>
+                        {% else %}
+                            <div style="margin-top:12px;padding:12px;background:#F0F9FF;border:1px solid #BAE6FD;border-radius:10px;font-size:13px;color:#0369A1;font-weight:600">
+                                🛠️ Thân máy: {{ comp.body_text }} <span style="color:#7DD3FC;margin:0 8px">|</span> {{ comp.sub_icon }} {{ comp.sub_label }}: {{ comp.head_text }}
+                            </div>
+                        {% endif %}
+
+                        <div style="margin-top:18px;"></div>
+
+                        <div class="row g-3" style="font-size: 14px;">
+                            <div class="col-6 border-bottom pb-2">
+                                <span style="color:#64748B;font-size:12px;font-weight:500;">Khách hàng</span><br>
+                                <b style="color:#334155;font-size:15px">{{ item.customer_name }}</b>
+                            </div>
+                            <div class="col-6 border-bottom pb-2">
+                                <span style="color:#64748B;font-size:12px;font-weight:500;">Số Seri</span><br>
+                                <b style="color:#C40000;font-size:17px;font-family:'JetBrains Mono',monospace;">{{ item.serial_number }}</b>
+                            </div>
+                            <div class="col-6">
+                                <span style="color:#64748B;font-size:12px;font-weight:500;">Ngày mua</span><br>
+                                <b style="color:#334155">{{ comp.purchase_date_str }}</b>
+                            </div>
+                            <div class="col-6">
+                                <span style="color:#64748B;font-size:12px;font-weight:500;">Điện thoại</span><br>
+                                <b style="color:#334155">{{ comp.masked_phone }}</b>
+                            </div>
+                        </div>
+                    </div>
+
+                    {% if not st.is_active %}
+                        <div class="alert alert-warning border-0 mb-3" style="background:#FFFBEB;color:#B45309;font-size:13px;font-weight:600;border-left:4px solid #F59E0B !important;">
+                            ⚠️ <b>THIẾT BỊ ĐÃ QUÁ HẠN BẢO HÀNH</b><br>
+                            {{ st.reason }}
+                        </div>
+                    {% endif %}
+
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-4">
+                            <div class="st-metric-card">
+                                <div class="st-metric-label">Thân máy</div>
+                                <div class="st-metric-value">{{ "Còn hạn" if st.body.is_ok else "Hết hạn" }}</div>
+                                <div class="st-metric-delta {{ 'delta-green' if st.body.is_ok else 'delta-red' }}">
+                                    {{ st.body.days_left ~ " ngày" if st.body.is_ok else "Quá hạn" }}
+                                </div>
+                                <div class="st-caption">📅 Đến: {{ st.body.end_date }}</div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
+                            <div class="st-metric-card">
+                                <div class="st-metric-label">{{ comp.sub_icon }} {{ comp.sub_label }}</div>
+                                {% if comp.head_months == 0 %}
+                                    <div class="st-metric-value">Không bảo hành</div>
+                                    <div class="st-metric-delta delta-off">Theo chính sách</div>
+                                    <div class="st-caption">
+                                        {% if comp.is_scan or comp.is_electric %}📌 Áp dụng bảo hành tập trung theo thân máy.{% elif comp.is_laser %}📌 Hộp mực là vật tư tiêu hao.{% else %}📌 {{ comp.sub_label }} không thuộc danh mục bảo hành.{% endif %}
+                                    </div>
+                                {% else %}
+                                    <div class="st-metric-value">{{ "Còn hạn" if st.head.is_ok else "Hết hạn" }}</div>
+                                    <div class="st-metric-delta {{ 'delta-green' if st.head.is_ok else 'delta-red' }}">
+                                        {{ st.head.days_left ~ " ngày" if st.head.is_ok else "Quá hạn" }}
+                                    </div>
+                                    <div class="st-caption">📅 Hạn {{ comp.sub_label | lower }}: {{ st.head.end_date }}</div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        <div class="col-md-4">
+                            <div class="st-metric-card">
+                                <div class="st-metric-label">Số trang máy in</div>
+                                {% if comp.is_inkjet %}
+                                    {% if comp.has_real_update %}
+                                        <div class="st-metric-value">{{ "{:,}".format(item.current_counter or 0) }} trang</div>
+                                        <div class="st-metric-delta delta-green">+{{ "{:,}".format(comp.actual_printed) }} trang đã in</div>
+                                        <div class="st-caption">📊 Cập nhật lần cuối: <b>{{ comp.last_update_str }}</b></div>
+                                    {% else %}
+                                        <div class="st-metric-value">{{ "{:,}".format(item.initial_counter or 0) }} trang</div>
+                                        <div class="st-metric-delta delta-off">Chưa cập nhật</div>
+                                        <div class="st-caption">📌 Số trang ghi nhận lúc bán.</div>
+                                    {% endif %}
+                                {% else %}
+                                    <div class="st-metric-value">Không áp dụng</div>
+                                    <div class="st-metric-delta delta-off">Bảo hành thời gian</div>
+                                    <div class="st-caption">📌 Dòng thiết bị này bảo hành thuần theo thời gian.</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    {% if comp.is_inkjet and comp.has_page_limit %}
+                        {% if comp.has_real_update %}
+                            <div class="alert alert-info py-2" style="font-size: 13px; background-color: #F0F9FF; color: #0369A1; border-color: #BAE6FD;">
+                                📊 Số trang hiện tại được ghi nhận cập nhật lần cuối vào ngày <b>{{ comp.last_update_str }}</b> ({{ "{:,}".format(item.current_counter or 0) }} trang đã in).
+                            </div>
+                        {% else %}
+                            <div class="alert alert-info py-2" style="font-size: 13px; background-color: #F0F9FF; color: #0369A1; border-color: #BAE6FD;">
+                                ℹ️ Số trang hiện tại ({{ "{:,}".format(item.initial_counter or 0) }} trang) được ghi nhận khi tạo phiếu ngày <b>{{ comp.created_str }}</b>. Vui lòng in bản <b>Nozzle Check / Status Page</b> để đối soát.
+                            </div>
+                        {% endif %}
+                    {% endif %}
+
+                    <div class="row g-2 mt-2">
+                        <div class="col-md-6">
+                            <a href="/warranty/pdf/{{ item.id }}" target="_blank" class="st-btn-download">
+                                ⬇️ Tải PDF Bảo Hành
+                            </a>
+                        </div>
+                        <div class="col-md-6">
+                            <a href="/warranty/qr/{{ item.id }}" target="_blank" class="st-btn-download">
+                                🖼️ Tải Mã QR Gốc
+                            </a>
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="st-expander">
+                            <div class="st-expander-header" onclick="toggleExpander('log-{{ item.id }}')">
+                                <span>📋 Nhật ký lịch sử cập nhật</span>
+                                <i class="fa-solid fa-chevron-down text-muted" id="icon-log-{{ item.id }}"></i>
+                            </div>
+                            <div class="st-expander-content" id="log-{{ item.id }}" style="display: none;">
+                                {% if comp.log_lines %}
+                                    {% for line in comp.log_lines %}
+                                        <div class="py-1" style="font-size: 13px;">
+                                            {% if "KHỞI TẠO" in line %}
+                                                <span class="text-success fw-bold">🌱 {{ line }}</span>
+                                            {% elif "Số trang:" in line %}
+                                                <span class="text-primary fw-bold">📈 {{ line }}</span>
+                                            {% else %}
+                                                <span>{{ line }}</span>
+                                            {% endif %}
+                                        </div>
+                                        <hr style="margin: 4px 0; border-color: #F1F5F9;">
+                                    {% endfor %}
+                                {% else %}
+                                    <div class="text-muted" style="font-size: 13px;">Chưa có lịch sử.</div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+            {% endfor %}
+
+        {% else %}
+            <div class="alert alert-info py-3" style="background:#F0F9FF;color:#0369A1;border-color:#BAE6FD;border-radius:8px;">
+                💡 Không tìm thấy thông tin bảo hành nào khớp với từ khóa <b>"{{ search_query }}"</b>.
+            </div>
+        {% endif %}
+    {% endif %}
+
+    <!-- TÓM TẮT CHÍNH SÁCH -->
+    <div class="st-expander mt-4">
+        <div class="st-expander-header" onclick="toggleExpander('policy-summary')">
+            <span>📄 Tóm tắt điều kiện bảo hành</span>
+            <i class="fa-solid fa-chevron-down text-muted" id="icon-policy-summary"></i>
+        </div>
+        <div class="st-expander-content" id="policy-summary" style="display: none;">
+            <h4 class="fw-bold text-dark mb-2" style="font-size: 1.05rem;">⏱️ Thời hạn bảo hành</h4>
+            <div class="alert alert-info py-2" style="background-color: #F0F9FF; color: #0369A1; border-color: #BAE6FD; font-size: 0.9rem;">
+                Bảo hành được tính theo thời gian hoặc số bản in <b>(tuỳ theo điều kiện nào đến trước)</b>
+            </div>
+
+            <div class="table-responsive my-3">
+                <table class="table table-bordered align-middle mb-0" style="font-size: 0.88rem; background: #FFFFFF; color: #0F172A;">
+                    <thead style="background: #F8FAFC; font-weight: 700; color: #1F2937;">
+                        <tr>
+                            <th>Loại máy</th>
+                            <th>Thời hạn bảo hành</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Máy in phun tốc độ thấp</td><td>12 tháng hoặc 10.000 bản</td></tr>
+                        <tr><td>Máy in phun tốc độ nhanh</td><td>12 tháng hoặc 15.000 bản</td></tr>
+                        <tr><td>Máy in phun siêu tốc</td><td>12 tháng hoặc 30.000 bản</td></tr>
+                        <tr><td>Máy in laser mới</td><td>12 tháng</td></tr>
+                        <tr><td>Máy in laser đã qua sử dụng</td><td>6 tháng</td></tr>
+                        <tr><td>Máy in kim</td><td>3 tháng</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <hr style="border-color: #E2E8F0;">
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <h5 class="fw-bold text-success mb-2" style="font-size: 0.95rem;">✅ Điều kiện được bảo hành</h5>
+                    <div class="p-3 rounded" style="background: #ECFDF5; border: 1px solid #A7F3D0; font-size: 0.85rem; color: #065F46; line-height: 1.6;">
+                        • Có <b>tem niêm phong và phiếu bảo hành hợp lệ</b><br>
+                        • Máy bị lỗi do <b>nhà sản xuất</b><br>
+                        • Phát sinh lỗi ngoài ý muốn do <b>quá trình vận chuyển</b><br>
+                        • Sản phẩm còn <b>trong thời hạn bảo hành</b>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <h5 class="fw-bold text-danger mb-2" style="font-size: 0.95rem;">❌ Trường hợp từ chối bảo hành</h5>
+                    <div class="p-3 rounded" style="background: #FEF2F2; border: 1px solid #FECDD3; font-size: 0.85rem; color: #991B1B; line-height: 1.6;">
+                        • Tem bảo hành <b>rách hoặc bị thay đổi</b><br>
+                        • Máy <b>vô nước, rỉ sét, sét đánh</b><br>
+                        • Máy <b>bị côn trùng cắn, phá hoại</b><br>
+                        • Máy <b>rơi vỡ hoặc va đập</b><br>
+                        • Máy bị <b>tự sửa chữa bởi bên thứ ba</b><br>
+                        • Sử dụng <b>sai hướng dẫn của nhà sản xuất</b>
+                    </div>
+                </div>
+            </div>
+
+            <hr style="border-color: #E2E8F0;">
+
+            <h5 class="fw-bold text-warning mb-2" style="font-size: 0.95rem; color: #D97706 !important;">📌 Lưu ý</h5>
+            <div class="p-3 rounded" style="background: #FFFBEB; border: 1px solid #FEF3C7; font-size: 0.85rem; color: #92400E; line-height: 1.6;">
+                • Bảo hành được thực hiện <b>tại công ty</b><br>
+                • Không bảo hành <b>linh kiện tiêu hao (mực, vật tư)</b><br>
+                • Máy dùng <b>mực ngoài không đúng thỏa thuận</b> có thể bị từ chối bảo hành đầu phun
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="footer-container-st">
+        <div class="guide-banner">
+            <div>
+                <div class="guide-banner-title">📚 THƯ VIỆN HƯỚNG DẪN & XỬ LÝ LỖI MÁY IN</div>
+                <div class="guide-banner-desc">Tra cứu cài đặt và hướng dẫn sử dụng thiết bị bởi KTV Đại Thành</div>
+            </div>
+            <a href="https://printer-guide.onrender.com" target="_blank" class="guide-btn">
+                Xem hướng dẫn ngay &rarr;
+            </a>
+        </div>
+
+        <div class="footer-flex">
+            <div class="footer-section">
+                <div class="footer-title">🏢 CÔNG TY TNHH MÁY IN ĐẠI THÀNH</div>
+                <div class="footer-info">📍 29/31 Nguyễn Văn Khối, P. Thông Tây Hội, TP.HCM</div>
+                <div class="footer-info">🌐 <a href="https://www.mayindaithanh.com" target="_blank">www.mayindaithanh.com</a></div>
+                <div class="footer-info">🌐 <a href="https://www.mayinsaigon.com" target="_blank">www.mayinsaigon.com</a></div>
+            </div>
+            <div class="footer-section">
+                <div class="footer-title">📞 HỖ TRỢ KHÁCH HÀNG</div>
+                <div class="footer-info">🛠️ Kỹ thuật bảo hành: <a href="tel:0795570381">0795.570.381</a></div>
+                <div class="footer-info">🛠️ Kỹ thuật sửa chữa: <a href="tel:0795570382">0795.570.382</a></div>
+                <div class="footer-info">💰 Liên hệ phản ánh: <a href="tel:0938580406">0938.580.406</a></div>
+            </div>
+        </div>
+
+        <div class="copyright-box">
+            © 2026 Powered by Máy In Đại Thành.
+        </div>
+    </div>
+
+</div>
+
+<!-- Bootstrap 5 JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+<script>
+function toggleExpander(id) {
+    const content = document.getElementById(id);
+    const icon = document.getElementById('icon-' + id);
+    if (!content) return;
+    
+    if (content.style.display === 'none' || content.style.display === '') {
+        content.style.display = 'block';
+        if(icon) icon.style.transform = 'rotate(180deg)';
+    } else {
+        content.style.display = 'none';
+        if(icon) icon.style.transform = 'rotate(0deg)';
+    }
+}
+</script>
+
+</body>
+</html>

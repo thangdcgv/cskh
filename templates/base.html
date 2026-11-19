@@ -513,6 +513,17 @@ body::before {
     <span>Hàng chờ</span>
   </a>
 
+  <!-- Kho Máy Dọn (MỚI BỔ SUNG) -->
+  <!-- Kho Máy Dọn -->
+  <a href="/api/v1/cleaned-printers/page" class="nav-item {% if '/cleaned-printers' in current_path or '/may-don' in current_path %}active{% endif %}">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+      <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+      <line x1="12" y1="22.08" x2="12" y2="12"></line>
+    </svg>
+    <span>Kho máy dọn</span>
+  </a>
+
   <!-- Tra cứu -->
   <a href="/tracking" class="nav-item {% if '/tracking' in current_path %}active{% endif %}">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

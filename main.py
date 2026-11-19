@@ -18,18 +18,34 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from database import settings, supabase
-from routers import auth, reception, sync, tickets, webhook
-from routers import settings as settings_router
+# 🟢 1. TÍCH HỢP ROUTER & TEMPLATES_CONFIG DÙNG CHUNG
+from templates_config import templates
+from routers import (
+    auth,
+    cleaned_printers,
+    reception,
+    settings as settings_router,
+    sync,
+    tickets,
+    webhook,
+)
+# Bổ sung import module phân quyền
+try:
+    from routers import permissions as permissions_router
+except ImportError:
+    permissions_router = None
+
 from routers.auth import (
     SUPER_ADMIN_ROLES,
     AuthRequiredError,
     DatabaseConnectionError,
     extract_user_from_session,
 )
+from routers.permissions import can_access, load_permissions_cache
 from websocket_manager import manager
 
 logger = logging.getLogger("uvicorn.error")
@@ -50,7 +66,16 @@ SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 # === Cấu hình Lifespan (Chạy khi ứng dụng khởi động & tắt) ===
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 [SYSTEM] Hệ thống Quản lý Sửa chữa & Máy in - Đại Thành đã khởi động thành công!")
+    logger.info("🚀 [SYSTEM] Hệ thống Quản lý Sửa chữa & Máy in - Đại Thành đang khởi động...")
+    
+    # 🟢 2. NẠP TRƯỚC MA TRẬN PHÂN QUYỀN VÀO RAM CACHE KHI VỪA KHỞI ĐỘNG SERVER
+    try:
+        await run_in_threadpool(lambda: load_permissions_cache(force=True))
+        logger.info("✅ [SYSTEM] Đã khởi tạo bộ nhớ đệm RAM Phân quyền thành công.")
+    except Exception as e:
+        logger.error(f"❌ [SYSTEM] Lỗi nạp permissions cache lúc khởi động: {e}")
+
+    logger.info("🚀 [SYSTEM] Hệ thống đã sẵn sàng phục vụ!")
     yield
     logger.info("🛑 [SYSTEM] Hệ thống đang dừng...")
 
@@ -87,9 +112,8 @@ app.add_middleware(
     same_site="lax",
 )
 
-# === Mount Static Files & Templates ===
+# === Mount Static Files ===
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-templates = Jinja2Templates(directory="templates")
 
 
 # =========================================================
@@ -103,7 +127,6 @@ async def public_search_ticket(keyword: str):
         raise HTTPException(status_code=400, detail="Vui lòng nhập từ khóa tra cứu")
 
     try:
-        # 🟢 ĐÃ BỔ SUNG ĐẦY ĐỦ CÁC CỘT HÌNH ẢNH & THÔNG TIN QUY TRÌNH CHO TRACKING.HTML
         res = await asyncio.to_thread(
             lambda: supabase.table("repairs")
             .select(
@@ -136,6 +159,11 @@ app.include_router(tickets.router)
 app.include_router(sync.router)
 app.include_router(settings_router.router)
 app.include_router(public_router)
+app.include_router(cleaned_printers.router)
+
+# 🟢 3. ĐĂNG KÝ ROUTER PHÂN QUYỀN TRANG (/admin/phan-quyen)
+if permissions_router and hasattr(permissions_router, "router"):
+    app.include_router(permissions_router.router)
 
 
 # === Fix lỗi 404 Service Worker & Favicon ===
@@ -194,7 +222,7 @@ async def tracking_page(request: Request, keyword: Optional[str] = None):
     )
 
 
-# === Cài đặt Hệ thống (Chỉ dành cho Admin) ===
+# === Cài đặt Hệ thống (Chỉ dành cho Admin hoặc User được cấp quyền) ===
 @app.get("/settings", response_class=HTMLResponse)
 @app.get("/setting", response_class=HTMLResponse)
 async def settings_page(request: Request):
@@ -202,12 +230,15 @@ async def settings_page(request: Request):
 
     if not user:
         logger.warning("Truy cập /settings thất bại: Không tìm thấy Session người dùng")
-        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        return RedirectResponse(url="/login?error=unauthorized", status_code=status.HTTP_303_SEE_OTHER)
 
     role = str(user.get("role", "")).strip().lower().replace("_", " ")
     admin_roles = {"admin", "super admin", "system admin", "systemadmin"}.union(SUPER_ADMIN_ROLES)
 
-    if role not in admin_roles:
+    # 🟢 4. KIỂM TRA QUYỀN TRUY CẬP ĐỘNG KẾT HỢP VỚI VAI TRÒ MẶC ĐỊNH
+    has_permission = (role in admin_roles) or can_access("settings", user)
+
+    if not has_permission:
         logger.warning(f"Người dùng {user.get('username')} (Role: {role}) không có quyền truy cập /settings")
         return RedirectResponse(url="/?error=unauthorized", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -290,7 +321,7 @@ async def global_error_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Có lỗi xảy ra, vui lòng thử lại"})
 
 
-# 4. Custom 404 Handler (🟢 ĐÃ SỬA: Chuyển hướng về /tracking thay vì / để không bị bắt đăng nhập)
+# 4. Custom 404 Handler (Chuyển hướng về /tracking thay vì / để không bị bắt đăng nhập)
 @app.exception_handler(404)
 async def custom_404_handler(request: Request, exc):
     """Tự động chuyển hướng về trang tra cứu công khai khi gõ sai URL"""

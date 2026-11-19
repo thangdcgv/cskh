@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -55,3 +56,42 @@ class ReturnRequest(BaseModel):
         if not v:
             return "Tại cửa hàng"
         return v
+
+
+#PHẦN CỦA DỌN MÁY
+class CleanedPrinterCreate(BaseModel):
+    model_name: str
+    classification: str
+    quantity: int = 1
+    status: str = "Sẵn có"
+    ghi_chu: Optional[str] = None
+
+class CleanedPrinterUpdate(BaseModel):
+    model_name: Optional[str] = None
+    classification: Optional[str] = None
+    quantity: Optional[int] = None
+    status: Optional[str] = None
+    ghi_chu: Optional[str] = None
+
+class CleanedPrinterStatusUpdate(BaseModel):
+    status: str
+    ghi_chu: Optional[str] = None
+
+class CleanedPrinterResponse(BaseModel):
+    id: int
+    model_name: str
+    classification: str
+    quantity: int
+    status: str
+    department: Optional[str] = None
+    ghi_chu: Optional[str] = None
+    created_by: str
+    updated_by: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+class CleanedPrinterMoveRequest(BaseModel):
+    quantity: int = 1
+    target_status: str
+    ghi_chu: Optional[str] = None
+    clear_note: bool = False

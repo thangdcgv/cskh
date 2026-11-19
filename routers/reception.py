@@ -3,19 +3,19 @@ import logging
 import re
 import time
 import urllib.parse
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 
 from database import supabase, supabase_admin
-from websocket_manager import manager
 from routers.auth import get_current_user, get_current_user_or_redirect
+from routers.permissions import can_access
+from templates_config import templates
+from websocket_manager import manager
 
 logger = logging.getLogger("uvicorn.error")
 VN_TZ = timezone(timedelta(hours=7))
@@ -23,13 +23,6 @@ TABLE = "repairs"
 MAX_CODE_RETRY = 5
 ALLOWED_STATUSES = {"received", "processing", "fixed", "returned", "cancelled"}
 
-BASE_DIR = Path(__file__).resolve().parent
-TEMPLATES_DIR = (
-    BASE_DIR.parent / "templates"
-    if (BASE_DIR.parent / "templates").exists()
-    else BASE_DIR / "templates"
-)
-templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 router = APIRouter(prefix="/api/reception", tags=["Reception"])
 
 _settings_cache = {"data": {}, "expires_at": 0}
@@ -43,7 +36,7 @@ class ReceiveItemRequest(BaseModel):
     address: Optional[str] = Field(None, max_length=500)
     note: Optional[str] = Field(None, max_length=1000)
     received_note: Optional[str] = Field(None, max_length=1000)
-    base_job_id: Optional[str] = Field(None, max_length=100)  # Sẽ tự sinh nếu trống
+    base_job_id: Optional[str] = Field(None, max_length=100)
 
 
 class UpdateItemRequest(BaseModel):
@@ -80,6 +73,8 @@ def normalize_phone(phone: str) -> str:
 def escape_postgrest(value: str) -> str:
     return (
         value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
         .replace(",", "\\,")
         .replace("(", "\\(")
         .replace(")", "\\)")
@@ -91,10 +86,12 @@ def _get_sms_settings() -> dict:
     if now < _settings_cache["expires_at"]:
         return _settings_cache["data"]
     try:
-        res = supabase_admin.table("system_settings") \
-            .select("key", "value") \
-            .in_("key", ["sms_hotline", "tracking_domain", "company_name"]) \
+        res = (
+            supabase_admin.table("system_settings")
+            .select("key", "value")
+            .in_("key", ["sms_hotline", "tracking_domain", "company_name"])
             .execute()
+        )
         data = {item["key"]: item["value"] for item in (res.data or [])}
     except Exception as e:
         logger.warning(f"Không đọc được cấu hình SMS: {e}")
@@ -112,7 +109,7 @@ def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[di
         return None
     cfg = _get_sms_settings()
     hotline = cfg["sms_hotline"]
-    tracking_domain = cfg["tracking_domain"].rstrip('/')
+    tracking_domain = cfg["tracking_domain"].rstrip("/")
     company = cfg["company_name"]
     phone_clean = normalize_phone(phone)
     now_str = datetime.now(VN_TZ).strftime("%H:%M %d/%m/%Y")
@@ -151,7 +148,7 @@ async def get_next_code() -> tuple[str, int]:
         .select("code")
         .gte("created_at", today_start_utc)
         .like("code", f"{prefix}%")
-        .order("created_at", desc=True)
+        .order("code", desc=True)
         .limit(1)
     )
     res = await asyncio.to_thread(query.execute)
@@ -176,8 +173,14 @@ async def safe_broadcast(message: dict) -> None:
 # ==================== TRANG GIAO DIỆN ====================
 @router.get("/page", response_class=HTMLResponse)
 def reception_page(request: Request, user: dict = Depends(get_current_user_or_redirect)):
+    if not can_access("reception", user):
+        return HTMLResponse(
+            "⛔ Bạn không có quyền truy cập trang Lễ tân tiếp nhận!",
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
     return templates.TemplateResponse(
-        request=request, name="reception.html",
+        request=request,
+        name="reception.html",
         context={"request": request, "current_user": user},
     )
 
@@ -201,7 +204,6 @@ async def create_reception_record(
         next_num += attempt
         final_code = f"{prefix}{next_num:03d}"
 
-        # ✅ base_job_id NOT NULL: tự sinh nếu không có (đồng bộ Base sau sẽ cập nhật)
         base_job_id = data.base_job_id or f"MANUAL-{final_code}-{uuid4().hex[:6]}"
 
         payload = {
@@ -241,13 +243,14 @@ async def create_reception_record(
     return {"success": True, "message": "Đã tạo phiếu tiếp nhận!", "data": record, "sms_info": sms_info}
 
 
-# ==================== 2. TRA CỨU & LỌC (khớp đầy đủ cột) ====================
+# ==================== 2. TRA CỨU & LỌC ====================
 @router.get("/search")
 async def search_reception_records(
     query_str: Optional[str] = Query(None),
     status: Optional[str] = Query("all"),
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
+    user: dict = Depends(get_current_user),
 ):
     q = (query_str or "").strip()
     db_query = supabase.table(TABLE).select("*", count="exact")
@@ -267,9 +270,17 @@ async def search_reception_records(
         elif st == "fixed":
             db_query = db_query.eq("status", "fixed").eq("current_process", "repair")
         elif st == "storage":
-            db_query = db_query.eq("current_process", "storage").neq("storage_status", "dispatched")
+            db_query = (
+                db_query.eq("current_process", "storage")
+                .neq("status", "cancelled")
+                .or_("storage_status.is.null,storage_status.neq.dispatched")
+            )
         elif st == "delivery":
-            db_query = db_query.eq("current_process", "delivery").neq("delivery_status", "delivered")
+            db_query = (
+                db_query.eq("current_process", "delivery")
+                .neq("status", "cancelled")
+                .or_("delivery_status.is.null,delivery_status.neq.delivered")
+            )
         elif st == "returned":
             db_query = db_query.or_("status.eq.returned,storage_status.eq.dispatched,delivery_status.eq.delivered")
         elif st == "cancelled":
@@ -290,7 +301,8 @@ async def search_reception_records(
     total = res.count if res.count is not None else len(res.data or [])
     total_pages = (total + limit - 1) // limit if total > 0 else 1
     return {
-        "success": True, "data": res.data or [],
+        "success": True,
+        "data": res.data or [],
         "pagination": {"page": page, "limit": limit, "total": total, "total_pages": total_pages},
     }
 
@@ -298,10 +310,14 @@ async def search_reception_records(
 # ==================== 3. CHI TIẾT PHIẾU ====================
 @router.get("/{record_id}")
 async def get_reception_record(record_id: str, user: dict = Depends(get_current_user)):
-    str_id = str(record_id)
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+
     try:
         res = await asyncio.to_thread(
-            supabase.table(TABLE).select("*").eq("id", str_id).limit(1).execute
+            supabase.table(TABLE).select("*").eq("id", record_id).limit(1).execute
         )
     except Exception as e:
         logger.error(f"Lỗi lấy chi tiết phiếu: {e}", exc_info=True)
@@ -314,7 +330,9 @@ async def get_reception_record(record_id: str, user: dict = Depends(get_current_
 # ==================== 4. CẬP NHẬT PHIẾU ====================
 @router.put("/{record_id}")
 async def update_reception_record(
-    record_id: str, data: UpdateItemRequest, user: dict = Depends(get_current_user),
+    record_id: str,
+    data: UpdateItemRequest,
+    user: dict = Depends(get_current_user),
 ):
     try:
         UUID(record_id)
@@ -340,11 +358,13 @@ async def update_reception_record(
         st_val = str(data.status).strip().lower()
         if st_val == "repairing":
             st_val = "processing"
-            
-        # CHẶN ĐƯỜNG TẮT TRẢ MÁY
+
         if st_val == "returned":
-            raise HTTPException(status_code=400, detail="Không được phép chuyển trạng thái 'returned' qua API Cập nhật. Vui lòng sử dụng API Trả Máy riêng.")
-            
+            raise HTTPException(
+                status_code=400,
+                detail="Không được phép chuyển trạng thái 'returned' qua API Cập nhật. Vui lòng sử dụng API Trả Máy riêng.",
+            )
+
         if st_val not in ALLOWED_STATUSES:
             raise HTTPException(status_code=400, detail=f"Trạng thái không hợp lệ: {st_val}")
         update_payload["status"] = st_val
@@ -369,8 +389,7 @@ async def update_reception_record(
 @router.post("/return/{record_id}")
 async def return_item_to_customer(
     record_id: str,
-    # Sửa lại thành khai báo default bằng class Pydantic
-    data: ReturnItemRequest = ReturnItemRequest(),
+    data: ReturnItemRequest = Body(default_factory=ReturnItemRequest),
     user: dict = Depends(get_current_user),
 ):
     try:
@@ -401,6 +420,9 @@ async def return_item_to_customer(
 
     now_utc = datetime.now(timezone.utc).isoformat()
     payload = {"status": "returned", "returned_date": now_utc, "updated_at": now_utc}
+
+    if current_process == "storage":
+        payload["storage_status"] = "dispatched"
     if data.returned_note:
         payload["returned_note"] = data.returned_note
     if data.returned_method:
@@ -409,6 +431,7 @@ async def return_item_to_customer(
         payload["received_note"] = data.received_note
     if data.is_fixed is not None:
         payload["is_fixed"] = data.is_fixed
+        payload["repair_result"] = "fixed" if data.is_fixed else "failed"
 
     try:
         res = await asyncio.to_thread(
@@ -423,8 +446,11 @@ async def return_item_to_customer(
     updated = res.data[0]
     await safe_broadcast({"type": "reception_returned", "record": updated})
     sms_info = generate_sms_info(
-        updated.get("phone"), updated.get("customer_name"),
-        updated.get("code"), data.returned_note if data else None, "return",
+        updated.get("phone"),
+        updated.get("customer_name"),
+        updated.get("code"),
+        data.returned_note,
+        "return",
     )
     return {"success": True, "message": "Đã ghi nhận trả máy!", "data": updated, "sms_info": sms_info}
 
@@ -440,11 +466,16 @@ async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_curre
     now_utc = datetime.now(timezone.utc).isoformat()
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table(TABLE).update({
+            lambda: supabase.table(TABLE)
+            .update({
                 "status": "cancelled",
+                "is_fixed": False,
+                "repair_result": "failed",
                 "failure_reason": "Đã xóa trực tiếp tại Lễ tân",
                 "updated_at": now_utc,
-            }).eq("id", ticket_id).execute()
+            })
+            .eq("id", ticket_id)
+            .execute()
         )
     except Exception as e:
         logger.error(f"Lỗi khi xóa phiếu: {e}", exc_info=True)

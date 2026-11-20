@@ -30,19 +30,6 @@ PHONE_PATTERN = re.compile(
 # =========================================================
 # HÀM XỬ LÝ CHUẨN HÓA & TRÍCH XUẤT
 # =========================================================
-def normalize_phone(phone: Optional[str]) -> str:
-    """Chuẩn hóa SĐT về dạng 0xxxxxxxxx (10 chữ số)"""
-    if not phone:
-        return ""
-    digits = re.sub(r'\D', '', str(phone))
-    
-    if digits.startswith('84') and len(digits) == 11:
-        digits = '0' + digits[2:]
-    elif len(digits) == 9 and digits.startswith('9'):
-        digits = '0' + digits
-
-    return digits if len(digits) == 10 and digits.startswith('0') else ""
-
 
 def generate_ticket_code() -> str:
     """
@@ -68,16 +55,28 @@ def clean_base_content(raw_text: str) -> str:
     return " - ".join(parts)
 
 
+def normalize_phone(phone: Optional[str]) -> str:
+    """Chuẩn hóa SĐT về dạng 0xxxxxxxxx (10 chữ số)"""
+    if not phone:
+        return ""
+    digits = re.sub(r'\D', '', str(phone))
+    
+    if digits.startswith('84') and len(digits) == 11:
+        digits = '0' + digits[2:]
+    elif len(digits) == 9 and digits[0] in "35789":
+        digits = '0' + digits
+
+    return digits if len(digits) == 10 and digits.startswith('0') else ""
+
+
 def extract_identifier_code_or_phone(text: str) -> Tuple[Optional[str], Optional[str]]:
-    """Bóc tách Mã phiếu (NT-XXXX-XXX hoặc DT-XXXX-XXXXX) hoặc Số điện thoại từ tiêu đề Job trên Base"""
     if not text:
         return None, None
     
-    # Bắt mã phiếu định dạng NT-XXXX-XXX hoặc DT-XXXX-XXXXX
-    code_match = re.search(r'(?:NT|DT)-\d{4}-\d{3,5}', text, re.IGNORECASE)
+    # Cho phép có hoặc không có dấu '-' sau NT/DT (khớp cả DT1120-47291 và DT-1120-47291)
+    code_match = re.search(r'(?:NT|DT)-?\d{4}-\d{3,5}', text, re.IGNORECASE)
     code = code_match.group(0).upper() if code_match else None
 
-    # Bắt số điện thoại (10-11 chữ số)
     phone_match = re.search(r'0[35789]\d{8,9}', text)
     phone = phone_match.group(0) if phone_match else None
 

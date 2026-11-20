@@ -1,93 +1,50 @@
 #!/usr/bin/env bash
+set -e
 
+URL="http://127.0.0.1:8000/api/webhook/base"
 SECRET="94564b4aa582b6837e2b83f21af93b2cc5c0d8c65329f5e6d7f577b68ad3c242"
-BASE_URL="http://127.0.0.1:8000/api/webhook/base"
 
-WF_REPAIR="18190"
-WF_STORAGE="18720"
-WF_DELIVERY="18249"
+# Đổi lại nếu system_settings của bạn đang cấu hình ID workflow test
+WF_REPAIR="20025"
+WF_STORAGE="20036"
 
-EXISTING_PHONE="0931334405"
-EXISTING_CODE="DT1119-86600"
-EXISTING_BASE_JOB_ID="4333421"
+echo "=== BƯỚC 1: Tạo & Hoàn thành job bên Sửa chữa (Job ID: 4249464) ==="
+curl -s -X POST "$URL" \
+  -H "x-base-secret: $SECRET" \
+  --data-urlencode "id=4249464" \
+  --data-urlencode "name=Tuấn 0909275609 Test" \
+  --data-urlencode "workflow_id=$WF_REPAIR" \
+  --data-urlencode "state=done" \
+  --data-urlencode "stage={\"id\":\"139702\",\"name\":\"Done\",\"metatype\":\"done\",\"workflow_id\":\"$WF_REPAIR\",\"type\":\"workflowstages\"}" \
+  --data-urlencode "custom_dia_chi=G2010 + usb" \
+  --data-urlencode "custom_so_serial=ahhh1111" \
+  --data-urlencode "custom_hinh_anh_giao_nhan_hang_hoa_chan-fids=WyIyMDI2MTA6c3lzMTExOTU6d29ya2Zsb3c6MTk6MTc6RkNGR0wyTVI0UTRPUkhBSk84MVc6ZjQ3MjIzMjQyN2Y4ODViYmQ4ZDFlZTE1NWViODlhOTI1OGM0NTQ3YzpJS1BaWUxFS0dWS1ExRVVEQzJERlc0RVNCVFNUM1lJSy5ZRkJJQUk1WlIzVEVSSzFGSk83WklITkNQRkRaSlk5Ty1DWFdYWjFSRkcyODE5QzdWVkcxSUJSS0RXOERYSDVaVS1jYW5jZWxfYWxsLnBuZyJd" \
+  | python3 -m json.tool
 
-NEW_JOB_STORAGE="999001"
-NEW_JOB_DELIVERY="999002"
-NEW_JOB_REPAIR="999003"
+sleep 1
 
-echo "=================================================="
-echo "TEST A — Forward sang LƯU KHO (khớp theo SĐT, cột Máy Sửa Ở Cty)"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=storage" \
-  --data-urlencode "job[id]=$NEW_JOB_STORAGE" \
-  --data-urlencode "job[name]=[Fwd] Canon 6770 - $EXISTING_PHONE" \
-  --data-urlencode "workflow[id]=$WF_STORAGE" \
-  --data-urlencode "stage[name]=Máy Sửa Ở Cty" \
-  --data-urlencode "custom_fields[dien_thoai]=$EXISTING_PHONE" \
-  --data-urlencode "custom_fields[dia_chi]=123 Nguyen Trai, Q1" \
-  --data-urlencode "custom_fields[ghi_chu]=Test forward luu kho thanh cong"
-echo; echo
+echo -e "\n=== BƯỚC 2: Forward sang Lưu kho (Job ID mới: 4249999, không có ID gốc) ==="
+curl -s -X POST "$URL" \
+  -H "x-base-secret: $SECRET" \
+  --data-urlencode "id=4249999" \
+  --data-urlencode "name=Tuấn 0909275609 Test" \
+  --data-urlencode "workflow_id=$WF_STORAGE" \
+  --data-urlencode "state=active" \
+  --data-urlencode "forwarded_from=0" \
+  --data-urlencode "gen_prev=null" \
+  --data-urlencode "gen_list=null" \
+  --data-urlencode "stage={\"id\":\"140101\",\"name\":\"Đang lưu kho\",\"metatype\":\"normal\",\"workflow_id\":\"$WF_STORAGE\",\"type\":\"workflowstages\"}" \
+  --data-urlencode "custom_nhieu_hinh_anh_hoa_don_hang_da_s-fids=WyIyMDI2MTE6c3lzMTExOTU6d29ya2Zsb3c6MjA6MTk6UklCUEw0R1VHSkZXT1E5TTlRWk06ZDc1NzIzOTA3MDU2NmExYjcyMjgzODFhNTg3NWY2ZjZlNmFhNDJkNjpTSko5SlNXWktaWjhNT0E4STFVQ1lINFpBQ1ZIQzdINi5GQkgzRlVBS1RWT1FFOFFaT0FSNkE5VU5UV1c5NzJVNi1JVlQ0QUxMUTdXUTVGNUFKQUlKV1pURzkxM0xFQ0g1Ti1zY3JlZW5zaG90XzIwMjZfMTFfMDhfYXRfMTIuMjAuMDYucG5nIl0" \
+  | python3 -m json.tool
 
-echo "=================================================="
-echo "TEST B — Forward sang LƯU KHO, kỳ vọng BỊ CHẶN (SĐT lạ)"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=storage" \
-  --data-urlencode "job[id]=$NEW_JOB_STORAGE" \
-  --data-urlencode "job[name]=[Fwd] Sửa chữa -> Lưu kho" \
-  --data-urlencode "workflow[id]=$WF_STORAGE" \
-  --data-urlencode "stage[name]=Máy Sửa Ở Cty" \
-  --data-urlencode "custom_fields[dien_thoai]=0999999999"
-echo; echo
+sleep 1
 
-echo "=================================================="
-echo "TEST C — Forward sang LƯU KHO khớp theo PARENT_ID (thiếu workflow[id])"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=storage" \
-  --data-urlencode "job[id]=$NEW_JOB_STORAGE" \
-  --data-urlencode "job[name]=[Fwd] Chuyen luu kho theo parent_id" \
-  --data-urlencode "stage[name]=Máy Sửa Ở Cty" \
-  --data-urlencode "parent_id=$EXISTING_BASE_JOB_ID"
-echo; echo
-
-echo "=================================================="
-echo "TEST D — Forward sang GIAO NHẬN (cột Thông Tin Đơn -> Chành xe)"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=delivery" \
-  --data-urlencode "job[id]=$NEW_JOB_DELIVERY" \
-  --data-urlencode "job[name]=[Fwd] $EXISTING_CODE Xe To Chau - $EXISTING_PHONE" \
-  --data-urlencode "stage[name]=Thông Tin Đơn" \
-  --data-urlencode "custom_fields[thong_tin_chanh_xe_chuyen_phat]=Chành xe Tô Châu - Cần Thơ"
-echo; echo
-
-echo "=================================================="
-echo "TEST E — Cập nhật GIAO NHẬN sang cột Xử lý đơn hàng"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=delivery" \
-  --data-urlencode "job[id]=$NEW_JOB_DELIVERY" \
-  --data-urlencode "job[name]=[Fwd] $EXISTING_CODE Xe To Chau - $EXISTING_PHONE" \
-  --data-urlencode "stage[name]=Xử lý đơn hàng"
-echo; echo
-
-echo "=================================================="
-echo "TEST F — Tạo phiếu SỬA CHỮA mới (workflow repair)"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}&wf=repair" \
-  --data-urlencode "job[id]=$NEW_JOB_REPAIR" \
-  --data-urlencode "job[name]=Sua may in Epson - 0911111111 - Tran Thi B" \
-  --data-urlencode "workflow[id]=$WF_REPAIR" \
-  --data-urlencode "stage[name]=Tiếp nhận" \
-  --data-urlencode "custom_fields[dien_thoai]=0911111111" \
-  --data-urlencode "custom_fields[dia_chi]=456 Le Loi, Q3"
-echo; echo
-
-echo "=================================================="
-echo "TEST G — Thiếu ?wf và workflow[id] RỖNG + SĐT lạ, kỳ vọng BỊ CHẶN"
-echo "=================================================="
-curl -g -s -X POST "${BASE_URL}?secret=${SECRET}" \
-  --data-urlencode "job[id]=999004" \
-  --data-urlencode "job[name]=[Fwd] May la - 0922222222" \
-  --data-urlencode "stage[name]=Máy Sửa Ở Cty" \
-  --data-urlencode "custom_fields[dien_thoai]=0922222222"
-echo; echo
-
-echo "XONG."
+echo -e "\n=== BƯỚC 3: Hoàn tất Lưu kho (Stage Done -> dispatched / returned) ==="
+curl -s -X POST "$URL" \
+  -H "x-base-secret: $SECRET" \
+  --data-urlencode "id=4249999" \
+  --data-urlencode "name=Tuấn 0909275609 Test" \
+  --data-urlencode "workflow_id=$WF_STORAGE" \
+  --data-urlencode "state=done" \
+  --data-urlencode "stage={\"id\":\"140102\",\"name\":\"Done\",\"metatype\":\"done\",\"workflow_id\":\"$WF_STORAGE\",\"type\":\"workflowstages\"}" \
+  | python3 -m json.tool

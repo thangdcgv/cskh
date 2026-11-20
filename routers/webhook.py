@@ -75,26 +75,32 @@ def _scan_custom_field(custom_fields: dict, keywords: tuple) -> Optional[str]:
                 return val
     return None
 
-def collect_related_job_ids(payload: dict, job_id: str) -> list:
-    """ID các job nguồn mà job này được chuyển tiếp từ đó (forwarded_from, gen_prev, gen_list)."""
+def collect_related_job_ids(payload: dict, job_id: str, job_data: Optional[dict] = None) -> list:
     ids = []
+    sources = [payload] + ([job_data] if isinstance(job_data, dict) else [])
 
     def add(v):
         s = str(v or "").strip()
         if s and s not in {"0", "none", "None", job_id} and s not in ids:
             ids.append(s)
 
-    add(payload.get("forwarded_from"))
-    for key in ("gen_prev", "gen_list"):
-        raw = payload.get(key)
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except Exception:
-                raw = None
-        for g in (raw if isinstance(raw, list) else [raw]):
-            if isinstance(g, dict):
-                add(g.get("id"))
+    for src in sources:
+        add(src.get("forwarded_from"))
+        add(src.get("source_job_id"))
+        for key in ("gen_prev", "gen_list"):
+            raw = src.get(key)
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    add(raw)
+                    continue
+            items = raw if isinstance(raw, list) else [raw]
+            for g in items:
+                if isinstance(g, dict):
+                    add(g.get("id"))
+                elif isinstance(g, (str, int)):
+                    add(g)
     return ids
 # =========================================================
 # [FIX] Helper 2: sinh đủ biến thể định dạng SĐT để khớp với DB
@@ -415,7 +421,17 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         )
 
         # 4. Bóc tách nội dung — [FIX] thêm quét custom field theo keyword làm fallback
-        custom_fields_data = payload.get("custom_fields") if isinstance(payload.get("custom_fields"), dict) else {}
+        job_cf = job_data.get("custom_fields")
+        if isinstance(job_cf, str):
+            try:
+                job_cf = json.loads(job_cf)
+            except Exception:
+                job_cf = {}
+
+        custom_fields_data = {
+            **(job_cf if isinstance(job_cf, dict) else {}),
+            **(payload.get("custom_fields") if isinstance(payload.get("custom_fields"), dict) else {}),
+        }
 
         # [FIX] Quét sớm các field quan trọng từ custom_fields (input key mỗi workflow khác nhau)
         scanned_phone = _scan_custom_field(custom_fields_data, _PHONE_KEYWORDS)
@@ -494,7 +510,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             candidate_job_ids=[job_id, *related_ids, parent_job_id, scanned_source_job or ""],
             code=final_code_for_match,
             phone=extracted_phone_norm,
-            allow_phone_match=possibly_forwarded and not related_ids,   # có liên kết chính xác thì không dò SĐT
+            allow_phone_match=possibly_forwarded ,   # có liên kết chính xác thì không dò SĐT
         )
 
         # Chuẩn hóa Workflow ID nếu Base gửi thiếu (chỉ khi đã tìm thấy phiếu)

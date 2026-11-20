@@ -76,27 +76,51 @@ const removeAccents = (str) => {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
 };
 
+const EMPTY_SMS_NOTES = new Set([
+  '',
+  'chua ghi chu',
+  'chua ghi nhan',
+  'binh thuong',
+  'no value',
+  'null',
+  'none',
+]);
+
 const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
   if (!record || !record.phone) return;
-  const cleanPhone = record.phone.replace(/[\s\-\.]/g, '');
-  const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
-  const cleanCustomerName = removeAccents(record.customer_name || '');
-  const noteStr = removeAccents(record.received_note || record.note || 'Binh thuong').trim();
 
-  const domain = trackingDomain || 'cskh-nu.vercel.app';
-  const lhPart = hotline ? `. LH: ${hotline}` : '';
-  const smsText = (
-    `May in Dai Thanh tao phieu [${record.code}] ghi nhan thiet bi KH ${cleanCustomerName} ` +
-    `luc ${nowStr}. Tinh trang: ${noteStr}. ` +
-    `Tra cuu: ${domain}/tracking/${cleanPhone}${lhPart}`
-  );
+  const cleanPhone = String(record.phone).replace(/[\s\-\.]/g, '');
+  if (!cleanPhone) return;
+
+  const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
+  const cleanCustomerName =
+    removeAccents(record.customer_name || '').trim() || 'Khach le';
+
+  // Chọn ghi chú thực tế đầu tiên giữa received_note và note, bỏ qua các chuỗi mặc định
+  const recNote = removeAccents(record.received_note || '').trim();
+  const reqNote = removeAccents(record.note || '').trim();
+  const validNote = !EMPTY_SMS_NOTES.has(recNote.toLowerCase())
+    ? recNote
+    : !EMPTY_SMS_NOTES.has(reqNote.toLowerCase())
+      ? reqNote
+      : '';
+
+  const notePart = validNote ? `. Tinh trang: ${validNote}` : '';
+  const lhPart = hotline ? `. LH: ${String(hotline).trim()}` : '';
+
+  const smsText =
+    `May in Dai Thanh tao phieu [${record.code}] tiep nhan thiet bi KH ${cleanCustomerName} ` +
+    `luc ${nowStr}${notePart}${lhPart}`;
 
   const encodedText = encodeURIComponent(smsText);
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isIOS =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
   const targetLink = isIOS
     ? `sms:${cleanPhone}&body=${encodedText}`
     : `sms:${cleanPhone}?body=${encodedText}`;
+
   window.location.href = targetLink;
 };
 
@@ -109,8 +133,19 @@ function ReceptionApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [records, setRecords] = useState([]);
   const [hotlinePhone, setHotlinePhone] = useState('');
+  const [trackingDomain, setTrackingDomain] = useState('https://cskh-nu.vercel.app');
   const [activeWorkflow, setActiveWorkflow] = useState('repair');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Lịch sử đã bấm gửi SMS (lưu localStorage để cảnh báo kể cả sau khi tải lại trang)
+  const [sentSmsMap, setSentSmsMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('reception_sent_sms') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [copiedTicketId, setCopiedTicketId] = useState(null);
 
   const [editingRecord, setEditingRecord] = useState(null);
   const [editForm, setEditForm] = useState({ customer_name: '', phone: '', address: '', note: '', received_note: '' });
@@ -132,17 +167,87 @@ function ReceptionApp() {
   };
 
   useEffect(() => {
-    const fetchHotline = async () => {
+    const fetchSettings = async () => {
       try {
         const res = await fetch('/api/settings/config');
         if (res.ok) {
           const config = await res.json();
           if (config && config.sms_hotline) setHotlinePhone(config.sms_hotline.trim());
+          if (config && config.tracking_domain) setTrackingDomain(config.tracking_domain.trim());
         }
       } catch (err) {}
     };
-    fetchHotline();
+    fetchSettings();
   }, []);
+
+  // Gửi SMS có cảnh báo chống gửi trùng lặp
+  const handleSmsClick = (record) => {
+    if (!record || !record.phone) {
+      return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
+    }
+
+    const key = String(record.id || record.code);
+    const previousSentAt = sentSmsMap[key];
+
+    if (previousSentAt) {
+      const ok = window.confirm(
+        `⚠️ Phiếu [${record.code}] đã được nhấn gửi SMS trước đó lúc ${previousSentAt}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn cho khách không?`
+      );
+      if (!ok) return;
+    }
+
+    const timeLabel = new Date().toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    });
+    const nextMap = { ...sentSmsMap, [key]: timeLabel };
+    setSentSmsMap(nextMap);
+    try {
+      localStorage.setItem('reception_sent_sms', JSON.stringify(nextMap));
+    } catch {}
+
+    sendReceptionSms(record, hotlinePhone, trackingDomain);
+  };
+
+  // Copy link tra cứu hành trình đơn để nhân viên gửi khách qua Zalo/Messenger
+  const handleShareTrackingLink = async (record) => {
+  const cleanCode = String(record?.code || '').trim();
+  const cleanPhone = String(record?.phone || '').replace(/[\s\-\.]/g, '');
+  const keyword = cleanCode || cleanPhone;
+
+  if (!keyword) {
+    return showToast("⚠️ Không có mã phiếu hoặc SĐT để tạo link tra cứu!", "error");
+  }
+
+  const rawDomain = (trackingDomain || 'https://cskh-nu.vercel.app').trim();
+  const baseUrl = rawDomain.startsWith('http')
+    ? rawDomain.replace(/\/+$/, '')
+    : `https://${rawDomain.replace(/\/+$/, '')}`;
+  const shareUrl = `${baseUrl}/tracking/${encodeURIComponent(keyword)}`;
+
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(shareUrl);
+    } else {
+      const tempInput = document.createElement('input');
+      tempInput.value = shareUrl;
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      document.execCommand('copy');
+      document.body.removeChild(tempInput);
+    }
+
+    setCopiedTicketId(record.id);
+    showToast(`📋 Đã copy link tra cứu phiếu [${cleanCode || keyword}]!`, 'success');
+    setTimeout(() => {
+      setCopiedTicketId((prev) => (prev === record.id ? null : prev));
+    }, 2000);
+  } catch {
+    window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
+  }
+};
 
   const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
     const reqId = ++searchReqIdRef.current;
@@ -552,21 +657,73 @@ function ReceptionApp() {
                     const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
                     const canDelete = isAdmin || isCreator;
 
+                    const smsSentTime = sentSmsMap[String(r.id || r.code)];
+                    const isCopied = copiedTicketId === r.id;
+
                     return (
                       <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative group">
 
-                        {/* NÚT XÓA Ở GÓC PHẢI THẺ */}
-                        {canDelete && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openDeleteModal(r); }}
-                            className="absolute top-2.5 right-2.5 w-6 h-6 rounded bg-rose-950/70 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-800/60 flex items-center justify-center transition-all opacity-80 hover:opacity-100 z-10"
-                            title="Xóa phiếu này"
-                          >
-                            <i className="fa-solid fa-trash-can text-[10px]"></i>
-                          </button>
-                        )}
+                        {/* CỤM ICON TRẢ KHÁCH + XÓA Ở GÓC PHẢI THẺ */}
+                        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 z-10">
+                          {isDestroyed ? (
+                            <span
+                              className="w-6 h-6 rounded bg-rose-950/70 text-rose-400 border border-rose-500/30 flex items-center justify-center text-[10px]"
+                              title="Đã tiêu hủy"
+                            >
+                              <i className="fa-solid fa-ban"></i>
+                            </span>
+                          ) : isDeliveryFailed ? (
+                            <span
+                              className="w-6 h-6 rounded bg-rose-950/70 text-rose-400 border border-rose-500/30 flex items-center justify-center text-[10px]"
+                              title="Giao thất bại"
+                            >
+                              <i className="fa-solid fa-circle-xmark"></i>
+                            </span>
+                          ) : isReturned ? (
+                            <span
+                              className="w-6 h-6 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-[10px]"
+                              title="Đã trả khách"
+                            >
+                              <i className="fa-solid fa-circle-check"></i>
+                            </span>
+                          ) : isDelivery ? (
+                            <button
+                              disabled
+                              className="w-6 h-6 rounded bg-slate-800/60 text-indigo-400 border border-slate-700/50 flex items-center justify-center text-[10px] cursor-not-allowed opacity-70"
+                              title="Đang thuộc quy trình Giao nhận"
+                            >
+                              <i className="fa-solid fa-truck-fast"></i>
+                            </button>
+                          ) : isProcessing ? (
+                            <button
+                              disabled
+                              className="w-6 h-6 rounded bg-slate-800/60 text-slate-500 border border-slate-700/50 flex items-center justify-center text-[10px] cursor-not-allowed opacity-60"
+                              title="Đang sửa chữa (Khóa trả)"
+                            >
+                              <i className="fa-solid fa-lock"></i>
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleReturnClick(r); }}
+                              className="w-6 h-6 rounded bg-amber-600 hover:bg-amber-500 text-white flex items-center justify-center text-[11px] shadow transition-all"
+                              title="Xác nhận trả khách"
+                            >
+                              <i className="fa-solid fa-handshake"></i>
+                            </button>
+                          )}
 
-                        <div className="flex justify-between items-start mb-2 pr-6">
+                          {canDelete && (
+                            <button
+                              onClick={(e) => { e.stopPropagation(); openDeleteModal(r); }}
+                              className="w-6 h-6 rounded bg-rose-950/70 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-800/60 flex items-center justify-center transition-all opacity-80 hover:opacity-100"
+                              title="Xóa phiếu này"
+                            >
+                              <i className="fa-solid fa-trash-can text-[10px]"></i>
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="flex justify-between items-start mb-2 pr-14">
                           <div className="flex flex-col gap-1">
                             <span className="text-[10px] w-fit bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-600 font-monospace font-bold">
                               {r.code}
@@ -597,23 +754,41 @@ function ReceptionApp() {
                           )}
                         </div>
 
+                        {/* THANH HÀNH ĐỘNG: SỬA + SMS CHỐNG GỬI TRÙNG + CHIA SẺ LINK */}
                         <div className="mt-3 flex gap-1.5 pt-3 border-t border-slate-700/50">
-                          <button onClick={() => openEditModal(r)} className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all" title="Sửa thông tin"><i className="fa-solid fa-pen"></i></button>
-                          <button onClick={() => sendReceptionSms(r, hotlinePhone)} className="flex-[2] h-8 bg-sky-600/80 hover:bg-sky-500 text-white rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1"><i className="fa-solid fa-sms"></i> SMS</button>
+                          <button
+                            onClick={() => openEditModal(r)}
+                            className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all"
+                            title="Sửa thông tin"
+                          >
+                            <i className="fa-solid fa-pen"></i>
+                          </button>
 
-                          {isDestroyed ? (
-                            <div className="flex-[2] h-8 flex items-center justify-center bg-rose-950/70 text-rose-400 rounded text-[11px] font-bold border border-rose-500/30"><i className="fa-solid fa-ban mr-1"></i> Tiêu Hủy</div>
-                          ) : isDeliveryFailed ? (
-                            <div className="flex-[2] h-8 flex items-center justify-center bg-rose-950/70 text-rose-400 rounded text-[11px] font-bold border border-rose-500/30"><i className="fa-solid fa-circle-xmark mr-1"></i> Giao Thất Bại</div>
-                          ) : isReturned ? (
-                            <div className="flex-[2] h-8 flex items-center justify-center bg-emerald-900/50 text-emerald-400 rounded text-[11px] font-bold border border-emerald-500/30"><i className="fa-solid fa-circle-check mr-1"></i> Đã Trả</div>
-                          ) : isDelivery ? (
-                            <button disabled className="flex-[2] h-8 flex items-center justify-center bg-slate-800/60 text-slate-400 rounded text-[10px] font-bold border border-slate-700/50 cursor-not-allowed opacity-70"><i className="fa-solid fa-truck-fast mr-1 text-indigo-400"></i> Giao Nhận</button>
-                          ) : isProcessing ? (
-                            <button disabled className="flex-[2] h-8 flex items-center justify-center bg-slate-800/60 text-slate-500 rounded text-[10px] font-bold border border-slate-700/50 cursor-not-allowed opacity-60"><i className="fa-solid fa-lock mr-1"></i> Đang Sửa</button>
-                          ) : (
-                            <button onClick={() => handleReturnClick(r)} className="flex-[2] h-8 bg-amber-600 hover:bg-amber-500 text-white rounded text-[11px] font-bold shadow-md transition-all flex items-center justify-center gap-1"><i className="fa-solid fa-box-check"></i> Trả Khách</button>
-                          )}
+                          <button
+                            onClick={() => handleSmsClick(r)}
+                            className={`flex-[2] h-8 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
+                              smsSentTime
+                                ? 'bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40'
+                                : 'bg-sky-600/80 hover:bg-sky-500 text-white'
+                            }`}
+                            title={smsSentTime ? `Đã mở gửi SMS lúc ${smsSentTime} (Nhấn để gửi lại)` : 'Gửi tin nhắn SMS cho khách'}
+                          >
+                            <i className={`fa-solid ${smsSentTime ? 'fa-check-double text-sky-400' : 'fa-sms'}`}></i>
+                            <span>{smsSentTime ? 'Đã SMS' : 'SMS'}</span>
+                          </button>
+
+                          <button
+                            onClick={() => handleShareTrackingLink(r)}
+                            className={`flex-[2] h-8 rounded text-[11px] font-bold shadow-md transition-all flex items-center justify-center gap-1 ${
+                              isCopied
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                            }`}
+                            title="Copy link tra cứu hành trình đơn gửi cho khách"
+                          >
+                            <i className={`fa-solid ${isCopied ? 'fa-check' : 'fa-share-nodes'}`}></i>
+                            <span>{isCopied ? 'Đã Copy' : 'Gửi Link'}</span>
+                          </button>
                         </div>
                       </div>
                     );
@@ -672,7 +847,9 @@ function ReceptionApp() {
       {returnModalRecord && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
           <div className="bg-[#0e1424] max-w-sm w-full p-5 border border-emerald-500/40 rounded-xl shadow-2xl">
-            <h3 className="text-sm font-bold text-emerald-400 mb-3"><i className="fa-solid fa-box-check"></i> Xác Nhận Trả Máy</h3>
+            <h3 className="text-sm font-bold text-emerald-400 mb-3">
+              <i className="fa-solid fa-handshake mr-1"></i> Xác Nhận Trả Máy
+            </h3>
             <form onSubmit={handleReturnSubmit} className="space-y-3">
               <select value={returnForm.returned_method} onChange={(e) => setReturnForm({...returnForm, returned_method: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white">
                 <option value="Trực tiếp tại cửa hàng">🏪 Trực tiếp tại cửa hàng</option>

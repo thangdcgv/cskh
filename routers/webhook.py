@@ -697,6 +697,377 @@ async def _process_repair_webhook(
 # 3. ENDPOINT NHẬN WEBHOOK TỪ BASE.VN
 # =========================================================
 @router.post("/base")
+def _merge_bucket_images(
+    update_payload: dict,
+    img_groups: dict,
+    old_received: list,
+    old_repair: list,
+    old_storage: list,
+    old_delivery: list,
+) -> None:
+    """Cập nhật từng rổ ảnh vào đúng cột DB tương ứng, loại bỏ ảnh đã tồn tại ở bất kỳ rổ nào."""
+    all_existing = [*old_received, *old_repair, *old_storage, *old_delivery]
+
+    new_received = get_new_images(img_groups.get("received", []), all_existing)
+    if new_received:
+        update_payload["received_images"] = old_received + new_received
+        all_existing.extend(new_received)
+
+    new_repair = get_new_images(img_groups.get("repair", []), all_existing)
+    if new_repair:
+        update_payload["repair_images"] = old_repair + new_repair
+        all_existing.extend(new_repair)
+
+    new_storage = get_new_images(img_groups.get("storage", []), all_existing)
+    if new_storage:
+        update_payload["storage_images"] = old_storage + new_storage
+        all_existing.extend(new_storage)
+
+    new_delivery = get_new_images(img_groups.get("delivery", []), all_existing)
+    if new_delivery:
+        update_payload["delivery_images"] = old_delivery + new_delivery
+
+
+# =========================================================
+# 2. CÁC HÀM XỬ LÝ TỪNG QUY TRÌNH (STORAGE / DELIVERY / REPAIR)
+# =========================================================
+async def _process_storage_webhook(
+    existing_ticket: dict,
+    job_id: str,
+    stage_name: str,
+    metatype: str,
+    state: str,
+    final_customer_name: str,
+    final_phone: Optional[str],
+    final_address: str,
+    final_note: str,
+    now_iso: str,
+    img_groups: dict,
+    old_received: list,
+    old_repair: list,
+    old_delivery: list,
+    old_storage: list,
+) -> str:
+    stage_lower = stage_name.lower().strip()
+    if any(kw in stage_lower for kw in ["tiêu hủy", "đã tiêu hủy", "destroy"]):
+        storage_status = "destroyed"
+    elif (
+        metatype in {"done", "finished", "success"}
+        or state in {"done", "finished", "success"}
+        or any(kw in stage_lower for kw in ["gửi trả", "đã trả", "đã gửi", "done", "hoàn thành", "hoàn tất"])
+    ):
+        storage_status = "dispatched"
+    else:
+        storage_status = "in_company"
+
+    curr_p = str(existing_ticket.get("current_process") or "").lower()
+    target_storage_process = "delivery" if curr_p == "delivery" else "storage"
+
+    update_payload = {
+        "storage_job_id": job_id,
+        "storage_status": storage_status,
+        "current_process": target_storage_process,
+        "customer_name": final_customer_name,
+        "phone": final_phone,
+        "address": final_address,
+        "note": final_note,
+        "updated_at": now_iso,
+    }
+
+    _merge_bucket_images(
+        update_payload, img_groups, old_received, old_repair, old_storage, old_delivery
+    )
+
+    if storage_status == "dispatched":
+        update_payload["status"] = "returned"
+        update_payload["returned_date"] = now_iso
+    elif storage_status == "destroyed":
+        update_payload["status"] = "cancelled"
+        update_payload["failure_reason"] = "Thiết bị đã tiêu hủy tại kho"
+    elif str(existing_ticket.get("status") or "").lower() in {"returned", "cancelled"}:
+        update_payload["status"] = "fixed" if existing_ticket.get("is_fixed") else "received"
+
+    await asyncio.to_thread(
+        lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
+    )
+    ticket_code = existing_ticket.get("code")
+    logger.info(f"📦 [LƯU KHO] Cập nhật phiếu {ticket_code} -> storage_status: {storage_status}")
+    return ticket_code
+
+
+async def _process_delivery_webhook(
+    payload: dict,
+    custom_fields_data: dict,
+    existing_ticket: dict,
+    job_id: str,
+    stage_name: str,
+    metatype: str,
+    state: str,
+    final_customer_name: str,
+    final_phone: Optional[str],
+    final_address: str,
+    final_note: str,
+    now_iso: str,
+    img_groups: dict,
+    old_received: list,
+    old_repair: list,
+    old_delivery: list,
+    old_storage: list,
+) -> str:
+    stage_lower = stage_name.lower().strip()
+
+    raw_shipping_info = clean_base_value(
+        payload.get("custom_thong_tin_chanh_xechuyen_phat")
+        or payload.get("custom_thong_tin_chanh_xe")
+        or payload.get("custom_chanh_xe")
+        or payload.get("custom_dia_chi_giao_hang")
+        or custom_fields_data.get("thong_tin_chanh_xe_chuyen_phat")
+        or custom_fields_data.get("thong_tin_chanh_xe")
+        or custom_fields_data.get("chanh_xe")
+        or custom_fields_data.get("dia_chi_giao_hang")
+    )
+    delivery_address = raw_shipping_info or final_address
+
+    update_payload = {
+        "delivery_job_id": job_id,
+        "current_process": "delivery",
+        "customer_name": final_customer_name,
+        "phone": final_phone,
+        "address": delivery_address,
+        "note": final_note,
+        "updated_at": now_iso,
+    }
+
+    if str(existing_ticket.get("storage_status") or "").lower() == "in_company":
+        update_payload["storage_status"] = "dispatched"
+
+    if any(kw in stage_lower for kw in ["thất bại", "hủy giao", "không thành công", "fail", "cancel"]):
+        delivery_status = "failed"
+        update_payload["delivery_status"] = "failed"
+        update_payload["status"] = "cancelled"
+        update_payload["is_fixed"] = False
+        update_payload["repair_result"] = "failed"
+        update_payload["failure_reason"] = "Giao nhận thất bại"
+    elif (
+        any(kw in stage_lower for kw in ["hoàn thành", "hoàn tất", "đã giao", "xong", "success", "done", "finished"])
+        or metatype in {"done", "finished", "success"}
+        or state in {"done", "finished", "success"}
+    ):
+        delivery_status = "delivered"
+        update_payload["delivery_status"] = "delivered"
+        update_payload["status"] = "returned"
+        update_payload["returned_date"] = now_iso
+        if existing_ticket.get("failure_reason") == "Giao nhận thất bại":
+            update_payload["failure_reason"] = None
+    elif any(kw in stage_lower for kw in ["xử lý", "đang giao", "đi giao", "vận chuyển", "delivering", "shipping", "processing"]):
+        delivery_status = "delivering"
+        update_payload["delivery_status"] = "delivering"
+        if existing_ticket.get("failure_reason") == "Giao nhận thất bại":
+            update_payload["failure_reason"] = None
+        if str(existing_ticket.get("status") or "").lower() in {"returned", "cancelled"}:
+            update_payload["status"] = "fixed" if existing_ticket.get("is_fixed") else "received"
+    else:
+        delivery_status = "pending"
+        update_payload["delivery_status"] = "pending"
+        if existing_ticket.get("failure_reason") == "Giao nhận thất bại":
+            update_payload["failure_reason"] = None
+        if str(existing_ticket.get("status") or "").lower() in {"returned", "cancelled"}:
+            update_payload["status"] = "fixed" if existing_ticket.get("is_fixed") else "received"
+
+    _merge_bucket_images(
+        update_payload, img_groups, old_received, old_repair, old_storage, old_delivery
+    )
+
+    await asyncio.to_thread(
+        lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
+    )
+    ticket_code = existing_ticket.get("code")
+    logger.info(f"🚚 [GIAO NHẬN] Cập nhật phiếu {ticket_code} -> delivery_status: {delivery_status}")
+    return ticket_code
+
+
+async def _process_repair_webhook(
+    payload: dict,
+    job_data: dict,
+    custom_fields_data: dict,
+    existing_ticket: Optional[dict],
+    job_id: str,
+    stage_name: str,
+    metatype: str,
+    state: str,
+    status_map: dict,
+    final_customer_name: str,
+    final_phone: Optional[str],
+    final_address: str,
+    final_note: str,
+    final_received_note: str,
+    extracted_code: Optional[str],
+    now_iso: str,
+    img_groups: dict,
+    old_received: list,
+    old_repair: list,
+    old_delivery: list,
+    old_storage: list,
+) -> str:
+    stage_for_repair = stage_name or "Tiếp nhận"
+    base_failed_reason = clean_base_value(
+        payload.get("failed_reason") or payload.get("fail_reason") or job_data.get("failed_reason")
+    )
+    base_failed_note = clean_base_value(
+        payload.get("failed_note") or payload.get("fail_note") or job_data.get("failed_note")
+    )
+    custom_tinh_trang = clean_base_value(
+        payload.get("custom_tinh_trang_thiet_bi") or custom_fields_data.get("tinh_trang_thiet_bi")
+    )
+
+    mapped_status = validate_status(stage_for_repair, status_map, metatype=metatype, state=state) or "received"
+
+    if state == "failed" or metatype == "failed":
+        mapped_status = "cancelled"
+
+    target_process = "repair"
+    if existing_ticket:
+        curr_p = str(existing_ticket.get("current_process") or "repair").lower()
+        if curr_p in {"storage", "delivery"}:
+            target_process = curr_p
+
+    update_payload = {
+        "status": mapped_status,
+        "current_process": target_process,
+        "customer_name": final_customer_name,
+        "phone": final_phone,
+        "address": final_address,
+        "note": final_note,
+        "received_note": final_received_note,
+        "updated_at": now_iso,
+    }
+
+    _merge_bucket_images(
+        update_payload, img_groups, old_received, old_repair, old_storage, old_delivery
+    )
+
+    if existing_ticket:
+        old_base_job_id = str(existing_ticket.get("base_job_id") or "").strip()
+        if old_base_job_id != job_id:
+            update_payload["base_job_id"] = job_id
+
+        if mapped_status == "returned":
+            update_payload["returned_date"] = now_iso
+
+        if mapped_status == "cancelled":
+            update_payload["is_fixed"] = False
+            update_payload["repair_result"] = "failed"
+            cancel_parts = []
+            if base_failed_reason:
+                cancel_parts.append(f"Lý do: {base_failed_reason}")
+            if base_failed_note:
+                cancel_parts.append(f"Ghi chú: {base_failed_note}")
+            cancel_str = " - ".join(cancel_parts) if cancel_parts else "KTV báo hủy sửa"
+            update_payload["failure_reason"] = cancel_str
+
+            curr_received = (existing_ticket.get("received_note") or final_received_note or "").strip()
+            if cancel_str not in curr_received:
+                update_payload["received_note"] = f"{curr_received} [{cancel_str}]".strip()
+
+        elif target_process == "repair":
+            old_failure = (existing_ticket.get("failure_reason") or "").strip()
+            if existing_ticket.get("repair_result") == "failed" or old_failure:
+                update_payload["is_fixed"] = None
+                update_payload["repair_result"] = None
+                update_payload["failure_reason"] = None
+
+            rn = update_payload.get("received_note") or ""
+            if old_failure:
+                rn = rn.replace(f"[{old_failure}]", "")
+            update_payload["received_note"] = re.sub(r"\s{2,}", " ", rn).strip()
+
+        if mapped_status != "returned" and existing_ticket.get("returned_date"):
+            update_payload["returned_date"] = None
+
+        if base_failed_reason or base_failed_note:
+            revert_parts = []
+            if base_failed_reason:
+                revert_parts.append(f"Lý do lùi bước: {base_failed_reason}")
+            if base_failed_note:
+                revert_parts.append(f"Ghi chú: {base_failed_note}")
+            revert_str = " | ".join(revert_parts)
+            curr_note = update_payload.get("note") or ""
+            if revert_str not in curr_note:
+                update_payload["note"] = f"{curr_note}\n[{revert_str}]".strip()
+
+        if mapped_status in {"fixed", "returned"} and custom_tinh_trang:
+            ktv_text = f"Tình trạng KTV báo: {custom_tinh_trang}"
+            curr_note = update_payload.get("note") or (existing_ticket.get("note") or "").strip()
+            if ktv_text not in curr_note:
+                update_payload["note"] = f"{curr_note} | {ktv_text}" if curr_note else ktv_text
+
+        await asyncio.to_thread(
+            lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
+        )
+        ticket_code = existing_ticket["code"]
+        logger.info(f"🛠️ [SỬA CHỮA] Cập nhật phiếu {ticket_code} (Status: {mapped_status})")
+        return ticket_code
+
+    # Tạo phiếu mới
+    if mapped_status in {"fixed", "returned"} and custom_tinh_trang:
+        ktv_text = f"Tình trạng KTV báo: {custom_tinh_trang}"
+        base = update_payload.get("note") or final_note or ""
+        update_payload["note"] = f"{base} | {ktv_text}" if base else ktv_text
+
+    if extracted_code:
+        ticket_code = extracted_code
+    elif asyncio.iscoroutinefunction(generate_ticket_code):
+        ticket_code = await generate_ticket_code()
+    else:
+        ticket_code = generate_ticket_code()
+
+    new_record = {
+        "base_job_id": job_id,
+        "code": ticket_code,
+        "customer_name": final_customer_name,
+        "phone": final_phone,
+        "address": final_address,
+        "note": update_payload.get("note"),
+        "received_note": update_payload.get("received_note"),
+        "status": mapped_status,
+        "current_process": "repair",
+        "is_fixed": update_payload.get("is_fixed"),
+        "repair_result": update_payload.get("repair_result"),
+        "failure_reason": update_payload.get("failure_reason"),
+        "returned_date": update_payload.get("returned_date"),
+        "received_images": update_payload.get("received_images", []),
+        "repair_images": update_payload.get("repair_images", []),
+        "storage_images": update_payload.get("storage_images", []),
+        "delivery_images": update_payload.get("delivery_images", []),
+        "updated_at": now_iso,
+    }
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("repairs").insert(new_record).execute()
+        )
+        logger.info(f"🛠️ [SỬA CHỮA] Tạo phiếu mới thành công: {ticket_code}")
+    except Exception as insert_err:
+        if "duplicate" in str(insert_err).lower():
+            ex = await asyncio.to_thread(
+                lambda: supabase.table("repairs").select("id, code").eq("base_job_id", job_id).limit(1).execute()
+            )
+            if ex.data:
+                await asyncio.to_thread(
+                    lambda: supabase.table("repairs").update(update_payload).eq("id", ex.data[0]["id"]).execute()
+                )
+                ticket_code = ex.data[0]["code"]
+            else:
+                raise
+        else:
+            raise
+
+    return ticket_code
+
+
+# =========================================================
+# 3. ENDPOINT NHẬN WEBHOOK TỪ BASE.VN
+# =========================================================
+@router.post("/base")
 async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
     try:
         settings = await get_system_settings()
@@ -927,7 +1298,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                     "code": None,
                 }
 
-        # 6. Hợp nhất dữ liệu & trích xuất hình ảnh
+        # 6. Hợp nhất dữ liệu & trích xuất hình ảnh theo từng rổ giai đoạn
         now_iso = datetime.now(timezone.utc).isoformat()
         extracted_name = parsed_info.get("customer_name", "").strip()
         extracted_addr = parsed_info.get("address", "").strip() or raw_addr_field
@@ -952,15 +1323,23 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             final_note = extracted_req_note if req_note_is_real else "Chưa ghi chú"
             final_received_note = extracted_rec_note
 
-        img_groups, _ = extract_all_base_images(
-            payload,
-            workflow_id,
-            {**settings, "workflow_storage_id": workflow_storage, "workflow_delivery_id": workflow_delivery},
-        )
         old_received = (existing_ticket.get("received_images") if existing_ticket else None) or []
         old_repair = (existing_ticket.get("repair_images") if existing_ticket else None) or []
         old_delivery = (existing_ticket.get("delivery_images") if existing_ticket else None) or []
         old_storage = (existing_ticket.get("storage_images") if existing_ticket else None) or []
+
+        status_map = await get_dynamic_status_map()
+        preview_stage_status = validate_status(
+            stage_name or "Tiếp nhận", status_map, metatype=metatype, state=state
+        ) or "received"
+
+        img_groups, _ = extract_all_base_images(
+            payload,
+            workflow_id,
+            {**settings, "workflow_storage_id": workflow_storage, "workflow_delivery_id": workflow_delivery},
+            stage_status=preview_stage_status,
+            has_existing_received=bool(old_received),
+        )
 
         # 7. Điều hướng cập nhật CSDL theo từng quy trình
         if workflow_id == workflow_storage:
@@ -1015,6 +1394,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 stage_name=stage_name,
                 metatype=metatype,
                 state=state,
+                status_map=status_map,
                 final_customer_name=final_customer_name,
                 final_phone=final_phone,
                 final_address=final_address,

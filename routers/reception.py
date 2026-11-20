@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import unicodedata
 import re
 import time
 import urllib.parse
@@ -81,6 +82,29 @@ def escape_postgrest(value: str) -> str:
     )
 
 
+EMPTY_NOTE_VALUES = {
+    "",
+    "chưa ghi chú",
+    "chua ghi chu",
+    "chưa ghi nhận",
+    "chua ghi nhan",
+    "bình thường",
+    "binh thuong",
+    "no value",
+    "null",
+    "none",
+}
+
+
+def _to_ascii_sms(text: str) -> str:
+    """Chuyển tiếng Việt có dấu sang không dấu để SMS giữ chuẩn 160 ký tự/tin."""
+    if not text:
+        return ""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def _get_sms_settings() -> dict:
     now = time.time()
     if now < _settings_cache["expires_at"]:
@@ -107,25 +131,32 @@ def _get_sms_settings() -> dict:
 def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[dict]:
     if not phone:
         return None
+
+    phone_clean = normalize_phone(phone)
+    if not phone_clean:
+        return None
+
     cfg = _get_sms_settings()
     hotline = cfg["sms_hotline"]
-    tracking_domain = cfg["tracking_domain"].rstrip("/")
-    company = cfg["company_name"]
-    phone_clean = normalize_phone(phone)
+    company = _to_ascii_sms(cfg["company_name"])
+    name_clean = _to_ascii_sms((customer_name or "Khach le").strip())
     now_str = datetime.now(VN_TZ).strftime("%H:%M %d/%m/%Y")
-    note_str = note.strip() if note and note.strip() else "Binh thuong"
+
+    raw_note = (note or "").strip()
+    has_real_note = raw_note.lower() not in EMPTY_NOTE_VALUES
+    note_segment = f" Ghi chu: {_to_ascii_sms(raw_note)}." if has_real_note else ""
 
     if msg_type == "receive":
         sms_text = (
-            f"{company} tao phieu [{code}] ghi nhan thiet bi KH {customer_name} "
-            f"luc {now_str}. Ghi chu: {note_str}. "
-            f"Tra cuu: {tracking_domain}/tracking/{phone_clean}. LH: {hotline}"
+            f"{company} tao phieu [{code}] tiep nhan thiet bi KH {name_clean} "
+            f"luc {now_str}.{note_segment} LH: {hotline}"
         )
     else:
         sms_text = (
-            f"{company} da hoan tra thiet bi [{code}] cho KH {customer_name} "
+            f"{company} da hoan tra thiet bi [{code}] cho KH {name_clean} "
             f"luc {now_str}. Cam on Quy khach! LH: {hotline}"
         )
+
     encoded_text = urllib.parse.quote(sms_text)
     return {
         "phone": phone_clean,
@@ -133,7 +164,6 @@ def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[di
         "sms_link": f"sms:{phone_clean}?body={encoded_text}",
         "sms_link_ios": f"sms:{phone_clean}&body={encoded_text}",
     }
-
 
 async def get_next_code() -> tuple[str, int]:
     now_vn = datetime.now(VN_TZ)

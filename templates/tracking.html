@@ -189,7 +189,7 @@
                 <div class="mb-5">
                     <label for="searchInput" class="form-label fw-medium text-dark small mb-2">Nhập số điện thoại hoặc mã phiếu để kiểm tra:</label>
                     <div class="input-group search-input-group">
-                        <input type="text" id="searchInput" class="form-control rounded-3" placeholder="Ví dụ: 0912345678 hoặc NT-1009-001" autocomplete="off">
+                        <input type="text" id="searchInput" class="form-control rounded-3" placeholder="Ví dụ: 0912345678 hoặc DT1120-92531" autocomplete="off">
                         <button class="btn btn-danger-custom px-4 fw-bold rounded-3 ms-2 d-flex align-items-center" type="button" id="searchBtn" onclick="searchTicket()">
                             <span id="searchBtnText"><i class="bi bi-search me-2"></i> Tra Cứu</span>
                             <span id="searchSpinner" class="spinner-border spinner-border-sm" style="display: none;" role="status"></span>
@@ -203,9 +203,7 @@
                     <!-- Danh sách nhiều kết quả -->
                     <div id="multiResultContainer" class="mb-4" style="display: none;">
                         <h6 class="text-secondary mb-3"><i class="bi bi-list-check me-2"></i>Tìm thấy <span id="totalCount" class="text-brand-red fw-bold">0</span> thiết bị liên quan. Vui lòng chọn phiếu cần xem:</h6>
-                        <div id="ticketListGroup" class="list-group list-group-flush rounded-3 border">
-                            <!-- Danh sách phiếu chèn bằng JS -->
-                        </div>
+                        <div id="ticketListGroup" class="list-group list-group-flush rounded-3 border"></div>
                     </div>
 
                     <!-- Khu vực kết quả chi tiết 1 phiếu -->
@@ -249,9 +247,9 @@
                                 <p id="resNote" class="mb-0 text-secondary small mt-1"></p>
                             </div>
 
-                            <!-- THÔNG TIN QUY TRÌNH PHỤ (LƯU KHO / GIAO NHẬN) -->
+                            <!-- THÔNG TIN QUY TRÌNH PHỤ (LƯU KHO / GIAO NHẬN / CHÀNH XE) -->
                             <div id="processInfoArea" class="col-12 border-top pt-2" style="display: none;">
-                                <div id="processInfoContent" class="p-2.5 rounded-3 text-dark small font-medium"></div>
+                                <div id="processInfoContent" class="p-2 rounded-3 bg-white border text-dark small fw-medium"></div>
                             </div>
 
                             <!-- LÝ DO KTV BÁO KHÔNG SỬA ĐƯỢC / GIAO THẤT BẠI -->
@@ -262,55 +260,58 @@
 
                             <!-- THÔNG TIN HÌNH THỨC & GHI CHÚ BÀN GIAO -->
                             <div id="returnedInfoArea" class="col-12 border-top pt-2" style="display: none;">
-                                <span class="text-muted small d-block"><i class="bi bi-box-arrow-right text-success me-1"></i>Thông tin Bàn Giao & Trả Máy:</span>
-                                <p id="resReturnedDetail" class="mb-0 text-dark small mt-1 font-medium"></p>
+                                <span class="text-muted small d-block"><i class="bi bi-box-arrow-right text-success me-1"></i>Thông tin Bàn Giao & Hoàn Trả:</span>
+                                <p id="resReturnedDetail" class="mb-0 text-dark small mt-1 fw-medium"></p>
                             </div>
                         </div>
 
-                        <!-- TIMELINE QUY TRÌNH -->
+                        <!-- TIMELINE HÀNH TRÌNH ĐẦY ĐỦ 5 BƯỚC -->
                         <h6 class="fw-bold mb-3 text-dark"><i class="bi bi-clock-history text-brand-red me-2"></i>Hành Trình Xử Lý Thiết Bị</h6>
                         <div class="p-3 border rounded-3 bg-white mb-2">
                             
                             <!-- BƯỚC 1: TIẾP NHẬN -->
-                            <div class="timeline-step">
+                            <div class="timeline-step" id="step1Node">
                                 <div id="iconStep1" class="timeline-icon bg-success"><i class="bi bi-check"></i></div>
                                 <strong class="d-block small text-dark" id="titleStep1">1. Tiếp Nhận Thiết Bị</strong>
                                 <span class="text-muted small d-block" id="timeReceived">Đang cập nhật...</span>
 
-                                <!-- NÚT & VÙNG CHỨA ẢNH TIẾP NHẬN -->
                                 <button id="btnReceivedImages" class="btn btn-sm btn-outline-info text-dark mt-2" style="display: none;"></button>
                                 <div id="receivedImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
 
-                            <!-- BƯỚC 2: TIẾN TRÌNH XỬ LÝ -->
-                            <div class="timeline-step">
+                            <!-- BƯỚC 2: KIỂM TRA & SỬA CHỮA -->
+                            <div class="timeline-step" id="step2Node">
                                 <div id="iconStep2" class="timeline-icon bg-secondary"><i class="bi bi-gear"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep2">2. Kiểm Tra & Sửa Chữa</strong>
+                                <strong class="d-block small text-dark" id="titleStep2">2. Kiểm Tra & Sửa Chữa Kỹ Thuật</strong>
                                 <span class="text-muted small d-block" id="timeRepair">Thiết bị chờ kỹ thuật kiểm tra và xử lý.</span>
-                            </div>
 
-                            <!-- BƯỚC 3: HOÀN THÀNH XỬ LÝ -->
-                            <div class="timeline-step">
-                                <div id="iconStep3" class="timeline-icon bg-secondary"><i class="bi bi-check-circle"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep3">3. Đã Sửa Xong (Sẵn Sàng Bàn Giao)</strong>
-                                <span class="text-muted small d-block" id="timeFixed">Chờ hoàn tất kiểm tra lỗi và đóng gói.</span>
-                                
-                                <!-- NÚT & VÙNG CHỨA ẢNH SỬA CHỮA -->
                                 <button id="btnRepairImages" class="btn btn-sm btn-outline-primary mt-2" style="display: none;"></button>
                                 <div id="repairImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
 
-                            <!-- BƯỚC 4: BÀN GIAO / TRẢ MÁY -->
-                            <div class="timeline-step">
-                                <div id="iconStep4" class="timeline-icon bg-secondary"><i class="bi bi-box-seam"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep4">4. Đã Bàn Giao & Trả Khách</strong>
-                                <span class="text-muted small d-block" id="timeReturned">Đang chờ bàn giao cho quý khách.</span>
+                            <!-- BƯỚC 3: HOÀN TẤT SỬA CHỮA & NGHIỆM THU -->
+                            <div class="timeline-step" id="step3Node">
+                                <div id="iconStep3" class="timeline-icon bg-secondary"><i class="bi bi-check-circle"></i></div>
+                                <strong class="d-block small text-dark" id="titleStep3">3. Hoàn Tất Sửa Chữa & Nghiệm Thu</strong>
+                                <span class="text-muted small d-block" id="timeFixed">Chờ hoàn tất kiểm tra chất lượng thiết bị.</span>
+                            </div>
 
-                                <!-- NÚT ẢNH BÀN GIAO TRỰC TIẾP -->
-                                <button id="btnStorageImages" class="btn btn-sm btn-outline-warning text-dark mt-2 me-2" style="display: none;"></button>
+                            <!-- BƯỚC 4: LƯU KHO & ĐÓNG GÓI XUẤT XƯỞNG -->
+                            <div class="timeline-step" id="step4Node">
+                                <div id="iconStep4" class="timeline-icon bg-secondary"><i class="bi bi-archive"></i></div>
+                                <strong class="d-block small text-dark" id="titleStep4">4. Lưu Kho & Đóng Gói Xuất Xưởng</strong>
+                                <span class="text-muted small d-block" id="timeStorage">Chờ hoàn tất kỹ thuật để đóng gói / lưu kho.</span>
+
+                                <button id="btnStorageImages" class="btn btn-sm btn-outline-warning text-dark mt-2" style="display: none;"></button>
                                 <div id="storageImagesGallery" class="mt-2" style="display: none;"></div>
+                            </div>
 
-                                <!-- NÚT ẢNH ĐI GIAO / CHÀNH XE -->
+                            <!-- BƯỚC 5: VẬN CHUYỂN & HOÀN TRẢ KHÁCH HÀNG -->
+                            <div class="timeline-step" id="step5Node">
+                                <div id="iconStep5" class="timeline-icon bg-secondary"><i class="bi bi-truck"></i></div>
+                                <strong class="d-block small text-dark" id="titleStep5">5. Vận Chuyển & Hoàn Trả Khách Hàng</strong>
+                                <span class="text-muted small d-block" id="timeReturned">Đang chờ hoàn trả thiết bị cho quý khách.</span>
+
                                 <button id="btnDeliveryImages" class="btn btn-sm btn-outline-success mt-2" style="display: none;"></button>
                                 <div id="deliveryImagesGallery" class="mt-2" style="display: none;"></div>
                             </div>
@@ -370,12 +371,26 @@
         let currentSearchResults = [];
         const loadedGalleries = new Set();
 
-        // 🟢 BỔ SUNG: TỰ ĐỘNG TRA CỨU KHI TRUY CẬP TỪ LINK SMS (/tracking/0986195215)
-        document.addEventListener('DOMContentLoaded', function() {
+        // Tự động tra cứu khi truy cập từ link chia sẻ (/tracking/<mã_phiếu_hoặc_sđt>)
+        document.addEventListener('DOMContentLoaded', function () {
+            const searchInput = document.getElementById('searchInput');
+            if (searchInput) {
+                searchInput.addEventListener('keypress', function (e) {
+                    if (e.key === 'Enter') {
+                        searchTicket();
+                    }
+                });
+            }
+
             const urlParams = new URLSearchParams(window.location.search);
-            let query = serverKeyword.trim() || urlParams.get('search') || urlParams.get('q') || urlParams.get('code') || urlParams.get('query');
-            
-            // Nếu không có trong param hay serverKeyword -> thử tách từ URL Path (/tracking/0986195215)
+            let query =
+                serverKeyword.trim() ||
+                urlParams.get('search') ||
+                urlParams.get('q') ||
+                urlParams.get('code') ||
+                urlParams.get('query');
+
+            // Nếu không có trong param hay serverKeyword -> tách từ URL Path (/tracking/DT1120-92531)
             if (!query) {
                 const parts = window.location.pathname.split('/').filter(Boolean);
                 if (parts.length >= 2 && parts[0] === 'tracking') {
@@ -383,12 +398,9 @@
                 }
             }
 
-            if (query && query !== '' && query !== 'tracking') {
-                const searchInput = document.getElementById('searchInput');
-                if (searchInput) {
-                    searchInput.value = query;
-                    searchTicket();
-                }
+            if (query && query !== '' && query !== 'tracking' && searchInput) {
+                searchInput.value = query;
+                searchTicket();
             }
         });
 
@@ -402,11 +414,31 @@
                 .replace(/'/g, '&#039;');
         }
 
-        document.getElementById('searchInput').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                searchTicket();
+        function formatDateTimeVN(isoStr) {
+            if (!isoStr) return '—';
+            const d = new Date(isoStr);
+            if (isNaN(d.getTime())) return '—';
+            return d.toLocaleTimeString('vi-VN', { hour12: false }) + ' ' + d.toLocaleDateString('vi-VN');
+        }
+
+        function setTimelineStep(stepNum, badgeBgClass, iconHtml, descText) {
+            const iconEl = document.getElementById(`iconStep${stepNum}`);
+            if (iconEl) {
+                iconEl.className = `timeline-icon ${badgeBgClass}`;
+                iconEl.innerHTML = iconHtml;
             }
-        });
+            const descMap = {
+                1: 'timeReceived',
+                2: 'timeRepair',
+                3: 'timeFixed',
+                4: 'timeStorage',
+                5: 'timeReturned',
+            };
+            const descEl = document.getElementById(descMap[stepNum]);
+            if (descEl && descText !== undefined) {
+                descEl.innerText = descText;
+            }
+        }
 
         function setupLazyImageGallery(btnId, containerId, images, labelTitle, iconClass) {
             const btn = document.getElementById(btnId);
@@ -443,16 +475,15 @@
                                 <div class="d-flex flex-wrap gap-2">
                         `;
                         images.forEach((imgUrl, idx) => {
-                            let cleanUrl = String(imgUrl || '').trim();
-
+                            const cleanUrl = String(imgUrl || '').trim();
                             html += `
-                                <div class="position-relative overflow-hidden rounded border shadow-sm" 
-                                     style="width: 70px; height: 70px; cursor: pointer;" 
-                                     onclick="openImagePreviewModal('${escapeHtml(cleanUrl)}')">
-                                    <img src="${escapeHtml(cleanUrl)}" 
-                                         class="w-100 h-100 object-fit-cover" 
-                                         alt="Bằng chứng ${idx + 1}" 
-                                         loading="lazy">
+                                <div class="position-relative overflow-hidden rounded border shadow-sm"
+                                    style="width: 70px; height: 70px; cursor: pointer;"
+                                    onclick="openImagePreviewModal('${escapeHtml(cleanUrl)}')">
+                                    <img src="${escapeHtml(cleanUrl)}"
+                                        class="w-100 h-100 object-fit-cover"
+                                        alt="Bằng chứng ${idx + 1}"
+                                        loading="lazy">
                                 </div>
                             `;
                         });
@@ -527,7 +558,7 @@
                     } else {
                         renderTicketList(currentSearchResults);
                     }
-                    
+
                     const mainCardArea = document.getElementById('mainCardArea');
                     if (mainCardArea) {
                         mainCardArea.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -559,11 +590,13 @@
                 let badgeClass = 'bg-secondary text-white';
                 let statusText = 'Đã tiếp nhận';
 
-                if (st === 'returned' || deliveryStatus === 'delivered' || storageStatus === 'dispatched') {
+                if (storageStatus === 'destroyed') {
+                    badgeClass = 'bg-secondary text-white';
+                    statusText = '🗑️ Đã tiêu hủy';
+                } else if (st === 'returned' || deliveryStatus === 'delivered' || storageStatus === 'dispatched') {
                     badgeClass = 'bg-success text-white';
-                    statusText = '✓ Đã trả máy / Hoàn tất';
-                } 
-                else if (process === 'delivery' || deliveryStatus) {
+                    statusText = '✓ Đã hoàn trả / Hoàn tất';
+                } else if (process === 'delivery' || deliveryStatus) {
                     if (deliveryStatus === 'delivering') {
                         badgeClass = 'bg-primary text-white';
                         statusText = '🚚 Đang đi giao';
@@ -574,30 +607,23 @@
                         badgeClass = 'bg-info text-dark';
                         statusText = '📋 Chờ giao hàng';
                     }
-                } 
-                else if (process === 'storage' || storageStatus) {
-                    if (storageStatus === 'in_company') {
-                        badgeClass = 'bg-warning text-dark';
-                        statusText = '📦 Lưu kho Cty';
-                    } else if (storageStatus === 'destroyed') {
-                        badgeClass = 'bg-secondary text-white';
-                        statusText = '🗑️ Đã tiêu hủy';
-                    }
-                } 
-                else {
+                } else if (process === 'storage' || storageStatus) {
+                    badgeClass = 'bg-warning text-dark';
+                    statusText = '📦 Lưu kho & đóng gói';
+                } else {
                     if (st === 'fixed') {
                         badgeClass = 'bg-primary text-white';
                         statusText = '★ Đã sửa xong';
                     } else if (st === 'processing' || st === 'repairing') {
                         badgeClass = 'bg-warning text-dark';
                         statusText = '⚙ Đang sửa chữa';
-                    } else if (st === 'cancelled') {
+                    } else if (st === 'cancelled' || item.repair_result === 'failed') {
                         badgeClass = 'bg-danger text-white';
-                        statusText = '✕ Đã hủy / Thất bại';
+                        statusText = '✕ Không sửa / Hủy';
                     }
                 }
 
-                const createdDate = new Date(item.created_at).toLocaleDateString('vi-VN');
+                const createdDate = item.created_at ? new Date(item.created_at).toLocaleDateString('vi-VN') : '—';
 
                 const btn = document.createElement('button');
                 btn.type = 'button';
@@ -629,258 +655,201 @@
 
         function displayTicketDetail(item) {
             document.getElementById('multiResultContainer').style.display = 'none';
-            document.getElementById('resCode').innerText = item.code || '';
-            document.getElementById('resCustomer').innerText = item.customer_name || 'Khách lẻ';
-            document.getElementById('resPhone').innerText = item.phone || '';
-            
-            document.getElementById('resCustomerReq').innerText = item.note || 'Chưa ghi nhận';
-            document.getElementById('resNote').innerText = item.received_note || 'Bình thường';
+            document.getElementById('notFoundContainer').style.display = 'none';
 
-            const st = (item.status || '').toLowerCase();
+            document.getElementById('resCode').innerText = item.code || '—';
+            document.getElementById('resCustomer').innerText = item.customer_name || 'Khách lẻ';
+            document.getElementById('resPhone').innerText = item.phone || '—';
+            document.getElementById('resCustomerReq').innerText = item.note || 'Chưa ghi nhận';
+            document.getElementById('resNote').innerText = item.received_note || 'Bình thường / Không có phụ kiện kèm thêm';
+
+            const st = (item.status || 'received').toLowerCase();
             const process = (item.current_process || 'repair').toLowerCase();
             const deliveryStatus = (item.delivery_status || '').toLowerCase();
             const storageStatus = (item.storage_status || '').toLowerCase();
 
-            const isFinished = st === 'returned' || deliveryStatus === 'delivered' || storageStatus === 'dispatched' || storageStatus === 'destroyed';
+            const isDestroyed = storageStatus === 'destroyed';
+            const isDeliveryFailed = process === 'delivery' && deliveryStatus === 'failed';
+            const isKtvFailed = !isDestroyed && !isDeliveryFailed && (
+                item.is_fixed === false || item.repair_result === 'failed' || st === 'cancelled'
+            );
+            const isFinished = !isDestroyed && !isDeliveryFailed && (
+                st === 'returned' || deliveryStatus === 'delivered' || storageStatus === 'dispatched'
+            );
 
-            // 1. HIỂN THỊ THÔNG BÁO QUY TRÌNH PHỤ
+            // 1. HIỂN THỊ THÔNG TIN QUY TRÌNH PHỤ / ĐỊA CHỈ CHÀNH XE
             const processInfoArea = document.getElementById('processInfoArea');
             const processInfoContent = document.getElementById('processInfoContent');
 
             if (!isFinished && process === 'delivery') {
-                let text = '<i class="bi bi-truck text-indigo me-1.5 fw-bold"></i><strong>Đang trong Quy trình Giao Nhận:</strong> ';
+                let text = '<i class="bi bi-truck me-1.5 fw-bold"></i><strong>Đang trong Quy trình Giao Nhận:</strong> ';
                 if (deliveryStatus === 'delivering') {
                     text += 'Đang tiến hành đi giao cho khách hàng hoặc gửi ra chành xe.';
                     processInfoContent.className = 'p-2.5 rounded-3 bg-primary-subtle border border-primary text-primary-emphasis small font-medium';
-                } else if (deliveryStatus === 'failed') {
-                    text += 'Giao hàng không thành công. Sẽ liên hệ lại quý khách.';
-                    processInfoContent.className = 'p-2.5 rounded-3 bg-danger-subtle border border-danger text-danger-emphasis small font-medium';
                 } else {
-                    text += 'Đơn hàng đang chờ tiếp nhận để đi giao.';
+                    text += 'Đơn hàng đã đóng gói, đang chờ xuất tuyến đi giao.';
                     processInfoContent.className = 'p-2.5 rounded-3 bg-info-subtle border border-info text-info-emphasis small font-medium';
+                }
+                if (item.address && item.address.trim()) {
+                    text += `<div class="mt-1 text-dark"><span class="text-muted">Nơi nhận / Chành xe:</span> ${escapeHtml(item.address)}</div>`;
                 }
                 processInfoContent.innerHTML = text;
                 processInfoArea.style.display = 'block';
             } else if (!isFinished && process === 'storage') {
-                let text = '<i class="bi bi-warehouse me-1.5 fw-bold"></i><strong>Đang Lưu kho tại Công ty:</strong> ';
-                text += 'Thiết bị đang được bảo quản tại công ty, chờ Lễ tân bàn giao lại cho khách hoặc chành xe.';
+                let text = '<i class="bi bi-archive me-1.5 fw-bold"></i><strong>Đang Lưu kho & Đóng gói tại Công ty:</strong> ';
+                text += 'Thiết bị đang được bảo quản an toàn tại công ty, chờ Lễ tân bàn giao hoặc chuyển giao nhận.';
                 processInfoContent.className = 'p-2.5 rounded-3 bg-warning-subtle border border-warning text-warning-emphasis small font-medium';
                 processInfoContent.innerHTML = text;
+                processInfoArea.style.display = 'block';
+            } else if (item.address && item.address.trim()) {
+                processInfoContent.className = 'p-2 rounded-3 bg-white border text-dark small font-medium';
+                processInfoContent.innerHTML = `<span class="text-muted"><i class="bi bi-geo-alt me-1"></i>Địa chỉ / Chành xe:</span> ${escapeHtml(item.address)}`;
                 processInfoArea.style.display = 'block';
             } else {
                 processInfoArea.style.display = 'none';
             }
 
-            // 2. LÝ DO THẤT BẠI
+            // 2. LÝ DO THẤT BẠI / HỦY SỬA
             const failureReasonArea = document.getElementById('failureReasonArea');
             const failTitle = document.getElementById('failTitle');
             const resFailureReason = document.getElementById('resFailureReason');
-
             const baseReason = item.failure_reason || item.cancel_reason || '';
-            const isKtvFailed = item.is_fixed === false || item.repair_result === 'failed' || st === 'cancelled';
-            
-            if (deliveryStatus === 'failed') {
-                if(failTitle) failTitle.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Lý do giao hàng thất bại:';
-                if(resFailureReason) resFailureReason.innerText = baseReason || 'Khách không nhận hàng / Không liên hệ được.';
-                if(failureReasonArea) failureReasonArea.style.display = 'block';
-            } else if (isKtvFailed || baseReason) {
-                if(failTitle) failTitle.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Lý do KTV báo không sửa được / Hủy sửa:';
-                if(resFailureReason) resFailureReason.innerText = baseReason || 'Không tiến hành sửa chữa / Sửa thất bại.';
-                if(failureReasonArea) failureReasonArea.style.display = 'block';
+
+            if (isDeliveryFailed) {
+                if (failTitle) failTitle.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Lý do giao hàng chưa thành công:';
+                if (resFailureReason) resFailureReason.innerText = baseReason || 'Khách hẹn lại hoặc chưa liên hệ được.';
+                if (failureReasonArea) failureReasonArea.style.display = 'block';
+            } else if (isDestroyed || isKtvFailed || baseReason) {
+                if (failTitle) failTitle.innerHTML = '<i class="bi bi-exclamation-triangle-fill me-1"></i>Lý do / Ghi chú kỹ thuật:';
+                if (resFailureReason) resFailureReason.innerText = baseReason || 'Không tiến hành sửa chữa / Sửa không thành công.';
+                if (failureReasonArea) failureReasonArea.style.display = 'block';
             } else {
-                if(failureReasonArea) failureReasonArea.style.display = 'none';
+                if (failureReasonArea) failureReasonArea.style.display = 'none';
             }
 
-            // 3. THÔNG TIN BÀN GIAO & TRẢ MÁY
+            // 3. THÔNG TIN BÀN GIAO & HOÀN TRẢ
             const returnedInfoArea = document.getElementById('returnedInfoArea');
-            if (isFinished && (item.returned_method || item.returned_note)) {
-                let retText = '';
-                if (item.returned_method) retText += 'Hình thức: ' + escapeHtml(item.returned_method);
-                if (item.returned_note) retText += (retText ? ' | ' : '') + 'Ghi chú: ' + escapeHtml(item.returned_note);
-                document.getElementById('resReturnedDetail').innerText = retText;
+            if (isFinished || item.returned_method || item.returned_note) {
+                const retParts = [];
+                if (item.returned_method) retParts.push('Hình thức: ' + item.returned_method);
+                if (item.returned_date) retParts.push('Thời gian: ' + formatDateTimeVN(item.returned_date));
+                if (item.returned_note) retParts.push('Ghi chú: ' + item.returned_note);
+                document.getElementById('resReturnedDetail').innerText = retParts.length
+                    ? retParts.join(' • ')
+                    : 'Đã xác nhận bàn giao hoàn tất';
                 returnedInfoArea.style.display = 'block';
             } else {
                 returnedInfoArea.style.display = 'none';
             }
 
-            document.getElementById('timeReceived').innerText = 'Tiếp nhận lúc: ' + (item.created_at ? new Date(item.created_at).toLocaleString('vi-VN') : '—');
-
+            // 4. DỰNG TIMELINE LIÊN HOÀN 5 BƯỚC (TỪ NHẬN MÁY ĐẾN HOÀN TRẢ)
             const badge = document.getElementById('resStatusBadge');
-            const iconStep1 = document.getElementById('iconStep1');
-            const iconStep2 = document.getElementById('iconStep2');
-            const iconStep3 = document.getElementById('iconStep3');
-            const iconStep4 = document.getElementById('iconStep4');
-            const titleStep1 = document.getElementById('titleStep1');
-            const titleStep2 = document.getElementById('titleStep2');
-            const titleStep3 = document.getElementById('titleStep3');
-            const titleStep4 = document.getElementById('titleStep4');
-            const timeRepair = document.getElementById('timeRepair');
-            const timeFixed = document.getElementById('timeFixed');
-            const timeReturned = document.getElementById('timeReturned');
 
-            const step1Node = iconStep1.closest('.timeline-step');
-            const step2Node = iconStep2.closest('.timeline-step');
-            const step3Node = iconStep3.closest('.timeline-step');
-            const step4Node = iconStep4.closest('.timeline-step');
+            // Bước 1 luôn hoàn thành khi có phiếu
+            setTimelineStep(1, 'bg-success', '<i class="bi bi-check"></i>', 'Tiếp nhận lúc: ' + formatDateTimeVN(item.created_at));
 
-            step1Node.style.display = 'block';
-            step2Node.style.display = 'block';
-            step3Node.style.display = 'block';
-            step4Node.style.display = 'block';
+            if (isDestroyed) {
+                badge.className = 'badge bg-secondary text-white fs-6 px-3 py-2';
+                badge.innerText = '🗑️ Đã Tiêu Hủy Hệ Thống';
 
-            titleStep1.innerText = "1. Tiếp Nhận Thông Tin";
-            titleStep2.innerText = "2. Chuyển Sang Sửa Chữa";
-            titleStep3.innerText = "3. Đã Sửa Xong";
-            titleStep4.innerText = "4. Đã Bàn Giao & Trả Khách";
+                setTimelineStep(2, 'bg-danger', '<i class="bi bi-x"></i>', 'Xác nhận thiết bị hư hỏng nặng, không khả thi để sửa chữa.');
+                setTimelineStep(3, 'bg-secondary', '<i class="bi bi-dash"></i>', 'Bỏ qua bước nghiệm thu sửa chữa.');
+                setTimelineStep(4, 'bg-secondary', '<i class="bi bi-archive"></i>', 'Đã chuyển lưu kho xử lý theo quy trình.');
+                setTimelineStep(5, 'bg-dark text-white', '<i class="bi bi-trash"></i>', 'Thiết bị đã được tiêu hủy theo quy định Công ty.');
 
-            // 4. XÂY DỰNG TIMELINE
-            if (isFinished) {
-                if (process === 'delivery' || deliveryStatus) { 
-                    step4Node.style.display = 'none';
-                    titleStep1.innerText = "1. Tiếp Nhận Đơn Giao Hàng";
-                    titleStep2.innerText = "2. Tiến Hành Đi Giao";
-                    titleStep3.innerText = "3. Bàn Giao Cho Khách Hàng / Chành Xe";
-
-                    badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
-                    badge.innerText = '✓ Đã Bàn Giao Thành Công';
-                    
-                    iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                    iconStep2.className = 'timeline-icon bg-success'; iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                    timeRepair.innerText = 'Quá trình vận chuyển hoàn tất.';
-                    
-                    iconStep3.className = 'timeline-icon bg-success'; iconStep3.innerHTML = '<i class="bi bi-check-all"></i>';
-                    let deliveryTimeText = item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—';
-                    timeFixed.innerText = 'Đã hoàn tất bàn giao lúc: ' + deliveryTimeText;
+            } else if (isFinished) {
+                badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
+                if (isKtvFailed) {
+                    badge.innerText = '✓ Đã Hoàn Trả Máy (Không Sửa Chữa)';
+                    setTimelineStep(2, 'bg-danger', '<i class="bi bi-x"></i>', 'Kỹ thuật kiểm tra: không tiến hành sửa chữa hoặc sửa không thành công.');
+                    setTimelineStep(3, 'bg-secondary', '<i class="bi bi-dash"></i>', 'Hoàn tất kiểm tra nguyên trạng để hoàn trả khách hàng.');
+                } else {
+                    badge.innerText = (process === 'delivery' || deliveryStatus === 'delivered')
+                        ? '✓ Đã Giao Hàng / Gửi Chành Xe Thành Công'
+                        : '✓ Đã Hoàn Trả Thiết Bị Cho Khách';
+                    setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Kỹ thuật viên đã hoàn tất kiểm tra & xử lý lỗi thiết bị.');
+                    setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đã chạy kiểm tra ổn định & nghiệm thu đạt chuẩn.');
                 }
-                else if (storageStatus === 'destroyed') {
-                    badge.className = 'badge bg-secondary text-white fs-6 px-3 py-2';
-                    badge.innerText = '🗑️ Đã Tiêu Hủy Hệ Thống';
-                    
-                    iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                    iconStep2.className = 'timeline-icon bg-success'; iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                    timeRepair.innerText = 'Xác nhận không khả thi để trả khách.';
-                    iconStep3.className = 'timeline-icon bg-secondary'; iconStep3.innerHTML = '<i class="bi bi-trash"></i>';
-                    timeFixed.innerText = 'Chờ quy trình tiêu hủy.';
-                    iconStep4.className = 'timeline-icon bg-dark text-white'; iconStep4.innerHTML = '<i class="bi bi-x-circle"></i>';
-                    timeReturned.innerText = 'Thiết bị đã được tiêu hủy theo quy định Công ty.';
-                } 
-                else if (isKtvFailed) {
-                    badge.className = 'badge bg-secondary text-white fs-6 px-3 py-2';
-                    badge.innerText = '↩ Đã Trả Khách (Không Sửa Chữa)';
-                    
-                    iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                    iconStep2.className = 'timeline-icon bg-danger';  iconStep2.innerHTML = '<i class="bi bi-x"></i>';
-                    timeRepair.innerText = 'Thiết bị không tiến hành sửa chữa hoặc sửa thất bại.';
-                    iconStep3.className = 'timeline-icon bg-secondary'; iconStep3.innerHTML = '<i class="bi bi-dash"></i>';
-                    timeFixed.innerText = 'Bỏ qua bước này.';
-                    iconStep4.className = 'timeline-icon bg-dark text-white'; iconStep4.innerHTML = '<i class="bi bi-box-arrow-right"></i>';
-                    timeReturned.innerText = 'Đã bàn giao trả máy nguyên trạng lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
-                } 
-                else {
-                    titleStep4.innerText = "4. Hoàn Tất Bàn Giao";
-                    badge.className = 'badge bg-success text-white fs-6 px-3 py-2';
-                    badge.innerText = '✓ Đã Bàn Giao / Hoàn Tất';
 
-                    iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                    iconStep2.className = 'timeline-icon bg-success'; iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                    timeRepair.innerText = 'Đang trong quá trình kiểm tra & xử lý.';
-                    iconStep3.className = 'timeline-icon bg-success'; iconStep3.innerHTML = '<i class="bi bi-check"></i>';
-                    timeFixed.innerText = 'Thiết bị đã xử lý xong, đang chờ bàn giao.';
-                    iconStep4.className = 'timeline-icon bg-success'; iconStep4.innerHTML = '<i class="bi bi-check-all"></i>';
-                    timeReturned.innerText = 'Lễ tân đã bàn giao thành công lúc: ' + (item.returned_date ? new Date(item.returned_date).toLocaleString('vi-VN') : '—');
-                }
-            }
-            else if (process === 'delivery') {
-                step4Node.style.display = 'none';
+                setTimelineStep(4, 'bg-success', '<i class="bi bi-check"></i>', 'Đã xuất kho & đóng gói hoàn tất sẵn sàng bàn giao.');
+                const methodSuffix = item.returned_method ? ` (${item.returned_method})` : '';
+                setTimelineStep(
+                    5,
+                    'bg-success',
+                    '<i class="bi bi-check-all"></i>',
+                    'Đã hoàn trả thiết bị lúc: ' + formatDateTimeVN(item.returned_date || item.updated_at) + methodSuffix
+                );
 
-                titleStep1.innerText = "1. Tiếp Nhận Đơn Giao Hàng";
-                titleStep2.innerText = "2. Tiến Hành Đi Giao";
-                titleStep3.innerText = "3. Bàn Giao Cho Khách Hàng / Chành Xe";
-                
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
+            } else if (process === 'delivery') {
+                setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Đã hoàn tất kiểm tra & xử lý tại phòng kỹ thuật.');
+                setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đã nghiệm thu đạt chuẩn chất lượng.');
+                setTimelineStep(4, 'bg-success', '<i class="bi bi-check"></i>', 'Đã xuất kho & đóng gói bàn giao cho bộ phận Vận chuyển.');
 
                 if (deliveryStatus === 'delivering') {
                     badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
                     badge.innerText = '🚚 Đang Trên Đường Giao Hàng';
-                    iconStep2.className = 'timeline-icon bg-primary text-white'; iconStep2.innerHTML = '<i class="bi bi-truck"></i>';
-                    timeRepair.innerText = 'Giao nhận đang trên đường vận chuyển thiết bị.';
-                    iconStep3.className = 'timeline-icon bg-secondary'; iconStep3.innerHTML = '<i class="bi bi-box-seam"></i>';
-                    timeFixed.innerText = 'Chờ xác nhận bàn giao cho quý khách / chành xe.';
+                    setTimelineStep(5, 'bg-primary text-white', '<i class="bi bi-truck"></i>', 'Nhân viên giao nhận đang vận chuyển thiết bị đến Quý khách / chành xe.');
                 } else if (deliveryStatus === 'failed') {
                     badge.className = 'badge bg-danger text-white fs-6 px-3 py-2';
-                    badge.innerText = '✕ Giao Hàng Thất Bại';
-                    iconStep2.className = 'timeline-icon bg-danger'; iconStep2.innerHTML = '<i class="bi bi-x"></i>';
-                    timeRepair.innerText = 'Chưa thể giao hàng (Khách hẹn lại / Không liên hệ được).';
-                    iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Tạm hoãn bàn giao.';
+                    badge.innerText = '✕ Giao Hàng Chưa Thành Công';
+                    setTimelineStep(5, 'bg-danger', '<i class="bi bi-x"></i>', 'Chưa thể bàn giao (Khách hẹn lại / Chưa liên hệ được).');
                 } else {
                     badge.className = 'badge bg-info text-dark fs-6 px-3 py-2';
-                    badge.innerText = '📋 Chờ Đi Giao';
-                    iconStep2.className = 'timeline-icon bg-secondary'; timeRepair.innerText = 'Đơn hàng đang chờ sắp xếp lịch đi giao.';
-                    iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Chờ bàn giao.';
+                    badge.innerText = '📋 Chờ Xuất Tuyến Giao Hàng';
+                    setTimelineStep(5, 'bg-warning text-dark', '<i class="bi bi-clock"></i>', 'Đơn hàng đã đóng gói, đang chờ sắp xếp tuyến đi giao.');
                 }
-            } 
-            else if (process === 'storage') {
-                titleStep1.innerText = "1. Đưa Vào Lưu Kho";
-                titleStep2.innerText = "2. Bảo Quản Tại Kho Công Ty";
-                titleStep3.innerText = "3. Lễ Tân Chờ Bàn Giao";
-                titleStep4.innerText = "4. Hoàn Tất Xuất Kho";
 
+            } else if (process === 'storage') {
                 badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
-                badge.innerText = '📦 Thiết Bị Đang Lưu Kho';
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                iconStep2.className = 'timeline-icon bg-warning text-dark'; iconStep2.innerHTML = '<i class="bi bi-warehouse"></i>';
-                timeRepair.innerText = 'Thiết bị đang được bảo quản an toàn tại công ty.';
-                iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Chờ Lễ tân bàn giao trực tiếp cho khách hoặc chành xe.';
-                iconStep4.className = 'timeline-icon bg-secondary'; timeReturned.innerText = 'Chờ hoàn tất xuất kho.';
-            } 
-            else if (st === 'cancelled') {
+                badge.innerText = '📦 Thiết Bị Đang Lưu Kho & Đóng Gói';
+
+                setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Đã hoàn tất kiểm tra & xử lý kỹ thuật.');
+                setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đã nghiệm thu ổn định.');
+                setTimelineStep(4, 'bg-warning text-dark', '<i class="bi bi-archive"></i>', 'Thiết bị đang được bảo quản an toàn tại kho & chuẩn bị đóng gói.');
+                setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Chờ bàn giao trực tiếp tại quầy hoặc chuyển bộ phận Giao nhận.');
+
+            } else if (isKtvFailed) {
                 badge.className = 'badge bg-danger text-white fs-6 px-3 py-2';
-                badge.innerText = '✕ Đã Hủy / Sửa Thất Bại';
+                badge.innerText = '✕ Không Sửa Chữa / Chờ Hoàn Trả';
 
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                iconStep2.className = 'timeline-icon bg-danger';  iconStep2.innerHTML = '<i class="bi bi-x"></i>';
-                timeRepair.innerText = 'KTV xác nhận sửa không thành công / Quý khách hủy đơn sửa.';
-                iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Không tiến hành sửa chữa.';
-                iconStep4.className = 'timeline-icon bg-warning text-dark'; iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
-                timeReturned.innerText = 'Sẵn sàng trả lại thiết bị nguyên trạng cho quý khách tại quầy.';
-            } 
-            else if (st === 'fixed') {
+                setTimelineStep(2, 'bg-danger', '<i class="bi bi-x"></i>', 'KTV xác nhận sửa không thành công / Quý khách hủy đơn sửa.');
+                setTimelineStep(3, 'bg-secondary', '<i class="bi bi-dash"></i>', 'Không tiến hành sửa chữa.');
+                setTimelineStep(4, 'bg-warning text-dark', '<i class="bi bi-archive"></i>', 'Đang đóng gói lại thiết bị nguyên trạng để hoàn trả.');
+                setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Sẵn sàng hoàn trả thiết bị cho Quý khách tại quầy hoặc gửi vận chuyển.');
+
+            } else if (st === 'fixed') {
                 badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
-                badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng)';
+                badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng Bàn Giao)';
 
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                iconStep2.className = 'timeline-icon bg-success'; iconStep2.innerHTML = '<i class="bi bi-check"></i>';
-                timeRepair.innerText = 'Kỹ thuật đã hoàn tất khắc phục lỗi.';
-                iconStep3.className = 'timeline-icon bg-primary text-white'; iconStep3.innerHTML = '<i class="bi bi-check-circle-fill"></i>';
-                timeFixed.innerText = 'Thiết bị chạy kiểm tra ổn định và sẵn sàng bàn giao.';
-                iconStep4.className = 'timeline-icon bg-warning text-dark'; iconStep4.innerHTML = '<i class="bi bi-clock"></i>';
-                timeReturned.innerText = 'Đang chờ quý khách đến nhận hoặc chờ đưa qua luồng Lưu kho / Giao nhận.';
-            } 
-            else if (st === 'processing' || st === 'repairing') {
+                setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Kỹ thuật viên đã hoàn tất khắc phục lỗi.');
+                setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đã chạy kiểm tra ổn định & nghiệm thu xong.');
+                setTimelineStep(4, 'bg-warning text-dark', '<i class="bi bi-archive"></i>', 'Đang đóng gói & chuyển bộ phận Kho / Lễ tân chuẩn bị bàn giao.');
+                setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Chờ Quý khách đến nhận hoặc chuyển giao nhận theo yêu cầu.');
+
+            } else if (st === 'processing' || st === 'repairing') {
                 badge.className = 'badge bg-warning text-dark fs-6 px-3 py-2';
                 badge.innerText = '⚙ Đang Kiểm Tra & Sửa Chữa';
 
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                iconStep2.className = 'timeline-icon bg-warning text-dark'; iconStep2.innerHTML = '<i class="bi bi-gear-fill"></i>';
-                timeRepair.innerText = 'Kỹ thuật viên đang kiểm tra linh kiện & xử lý lỗi thiết bị.';
-                iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Chờ hoàn thành sửa chữa.';
-                iconStep4.className = 'timeline-icon bg-secondary'; timeReturned.innerText = 'Chờ bàn giao sau khi sửa xong.';
-            } 
-            else {
+                setTimelineStep(2, 'bg-warning text-dark', '<i class="bi bi-gear-fill"></i>', 'Kỹ thuật viên đang kiểm tra linh kiện & xử lý lỗi thiết bị.');
+                setTimelineStep(3, 'bg-secondary', '<i class="bi bi-check-circle"></i>', 'Chờ hoàn tất sửa chữa & chạy kiểm tra.');
+                setTimelineStep(4, 'bg-secondary', '<i class="bi bi-archive"></i>', 'Chờ đóng gói & lưu kho sau khi sửa xong.');
+                setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Chờ bàn giao hoàn trả thiết bị cho Quý khách.');
+
+            } else {
                 badge.className = 'badge bg-info text-dark fs-6 px-3 py-2';
                 badge.innerText = '● Mới Tiếp Nhận';
 
-                iconStep1.className = 'timeline-icon bg-success'; iconStep1.innerHTML = '<i class="bi bi-check"></i>';
-                iconStep2.className = 'timeline-icon bg-secondary'; timeRepair.innerText = 'Đang chờ chuyển thiết bị sang bộ phận Kỹ thuật.';
-                iconStep3.className = 'timeline-icon bg-secondary'; timeFixed.innerText = 'Chờ sửa chữa.';
-                iconStep4.className = 'timeline-icon bg-secondary'; timeReturned.innerText = 'Chờ hoàn thành.';
+                setTimelineStep(2, 'bg-secondary', '<i class="bi bi-gear"></i>', 'Đang chờ chuyển thiết bị sang bộ phận Kỹ thuật.');
+                setTimelineStep(3, 'bg-secondary', '<i class="bi bi-check-circle"></i>', 'Chờ hoàn tất sửa chữa & nghiệm thu.');
+                setTimelineStep(4, 'bg-secondary', '<i class="bi bi-archive"></i>', 'Chờ đóng gói & chuẩn bị bàn giao.');
+                setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Chờ hoàn giao hoàn trả thiết bị cho Quý khách.');
             }
 
-            // 5. NÚT XEM ẢNH LAZY-LOAD
+            // 5. NÚT XEM ẢNH LAZY-LOAD CHO TỪNG CHẶNG
             setupLazyImageGallery('btnReceivedImages', 'receivedImagesGallery', item.received_images, 'Tiếp Nhận / Nhận Máy', 'bi bi-camera');
             setupLazyImageGallery('btnRepairImages', 'repairImagesGallery', item.repair_images, 'KTV Kiểm Tra / Sửa Chữa', 'bi bi-image');
-            setupLazyImageGallery('btnStorageImages', 'storageImagesGallery', item.storage_images, 'Bàn Giao Tại Quầy', 'bi bi-warehouse');
-            setupLazyImageGallery('btnDeliveryImages', 'deliveryImagesGallery', item.delivery_images, 'Giao Nhận / Trả Khách', 'bi bi-truck');
+            setupLazyImageGallery('btnStorageImages', 'storageImagesGallery', item.storage_images, 'Đóng Gói / Lưu Kho', 'bi bi-box-seam');
+            setupLazyImageGallery('btnDeliveryImages', 'deliveryImagesGallery', item.delivery_images, 'Giao Nhận / Hoàn Trả', 'bi bi-truck');
 
             document.getElementById('resultContainer').style.display = 'block';
         }

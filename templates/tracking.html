@@ -829,9 +829,9 @@
                 badge.className = 'badge bg-primary text-white fs-6 px-3 py-2';
                 badge.innerText = '★ Đã Sửa Xong (Sẵn Sàng Bàn Giao)';
 
-                setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Kỹ thuật viên đã hoàn tất khắc phục lỗi.');
-                setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đã chạy kiểm tra ổn định & nghiệm thu xong.');
-                setTimelineStep(4, 'bg-warning text-dark', '<i class="bi bi-archive"></i>', 'Đang đóng gói & chuyển bộ phận Kho / Lễ tân chuẩn bị bàn giao.');
+                setTimelineStep(2, 'bg-success', '<i class="bi bi-check"></i>', 'Kỹ thuật viên đã hoàn tất sửa chữa.');
+                setTimelineStep(3, 'bg-success', '<i class="bi bi-check"></i>', 'Thiết bị đang chạy kiểm thử sau sửa chữa.');
+                setTimelineStep(4, 'bg-warning text-dark', '<i class="bi bi-archive"></i>', 'Đang đóng gói & chuẩn bị bàn giao.');
                 setTimelineStep(5, 'bg-secondary', '<i class="bi bi-truck"></i>', 'Chờ Quý khách đến nhận hoặc chuyển giao nhận theo yêu cầu.');
 
             } else if (st === 'processing' || st === 'repairing') {

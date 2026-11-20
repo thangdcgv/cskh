@@ -1,15 +1,3 @@
-"""
-Webhook router — BẢN ĐÃ SỬA (fix lỗi forward từ workflow Sửa chữa sang Lưu kho/Giao nhận)
-=========================================================================================
-Các điểm đã sửa (đánh dấu # [FIX]):
- 1. Quét custom field theo từ khóa (input key mỗi workflow khác nhau) — bắt được SĐT/ĐC/Ghi chú/Mã phiếu/Job gốc.
- 2. Mở rộng key trích xuất parent/source job ID.
- 3. Sinh đủ biến thể SĐT (0xxx / 84xxx / +84xxx / 9 số) + fallback LIKE 9 số cuối.
- 4. Bật allow_phone_match cả khi workflow_id rỗng/không rõ (tránh tắt nhầm phone match).
- 5. Guard clause mới: CHỈ cho tạo phiếu mới khi workflow_id CHÍNH XÁC là repair;
-    workflow_id rỗng/sai sẽ bị chặn thay vì tự fallback tạo phiếu rỗng.
- 6. Log chi tiết payload keys + các signal trích xuất khi bị block.
-"""
 import asyncio
 import hmac
 import json
@@ -87,7 +75,27 @@ def _scan_custom_field(custom_fields: dict, keywords: tuple) -> Optional[str]:
                 return val
     return None
 
+def collect_related_job_ids(payload: dict, job_id: str) -> list:
+    """ID các job nguồn mà job này được chuyển tiếp từ đó (forwarded_from, gen_prev, gen_list)."""
+    ids = []
 
+    def add(v):
+        s = str(v or "").strip()
+        if s and s not in {"0", "none", "None", job_id} and s not in ids:
+            ids.append(s)
+
+    add(payload.get("forwarded_from"))
+    for key in ("gen_prev", "gen_list"):
+        raw = payload.get(key)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = None
+        for g in (raw if isinstance(raw, list) else [raw]):
+            if isinstance(g, dict):
+                add(g.get("id"))
+    return ids
 # =========================================================
 # [FIX] Helper 2: sinh đủ biến thể định dạng SĐT để khớp với DB
 # =========================================================
@@ -274,17 +282,6 @@ async def find_existing_repair_ticket(
                 if res_active.data:
                     return res_active.data[0]
 
-                # 3b. Dự phòng: bất kỳ phiếu nào
-                res_any = (
-                    supabase.table("repairs")
-                    .select("*")
-                    .in_("phone", phone_variants)
-                    .order("updated_at", desc=True)
-                    .limit(1)
-                    .execute()
-                )
-                if res_any.data:
-                    return res_any.data[0]
 
                 # 3c. [FIX] Cuối cùng: LIKE 9 số cuối (chỉ phiếu đang mở, tránh nhầm lẫn)
                 digits = re.sub(r"\D", "", phone)
@@ -358,7 +355,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or payload.get("secret")
             or ""
         )
-        if configured_secret and not hmac.compare_digest(incoming_secret, configured_secret):
+        if configured_secret and not hmac.compare_digest(incoming_secret.encode(), configured_secret.encode()):
             logger.warning("Webhook: Secret Token không khớp hoặc bị thiếu")
             raise HTTPException(status_code=401, detail="Xác thực không hợp lệ")
 
@@ -481,21 +478,23 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         ).strip()
 
         # [FIX] Bật phone match cả khi workflow_id rỗng/không rõ (tránh tắt nhầm do detect sai)
+        related_ids = collect_related_job_ids(payload, job_id)
+
         possibly_forwarded = (
             workflow_id in {workflow_storage, workflow_delivery, ""}
             or "[fwd]" in task_name.lower()
-            or bool(parent_job_id)
-            or bool(scanned_source_job)
+            or bool(related_ids) or bool(parent_job_id) or bool(scanned_source_job)
         )
 
         # [FIX] Mã phiếu: ưu tiên parse text, fallback custom field
         final_code_for_match = extracted_code or scanned_ticket_code
 
+        
         existing_ticket = await find_existing_repair_ticket(
-            candidate_job_ids=[job_id, parent_job_id, scanned_source_job or ""],
+            candidate_job_ids=[job_id, *related_ids, parent_job_id, scanned_source_job or ""],
             code=final_code_for_match,
             phone=extracted_phone_norm,
-            allow_phone_match=possibly_forwarded,
+            allow_phone_match=possibly_forwarded and not related_ids,   # có liên kết chính xác thì không dò SĐT
         )
 
         # Chuẩn hóa Workflow ID nếu Base gửi thiếu (chỉ khi đã tìm thấy phiếu)
@@ -567,7 +566,10 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             final_received_note = extracted_rec_note
 
         # 6. Trích xuất hình ảnh
-        img_groups, _ = extract_all_base_images(payload, workflow_id, settings)
+        img_groups, _ = extract_all_base_images(
+            payload, workflow_id,
+            {**settings, "workflow_storage_id": workflow_storage, "workflow_delivery_id": workflow_delivery},
+        )
         old_received = (existing_ticket.get("received_images") if existing_ticket else None) or []
         old_repair = (existing_ticket.get("repair_images") if existing_ticket else None) or []
         old_delivery = (existing_ticket.get("delivery_images") if existing_ticket else None) or []
@@ -630,7 +632,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             stage_lower = stage_name.lower().strip()
 
             raw_shipping_info = clean_base_value(
-                payload.get("custom_thong_tin_chanh_xe_chuyen_phat")
+                payload.get("custom_thong_tin_chanh_xechuyen_phat")
                 or payload.get("custom_thong_tin_chanh_xe")
                 or payload.get("custom_chanh_xe")
                 or payload.get("custom_dia_chi_giao_hang")
@@ -769,7 +771,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                     cancel_str = " - ".join(cancel_parts) if cancel_parts else "KTV báo hủy sửa"
                     update_payload["failure_reason"] = cancel_str
 
-                    curr_received = (existing_ticket.get("received_note") or "").strip()
+                    curr_received = ((existing_ticket.get("received_note") if existing_ticket else final_received_note) or "").strip()
                     if cancel_str not in curr_received:
                         update_payload["received_note"] = f"{curr_received} [{cancel_str}]".strip()
 
@@ -860,7 +862,8 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                             ticket_code = ex.data[0]["code"]
                         else:
                             raise
-
+                    else:
+                        raise
         current_app_name = "repair"
         if workflow_id == workflow_storage:
             current_app_name = "storage"

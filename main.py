@@ -115,16 +115,30 @@ app.add_middleware(
 # === Mount Static Files ===
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-
+def mask_phone(phone: Optional[str], hide_count: int = 5) -> str:
+    if not phone:
+        return ""
+    digits = "".join(ch for ch in str(phone) if ch.isdigit())
+    if len(digits) < 7:
+        return str(phone).strip()
+    # Luôn che từ 4 đến 6 số đuôi, giữ lại tối thiểu 4 số đầu
+    mask_len = min(max(hide_count, 4), 6, len(digits) - 4)
+    return digits[:-mask_len] + ("*" * mask_len)
 # =========================================================
 # API TRA CỨU CÔNG KHAI (PUBLIC TRACKING API)
 # =========================================================
 @public_router.get("/tracking/{keyword}")
 async def public_search_ticket(keyword: str):
     """API tra cứu công khai theo Mã phiếu hoặc SĐT (Không yêu cầu đăng nhập)"""
-    kw = keyword.strip()
-    if not kw:
+    safe_kw = keyword.replace(",", "").replace("(", "").replace(")", "").strip()
+    if not safe_kw:
         raise HTTPException(status_code=400, detail="Vui lòng nhập từ khóa tra cứu")
+
+    # Chuẩn hóa SĐT (0986.195.215 / +84986195215 -> 0986195215) hoặc viết hoa mã phiếu
+    digits = "".join(ch for ch in safe_kw if ch.isdigit())
+    if digits.startswith("84") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    search_val = digits if (len(digits) == 10 and digits.startswith("0")) else safe_kw.upper()
 
     try:
         res = await asyncio.to_thread(
@@ -135,7 +149,7 @@ async def public_search_ticket(keyword: str):
                 "failure_reason, is_fixed, repair_result, storage_status, delivery_status, "
                 "received_images, repair_images, storage_images, delivery_images"
             )
-            .or_(f"phone.eq.{kw},code.eq.{kw}")
+            .or_(f"phone.eq.{search_val},code.eq.{search_val}")
             .order("created_at", desc=True)
             .execute()
         )
@@ -143,11 +157,15 @@ async def public_search_ticket(keyword: str):
         if not res.data:
             raise HTTPException(status_code=404, detail="Không tìm thấy thông tin phiếu phù hợp")
 
+        # Che 5 số đuôi SĐT trước khi trả JSON ra ngoài (đổi hide_count=4 hoặc 6 nếu muốn)
+        for item in res.data:
+            item["phone"] = mask_phone(item.get("phone"), hide_count=5)
+
         return {"success": True, "data": res.data}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Lỗi tra cứu công khai ({kw}): {e}", exc_info=True)
+        logger.error(f"Lỗi tra cứu công khai ({keyword}): {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Lỗi hệ thống khi tra cứu dữ liệu")
 
 

@@ -282,8 +282,8 @@
                             <!-- BƯỚC 2: KIỂM TRA & SỬA CHỮA -->
                             <div class="timeline-step" id="step2Node">
                                 <div id="iconStep2" class="timeline-icon bg-secondary"><i class="bi bi-gear"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep2">2. Kiểm Tra & Sửa Chữa Kỹ Thuật</strong>
-                                <span class="text-muted small d-block" id="timeRepair">Thiết bị chờ kỹ thuật kiểm tra và xử lý.</span>
+                                <strong class="d-block small text-dark" id="titleStep2">2. Tiến hành kiểm tra & sửa chữa</strong>
+                                <span class="text-muted small d-block" id="timeRepair">Thiết bị đang được kỹ thuật kiểm tra và xử lý.</span>
 
                                 <button id="btnRepairImages" class="btn btn-sm btn-outline-primary mt-2" style="display: none;"></button>
                                 <div id="repairImagesGallery" class="mt-2" style="display: none;"></div>
@@ -292,15 +292,15 @@
                             <!-- BƯỚC 3: HOÀN TẤT SỬA CHỮA & NGHIỆM THU -->
                             <div class="timeline-step" id="step3Node">
                                 <div id="iconStep3" class="timeline-icon bg-secondary"><i class="bi bi-check-circle"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep3">3. Hoàn Tất Sửa Chữa & Nghiệm Thu</strong>
-                                <span class="text-muted small d-block" id="timeFixed">Chờ hoàn tất kiểm tra chất lượng thiết bị.</span>
+                                <strong class="d-block small text-dark" id="titleStep3">3. Hoàn Tất Sửa Chữa</strong>
+                                <span class="text-muted small d-block" id="timeFixed">Đã hoàn tất sửa chữa & chạy kiểm thử.</span>
                             </div>
 
                             <!-- BƯỚC 4: LƯU KHO & ĐÓNG GÓI XUẤT XƯỞNG -->
                             <div class="timeline-step" id="step4Node">
                                 <div id="iconStep4" class="timeline-icon bg-secondary"><i class="bi bi-archive"></i></div>
-                                <strong class="d-block small text-dark" id="titleStep4">4. Lưu Kho & Đóng Gói Xuất Xưởng</strong>
-                                <span class="text-muted small d-block" id="timeStorage">Chờ hoàn tất kỹ thuật để đóng gói / lưu kho.</span>
+                                <strong class="d-block small text-dark" id="titleStep4">4. Lưu Kho & Chờ bàn giao</strong>
+                                <span class="text-muted small d-block" id="timeStorage">Thiết bị đã được đóng gói chờ bàn giao.</span>
 
                                 <button id="btnStorageImages" class="btn btn-sm btn-outline-warning text-dark mt-2" style="display: none;"></button>
                                 <div id="storageImagesGallery" class="mt-2" style="display: none;"></div>
@@ -652,14 +652,22 @@
             document.getElementById('resultContainer').style.display = 'none';
             document.getElementById('multiResultContainer').style.display = 'block';
         }
+        function maskPhoneTrailing(phone, hideCount = 5) {
+            if (!phone) return '—';
+            const digits = String(phone).replace(/\D/g, '');
+            if (digits.length < 7) return String(phone).trim();
 
+            // Giới hạn ẩn từ 4 đến 6 số đuôi, luôn giữ lại ít nhất 4 số đầu nhận diện
+            const maskLen = Math.min(Math.max(hideCount, 4), 6, digits.length - 4);
+            return digits.slice(0, digits.length - maskLen) + '*'.repeat(maskLen);
+        }
         function displayTicketDetail(item) {
             document.getElementById('multiResultContainer').style.display = 'none';
             document.getElementById('notFoundContainer').style.display = 'none';
 
             document.getElementById('resCode').innerText = item.code || '—';
             document.getElementById('resCustomer').innerText = item.customer_name || 'Khách lẻ';
-            document.getElementById('resPhone').innerText = item.phone || '—';
+            document.getElementById('resPhone').innerText = maskPhoneTrailing(item.phone, 5);
             document.getElementById('resCustomerReq').innerText = item.note || 'Chưa ghi nhận';
             document.getElementById('resNote').innerText = item.received_note || 'Bình thường / Không có phụ kiện kèm thêm';
 

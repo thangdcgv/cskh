@@ -144,10 +144,10 @@ def extract_identifier_code_or_phone(text: str) -> Tuple[Optional[str], Optional
     code_match = re.search(r'(?:NT|DT)-?\d{4}-\d{3,5}', text, re.IGNORECASE)
     code = code_match.group(0).upper() if code_match else None
 
-    phone_match = re.search(r'0[35789]\d{8,9}', text)
-    phone = phone_match.group(0) if phone_match else None
+    phone_match = PHONE_PATTERN.search(text)
+    phone = normalize_phone(phone_match.group(0)) if phone_match else None
 
-    return code, phone
+    return code, (phone or None)
 
 
 def validate_status(raw_status: str, status_map: dict, metatype: str = "", state: str = "") -> str:
@@ -276,9 +276,13 @@ def _build_base_cdn_url(fid: str) -> str:
 
 
 def _decode_base64_list(raw_val) -> list:
-    if not raw_val or str(raw_val).strip().lower() in ["no value", "none", ""]:
+    if not raw_val:
         return []
+    if isinstance(raw_val, list):
+        return raw_val
     raw_b64 = str(raw_val).strip()
+    if raw_b64.lower() in {"no value", "none", "null", ""}:
+        return []
     if raw_b64.startswith("["):
         parsed = json.loads(raw_b64)
         return parsed if isinstance(parsed, list) else [parsed]
@@ -316,9 +320,10 @@ def _classify_image_bucket(
     - Workflow Sửa chữa:
         + Field kho/hóa đơn/hàng đã soạn -> 'storage'
         + Field kỹ thuật/sửa chữa/kiểm tra -> 'repair'
-        + Giai đoạn 'received' (tạo mới) hoặc 'processing' khi chưa có ảnh tiếp nhận -> 'received'
+        + Field tiếp nhận/nhận máy/hiện trạng -> 'received'
+        + Giai đoạn 'received' (tạo mới / tiếp nhận) -> 'received'
         + Giai đoạn 'returned' + field giao nhận/bàn giao -> 'delivery'
-        + Còn lại -> 'repair'
+        + Các giai đoạn kiểm tra/sửa chữa ('processing', 'fixed', ...) -> 'repair'
     """
     fn = (field_name or "").lower()
     target_storage = str(workflow_settings.get("workflow_storage_id", "18720")).strip()
@@ -344,15 +349,24 @@ def _classify_image_bucket(
     if stage_status == "received":
         return "received"
 
-    if stage_status == "processing" and not has_existing_received:
-        return "received"
-
     if stage_status == "returned":
         if any(kw in fn for kw in _IMG_DELIVERY_KEYWORDS):
             return "delivery"
         return "repair"
 
     return "repair"
+
+
+def _parse_maybe_json_dict(val) -> Optional[dict]:
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str) and val.strip().startswith("{"):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
 
 
 def extract_all_base_images(
@@ -369,12 +383,15 @@ def extract_all_base_images(
     sources = []
     if isinstance(payload, dict):
         sources.append(("root", payload))
-    if isinstance(payload.get("custom_fields"), dict):
-        sources.append(("custom_fields", payload["custom_fields"]))
-    if isinstance(payload.get("job"), dict):
-        sources.append(("job", payload["job"]))
-        if isinstance(payload["job"].get("custom_fields"), dict):
-            sources.append(("job.custom_fields", payload["job"]["custom_fields"]))
+        cf_root = _parse_maybe_json_dict(payload.get("custom_fields"))
+        if cf_root:
+            sources.append(("custom_fields", cf_root))
+        job_dict = _parse_maybe_json_dict(payload.get("job"))
+        if job_dict:
+            sources.append(("job", job_dict))
+            cf_job = _parse_maybe_json_dict(job_dict.get("custom_fields"))
+            if cf_job:
+                sources.append(("job.custom_fields", cf_job))
 
     by_field: Dict[str, List[str]] = {}
     img_groups: Dict[str, List[str]] = {
@@ -402,29 +419,38 @@ def extract_all_base_images(
             fids_raw = src.get(f"{field_clean}-fids")
             if fids_raw:
                 try:
-                    for fid in _decode_base64_list(fids_raw):
-                        fid_str = str(fid).strip()
-                        if not fid_str:
-                            continue
+                    fids_list = _decode_base64_list(fids_raw)
+                except Exception as e:
+                    logger.error(f"❌ Lỗi parse danh sách -fids tại trường {field_clean} ({src_name}): {e}")
+                    fids_list = []
+
+                for fid in fids_list:
+                    fid_str = str(fid).strip()
+                    if not fid_str or fid_str.lower() in {"no value", "none", "null"}:
+                        continue
+                    try:
                         url = (
                             fid_str
                             if fid_str.startswith(("http://", "https://"))
                             else _build_base_cdn_url(fid_str)
                         )
                         field_urls.append(url)
-                except Exception as e:
-                    logger.error(f"❌ Lỗi giải mã -fids tại trường {field_clean} ({src_name}): {e}")
+                    except Exception as e:
+                        logger.error(f"❌ Lỗi dựng CDN URL từ fid '{fid_str}' tại {field_clean}: {e}")
 
             if not field_urls:
                 links_raw = src.get(f"{field_clean}-direct_links")
                 if links_raw:
                     try:
-                        for link in _decode_base64_list(links_raw):
-                            link_str = str(link).strip()
-                            if link_str.startswith(("http://", "https://")):
-                                field_urls.append(link_str)
+                        links_list = _decode_base64_list(links_raw)
                     except Exception as e:
-                        logger.error(f"❌ Lỗi giải mã -direct_links tại trường {field_clean} ({src_name}): {e}")
+                        logger.error(f"❌ Lỗi parse danh sách -direct_links tại {field_clean} ({src_name}): {e}")
+                        links_list = []
+
+                    for link in links_list:
+                        link_str = str(link).strip()
+                        if link_str.startswith(("http://", "https://")):
+                            field_urls.append(link_str)
 
             if field_urls:
                 by_field[field_clean] = list(dict.fromkeys(by_field.get(field_clean, []) + field_urls))

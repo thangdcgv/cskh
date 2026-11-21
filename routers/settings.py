@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from database import supabase
 from routers.auth import get_current_user
+from routers.permissions import can_access
 
 router = APIRouter(prefix="/api/settings", tags=["Settings"])
 
@@ -17,6 +18,8 @@ ALLOWED_TERM_TYPES = {"VALID", "INVALID", "NOTE"}
 DEFAULT_SYSTEM_KEYS = [
     # --- System & Base Sync Tokens ---
     {"key": "base_repair_token", "value": "", "description": "API Key / Token cho ứng dụng Sửa chữa (Repair)"},
+    {"key": "base_storage_token", "value": "", "description": "API Key / Token cho ứng dụng Lưu kho (Storage)"},
+    {"key": "base_delivery_token", "value": "", "description": "API Key / Token cho ứng dụng Giao nhận (Delivery)"},
     {"key": "base_warranty_token", "value": "", "description": "API Key / Token cho ứng dụng Bảo hành (Warranty)"},
     {"key": "base_recept_token", "value": "", "description": "API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)"},
     {"key": "base_table_token", "value": "", "description": "API Key / Token cho Base Table"},
@@ -25,7 +28,7 @@ DEFAULT_SYSTEM_KEYS = [
     {"key": "workflow_delivery_id", "value": "20037", "description": "Workflow ID quy trình Giao nhận trên Base"},
     {"key": "base_shared_secret", "value": "", "description": "Secret Token xác thực Webhook từ Base gửi về"},
     {"key": "cache_ttl_seconds", "value": "60", "description": "Thời gian lưu Cache RAM cấu hình (giây)"},
-    
+
     # --- Thông tin Doanh nghiệp & Trang bảo hành công khai ---
     {"key": "company_name", "value": "CÔNG TY TNHH MÁY IN ĐẠI THÀNH", "description": "Tên công ty hiển thị footer/header"},
     {"key": "company_address", "value": "29/31 Nguyễn Văn Khối, P. Thông Tây Hội, TP.HCM", "description": "Địa chỉ trụ sở công ty"},
@@ -105,19 +108,21 @@ class WarrantyTermItem(BaseModel):
 
 
 # =========================================================
-# PHÂN QUYỀN & HELPER
+# PHÂN QUYỀN & HELPER (100% THEO CENTER HUB PERMISSIONS)
 # =========================================================
-async def require_admin(current_user: dict = Depends(get_current_user)):
-    """Yêu cầu quyền Admin / Super Admin / System Admin đối với các thao tác quản trị."""
-    role = (current_user.get("role") or "").strip().lower().replace("_", " ")
-    allowed_roles = {"admin", "super admin", "system admin", "systemadmin"}
-
-    if role not in allowed_roles:
+async def require_settings_permission(current_user: dict = Depends(get_current_user)):
+    """Kiểm tra quyền truy cập trang & thao tác cấu hình qua ma trận Center Hub."""
+    allowed = await asyncio.to_thread(can_access, "settings", current_user)
+    if not allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Bạn không có quyền thực hiện thao tác quản trị này."
+            detail="Bạn không có quyền thực hiện thao tác cấu hình theo phân quyền hệ thống."
         )
     return current_user
+
+
+# Giữ alias để tương thích nếu có router khác import require_admin
+require_admin = require_settings_permission
 
 
 def utc_now_iso() -> str:
@@ -125,8 +130,10 @@ def utc_now_iso() -> str:
 
 
 def mask_secret(val: str) -> str:
-    """Che giấu chuỗi Token/Secret nếu không phải Admin xem trực tiếp"""
-    if not val or len(val) < 8:
+    """Che giấu chuỗi Token/Secret khi trả qua endpoint chung."""
+    if not val:
+        return ""
+    if len(val) < 8:
         return "********"
     return f"{val[:3]}***{val[-4:]}"
 
@@ -178,7 +185,6 @@ async def get_system_configs(_: dict = Depends(get_current_user)):
         for item in (res.data or []):
             k = item["key"]
             v = item["value"]
-            # Che giấu Token nhạy cảm
             if any(secret_kw in k.lower() for secret_kw in ["token", "secret", "password"]):
                 configs[k] = mask_secret(v)
             else:
@@ -192,10 +198,10 @@ async def get_system_configs(_: dict = Depends(get_current_user)):
 
 
 @router.get("/config/detail")
-async def get_system_configs_detail(current_user: dict = Depends(require_admin)):
+async def get_system_configs_detail(current_user: dict = Depends(require_settings_permission)):
     """
     Lấy danh sách chi tiết các cấu hình (Bao gồm giá trị gốc, description, updated_at).
-    Dùng riêng cho Admin UI để hiển thị và chỉnh sửa Form.
+    Dùng cho Settings UI để hiển thị và chỉnh sửa Form.
     """
     try:
         res = await asyncio.to_thread(
@@ -210,7 +216,7 @@ async def get_system_configs_detail(current_user: dict = Depends(require_admin))
 
 
 @router.post("/config/init-defaults")
-async def initialize_default_settings(current_user: dict = Depends(require_admin)):
+async def initialize_default_settings(current_user: dict = Depends(require_settings_permission)):
     """
     Khởi tạo mẫu các Key cấu hình mặc định (Tokens, Workflow IDs, Thông tin Công ty...)
     Nếu Key đã tồn tại thì giữ nguyên giá trị cũ.
@@ -219,13 +225,11 @@ async def initialize_default_settings(current_user: dict = Depends(require_admin
         user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
         now = utc_now_iso()
 
-        # 1. Kiểm tra các key đã có trong DB
         existing_res = await asyncio.to_thread(
             lambda: supabase.table("system_settings").select("key").execute()
         )
         existing_keys = {item["key"] for item in (existing_res.data or [])}
 
-        # 2. Lọc danh sách key chưa tạo
         records_to_insert = []
         for default_item in DEFAULT_SYSTEM_KEYS:
             if default_item["key"] not in existing_keys:
@@ -257,7 +261,7 @@ async def initialize_default_settings(current_user: dict = Depends(require_admin
 @router.post("/config")
 async def update_single_system_config(
     setting: SystemSettingItem,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Thêm mới hoặc cập nhật 1 khóa cấu hình đơn lẻ (Upsert)"""
     try:
@@ -297,9 +301,9 @@ async def update_single_system_config(
 @router.put("/config/bulk")
 async def update_bulk_system_configs(
     payload: SystemSettingBulkUpdate,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
-    """Cập nhật hàng loạt nhiều khóa cấu hình cùng lúc (Dùng khi submit Admin Settings Form)"""
+    """Cập nhật hàng loạt nhiều khóa cấu hình cùng lúc (Dùng khi submit Settings Form)"""
     try:
         user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
         now = utc_now_iso()
@@ -337,7 +341,7 @@ async def update_bulk_system_configs(
 @router.delete("/config/{key}")
 async def delete_system_config(
     key: str,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Xóa 1 khóa cấu hình khỏi hệ thống"""
     try:
@@ -387,7 +391,7 @@ async def get_status_mappings(_: dict = Depends(get_current_user)):
 @router.post("/status-mappings")
 async def save_status_mapping(
     mapping: StatusMappingCreate,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Thêm mới hoặc cập nhật 1 ánh xạ trạng thái theo base_stage (Upsert)"""
     try:
@@ -426,9 +430,9 @@ async def save_status_mapping(
 @router.put("/status-mappings/bulk")
 async def save_bulk_status_mappings(
     payload: StatusMappingBulkUpdate,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
-    """Cập nhật hàng loạt nhiều ánh xạ trạng thái cùng lúc cho Admin UI"""
+    """Cập nhật hàng loạt nhiều ánh xạ trạng thái cùng lúc"""
     try:
         user_id = str(current_user.get("id") or current_user.get("auth_id") or "")
         now = utc_now_iso()
@@ -464,7 +468,7 @@ async def save_bulk_status_mappings(
 @router.delete("/status-mappings/{id}")
 async def delete_status_mapping(
     id: int,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Xóa 1 ánh xạ trạng thái theo ID"""
     try:
@@ -519,7 +523,7 @@ async def get_warranty_terms():
 
 
 @router.get("/warranty-terms/admin")
-async def get_warranty_terms_admin(current_user: dict = Depends(require_admin)):
+async def get_warranty_terms_admin(current_user: dict = Depends(require_settings_permission)):
     """Lấy toàn bộ danh sách điều khoản bảo hành bao gồm cả bị ẩn (Admin UI)"""
     try:
         res = await asyncio.to_thread(
@@ -540,7 +544,7 @@ async def get_warranty_terms_admin(current_user: dict = Depends(require_admin)):
 @router.post("/warranty-terms")
 async def save_warranty_term(
     term: WarrantyTermItem,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Thêm mới hoặc cập nhật 1 điều khoản bảo hành (VALID, INVALID, NOTE)"""
     try:
@@ -571,7 +575,7 @@ async def save_warranty_term(
 @router.delete("/warranty-terms/{term_id}")
 async def delete_warranty_term(
     term_id: str,
-    current_user: dict = Depends(require_admin)
+    current_user: dict = Depends(require_settings_permission)
 ):
     """Xóa 1 điều khoản bảo hành theo UUID"""
     try:

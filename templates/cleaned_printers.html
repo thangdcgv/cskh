@@ -70,7 +70,7 @@
                 </select>
             </div>
 
-            <!-- Lọc Phòng ban (Mặc định theo phòng ban user đăng nhập) -->
+            <!-- Lọc Phòng ban (Tự động lọc với GN / KTDM, hiển thị tất cả với phòng ban khác) -->
             <div class="lg:col-span-2">
                 <select id="filterDepartment" onchange="onDepartmentFilterChange()" 
                         class="w-full h-10 px-3 bg-slate-950 border border-slate-800 rounded-xl focus:border-cyan-500 text-xs text-slate-200 outline-none cursor-pointer">
@@ -88,7 +88,7 @@
 
             <!-- Nút Làm mới -->
             <div class="lg:col-span-1 flex justify-end">
-                <button type="button" onclick="resetFilters()" class="h-10 w-full bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition border border-slate-700 flex items-center justify-center gap-1 cursor-pointer" title="Hiển thị toàn bộ kho">
+                <button type="button" onclick="resetFilters()" class="h-10 w-full bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs transition border border-slate-700 flex items-center justify-center gap-1 cursor-pointer" title="Đặt lại bộ lọc mặc định">
                     <i class="fa-solid fa-rotate-left"></i> Làm mới
                 </button>
             </div>
@@ -241,6 +241,7 @@
         </div>
     </div>
 </div>
+
 <!-- MODAL XÁC NHẬN LẤY MÁY ĐI LẮP -->
 <div id="takeModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl relative">
@@ -308,9 +309,31 @@
 
 {% block scripts %}
 <script>
-const CURRENT_USER_NAME = "{{ (current_user.ho_ten or current_user.name or current_user.username or '') | string | trim }}";
-const CURRENT_USER_DEPT = "{{ (current_user.department or '') | string | trim | upper }}";
+const CURRENT_USER_NAME = "{{ ((current_user.get('ho_ten') or current_user.get('name') or current_user.get('username') or '') if current_user else '') | trim }}";
+const CURRENT_USER_ROLE = "{{ ((current_user.get('role') or '') if current_user else '') | trim | lower | replace('_', ' ') }}";
+const RAW_USER_DEPT = "{{ ((current_user.get('department') or '') if current_user else '') | trim | upper }}";
+const CURRENT_USER_IDENTIFIERS = [
+    "{{ ((current_user.get('ho_ten') or '') if current_user else '') | trim | lower }}",
+    "{{ ((current_user.get('name') or '') if current_user else '') | trim | lower }}",
+    "{{ ((current_user.get('username') or '') if current_user else '') | trim | lower }}",
+    "{{ ((current_user.get('email') or '') if current_user else '') | trim | lower }}"
+].filter(Boolean);
+
 const API_BASE = '/api/v1/cleaned-printers';
+
+// Chỉ tự động lọc phòng ban đối với Giao nhận (GN) và Kỹ thuật dọn máy (KTDM).
+// Các phòng ban khác (KD, KTSC, ADMIN, ALL...) mặc định hiển thị toàn bộ.
+const AUTO_FILTER_DEPTS = new Set(['GN', 'KTDM']);
+
+function normalizeDeptCode(rawDept) {
+    const d = (rawDept || '').trim().toUpperCase();
+    if (['GN', 'GIAO NHẬN', 'GIAO NHAN', 'PHÒNG GIAO NHẬN', 'PHONG GIAO NHAN'].includes(d)) return 'GN';
+    if (['KTDM', 'KỸ THUẬT DỌN MÁY', 'KY THUAT DON MAY', 'DỌN MÁY', 'DON MAY'].includes(d)) return 'KTDM';
+    return d;
+}
+
+const USER_DEPT_CODE = normalizeDeptCode(RAW_USER_DEPT);
+const DEFAULT_DEPT_FILTER = AUTO_FILTER_DEPTS.has(USER_DEPT_CODE) ? USER_DEPT_CODE : '';
 
 let rawPrinters = [];
 let cachedPrinters = [];
@@ -331,10 +354,28 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 
+function canModifyPrinter(item) {
+    if (!item) return false;
+    if (['super admin', 'system admin'].includes(CURRENT_USER_ROLE)) return true;
+
+    const creator = (item.created_by || '').trim().toLowerCase();
+    if (creator && CURRENT_USER_IDENTIFIERS.includes(creator)) return true;
+
+    const itemDept = normalizeDeptCode(item.department || 'KTSC');
+    if (USER_DEPT_CODE && USER_DEPT_CODE !== 'ALL' && USER_DEPT_CODE === itemDept) {
+        return true;
+    }
+    return false;
+}
+
 async function fetchCleanedPrinters() {
-    const search = document.getElementById('searchInput').value.trim();
-    const status = document.getElementById('filterStatus').value;
-    const classification = document.getElementById('filterClassification').value;
+    const searchEl = document.getElementById('searchInput');
+    const statusEl = document.getElementById('filterStatus');
+    const classEl = document.getElementById('filterClassification');
+
+    const search = searchEl ? searchEl.value.trim() : '';
+    const status = statusEl ? statusEl.value : '';
+    const classification = classEl ? classEl.value : '';
 
     const params = new URLSearchParams();
     if (search) params.append('search', search);
@@ -343,45 +384,63 @@ async function fetchCleanedPrinters() {
 
     try {
         const res = await fetch(`${API_BASE}?${params.toString()}`);
+        if (res.status === 401) {
+            window.location.href = '/login';
+            return;
+        }
+        if (res.status === 403) {
+            const tbody = document.getElementById('printerTbody');
+            if (tbody) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="6" class="py-8 text-center text-rose-400">
+                            ⛔ Bạn không có quyền xem dữ liệu kho máy dọn!
+                        </td>
+                    </tr>`;
+            }
+            return;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
+
         rawPrinters = await res.json();
         populateDepartmentAndKtvFilters(rawPrinters);
         applyClientFilters();
     } catch (err) {
         console.error('Lỗi nạp danh sách máy dọn:', err);
-        document.getElementById('printerTbody').innerHTML = `
-            <tr>
-                <td colspan="6" class="py-8 text-center text-rose-400">
-                    ❌ Lỗi tải dữ liệu từ máy chủ. Vui lòng thử lại!
-                </td>
-            </tr>`;
+        const tbody = document.getElementById('printerTbody');
+        if (tbody) {
+            tbody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="py-8 text-center text-rose-400">
+                        ❌ Lỗi tải dữ liệu từ máy chủ. Vui lòng thử lại!
+                    </td>
+                </tr>`;
+        }
     }
 }
 
-// Khởi tạo dropdown Phòng ban (mặc định chọn phòng ban user đăng nhập) & KTV tùy chọn
+// Khởi tạo dropdown Phòng ban:
+// - GN / KTDM: tự động chọn phòng ban của họ
+// - Phòng ban khác: mặc định "-- Tất cả phòng ban --" (xem toàn bộ)
 function populateDepartmentAndKtvFilters(items) {
     const deptSelect = document.getElementById('filterDepartment');
     if (!deptSelect) return;
 
-    const deptSet = new Set();
+    const deptSet = new Set(['GN', 'KTDM']);
     items.forEach(i => {
-        const dept = (i.department || 'KTSC').trim().toUpperCase();
+        const dept = normalizeDeptCode(i.department || 'KTSC');
         if (dept) deptSet.add(dept);
     });
 
-    // Luôn đảm bảo phòng ban của user đăng nhập có mặt trong danh sách chọn
-    if (CURRENT_USER_DEPT && CURRENT_USER_DEPT !== 'ALL') {
-        deptSet.add(CURRENT_USER_DEPT);
+    if (DEFAULT_DEPT_FILTER) {
+        deptSet.add(DEFAULT_DEPT_FILTER);
     }
 
     const sortedDepts = Array.from(deptSet).sort((a, b) => a.localeCompare(b, 'vi'));
 
     let selectedDept = deptSelect.value;
     if (!isDeptFilterInitialized) {
-        if (CURRENT_USER_DEPT && CURRENT_USER_DEPT !== 'ALL') {
-            selectedDept = CURRENT_USER_DEPT;
-        }
+        selectedDept = DEFAULT_DEPT_FILTER;
         isDeptFilterInitialized = true;
     }
 
@@ -391,7 +450,7 @@ function populateDepartmentAndKtvFilters(items) {
     updateKtvOptionsByDepartment(items, selectedDept);
 }
 
-// Cập nhật danh sách KTV tương ứng với Phòng ban đang chọn (mặc định để trống = tất cả KTV)
+// Cập nhật danh sách KTV tương ứng với Phòng ban đang chọn
 function updateKtvOptionsByDepartment(items, selectedDept) {
     const ktvSelect = document.getElementById('filterCreatedBy');
     if (!ktvSelect) return;
@@ -400,7 +459,7 @@ function updateKtvOptionsByDepartment(items, selectedDept) {
     const ktvSet = new Set();
 
     items.forEach(i => {
-        const itemDept = (i.department || 'KTSC').trim().toUpperCase();
+        const itemDept = normalizeDeptCode(i.department || 'KTSC');
         if (!selectedDept || itemDept === selectedDept) {
             if (i.created_by && i.created_by.trim()) {
                 ktvSet.add(i.created_by.trim());
@@ -422,11 +481,13 @@ function onDepartmentFilterChange() {
 }
 
 function applyClientFilters() {
-    const selectedDept = document.getElementById('filterDepartment').value;
-    const selectedKtv = document.getElementById('filterCreatedBy').value;
+    const deptSelect = document.getElementById('filterDepartment');
+    const ktvSelect = document.getElementById('filterCreatedBy');
+    const selectedDept = deptSelect ? deptSelect.value : DEFAULT_DEPT_FILTER;
+    const selectedKtv = ktvSelect ? ktvSelect.value : '';
 
     cachedPrinters = rawPrinters.filter(p => {
-        const itemDept = (p.department || 'KTSC').trim().toUpperCase();
+        const itemDept = normalizeDeptCode(p.department || 'KTSC');
         const itemKtv = (p.created_by || '').trim().toLowerCase();
 
         const matchDept = !selectedDept || itemDept === selectedDept;
@@ -447,6 +508,8 @@ function applyClientFilters() {
 
 function renderPrinterTable(items) {
     const tbody = document.getElementById('printerTbody');
+    if (!tbody) return;
+
     if (!items.length) {
         tbody.innerHTML = `
             <tr>
@@ -478,14 +541,14 @@ function renderPrinterTable(items) {
             const isWarn = item.status === 'Hoàn trả';
             const bgClass = isWarn ? 'bg-amber-950/40 border-amber-800/40 text-amber-300' : 'bg-slate-800/60 border-slate-700/60 text-slate-300';
             const iconClass = isWarn ? 'fa-triangle-exclamation text-amber-400' : 'fa-note-sticky text-cyan-400';
-            
+
             noteHtml = `<div class="mt-1 text-[11px] ${bgClass} border px-2 py-0.5 rounded flex items-center gap-1 max-w-xs truncate" title="${item.ghi_chu}">
                 <i class="fa-solid ${iconClass} text-[10px] shrink-0"></i> <span class="truncate">${item.ghi_chu}</span>
             </div>`;
         }
 
-        let classBadge = `<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[11px]">${item.classification}</span>`;
-        const itemDept = (item.department || 'KTSC').trim().toUpperCase();
+        const classBadge = `<span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 text-[11px]">${item.classification}</span>`;
+        const itemDept = normalizeDeptCode(item.department || 'KTSC');
         const deptBadge = `<span class="px-1.5 py-0.5 rounded bg-cyan-950/80 text-cyan-400 border border-cyan-800/50 text-[9px] font-bold">${itemDept}</span>`;
 
         const formattedDate = new Date(item.created_at).toLocaleDateString('vi-VN', {
@@ -493,12 +556,22 @@ function renderPrinterTable(items) {
         });
 
         const quickActionButton = item.status === 'Sẵn có'
-            ? `<button onclick="openTakeModal(${item.id})" class="px-2 py-1 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white rounded border border-rose-500/30 text-[11px] font-medium transition cursor-pointer" title="Bấm để nhận 1 máy đi giao">
+            ? `<button onclick="openTakeModal(${item.id})" class="px-2 py-1 bg-rose-600/20 hover:bg-rose-600 text-rose-300 hover:text-white rounded border border-rose-500/30 text-[11px] font-medium transition cursor-pointer" title="Bấm để nhận máy đi giao">
                  <i class="fa-solid fa-hand-holding-hand me-1"></i> Lấy máy
                </button>`
-            : `<button onclick="openReturnModal(${item.id})" class="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded border border-emerald-500/30 text-[11px] font-medium transition cursor-pointer" title="Bấm để hoàn 1 máy lại kho">
+            : `<button onclick="openReturnModal(${item.id})" class="px-2 py-1 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white rounded border border-emerald-500/30 text-[11px] font-medium transition cursor-pointer" title="Bấm để hoàn máy lại kho">
                  <i class="fa-solid fa-rotate-left me-1"></i> Hoàn kho
                </button>`;
+
+        const canModify = canModifyPrinter(item);
+        const modifyButtons = canModify
+            ? `<button onclick="editPrinter(${item.id})" class="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-lg transition cursor-pointer" title="Sửa">
+                   <i class="fa-solid fa-pen-to-square"></i>
+               </button>
+               <button onclick="deletePrinter(${item.id})" class="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition cursor-pointer" title="Xóa">
+                   <i class="fa-solid fa-trash-can"></i>
+               </button>`
+            : '';
 
         return `
             <tr class="hover:bg-slate-800/40 transition">
@@ -519,12 +592,7 @@ function renderPrinterTable(items) {
                 <td class="py-3 px-4 text-center">
                     <div class="flex items-center justify-center gap-1.5">
                         ${quickActionButton}
-                        <button onclick="editPrinter(${item.id})" class="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-lg transition" title="Sửa">
-                            <i class="fa-solid fa-pen-to-square"></i>
-                        </button>
-                        <button onclick="deletePrinter(${item.id})" class="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition" title="Xóa">
-                            <i class="fa-solid fa-trash-can"></i>
-                        </button>
+                        ${modifyButtons}
                     </div>
                 </td>
             </tr>`;
@@ -550,7 +618,7 @@ function onFormModelSearchInput(input) {
     const panel = document.getElementById('formModelSuggestPanel');
     document.getElementById('formModelName').value = input.value;
 
-    const filtered = allPrinterModels.filter(m => 
+    const filtered = allPrinterModels.filter(m =>
         m.full_name.toLowerCase().includes(val) || (m.category && m.category.toLowerCase().includes(val))
     ).slice(0, 30);
 
@@ -749,7 +817,7 @@ async function handleFormSubmit(e) {
         alert('⚠️ Vui lòng gõ chọn hoặc nhập Model máy in!');
         return;
     }
-    
+
     const payload = {
         model_name: modelName,
         classification: document.getElementById('formClassification').value,
@@ -787,11 +855,20 @@ async function handleFormSubmit(e) {
 }
 
 async function deletePrinter(id) {
+    const item = rawPrinters.find(p => p.id === id);
+    if (item && !canModifyPrinter(item)) {
+        alert('⚠️ Bạn không có quyền xóa bản ghi này!');
+        return;
+    }
     if (!confirm('Bạn có chắc muốn xóa bản ghi máy dọn này khỏi kho?')) return;
     try {
         const res = await fetch(`${API_BASE}/${id}`, { method: 'DELETE' });
-        if (res.ok) fetchCleanedPrinters();
-        else alert('❌ Xóa thất bại');
+        if (res.ok) {
+            fetchCleanedPrinters();
+        } else {
+            const errData = await res.json().catch(() => ({}));
+            alert('❌ ' + (errData.detail || 'Xóa thất bại'));
+        }
     } catch (e) {
         alert('❌ Lỗi kết nối!');
     }
@@ -811,6 +888,10 @@ function openPrinterModal() {
 function editPrinter(id) {
     const item = rawPrinters.find(p => p.id === id);
     if (!item) return;
+    if (!canModifyPrinter(item)) {
+        alert('⚠️ Bạn không có quyền sửa bản ghi này!');
+        return;
+    }
 
     document.getElementById('editPrinterId').value = item.id;
     document.getElementById('formModelSearchInput').value = item.model_name;
@@ -832,8 +913,10 @@ function closePrinterModal() {
 function updateStatistics(items) {
     const avail = items.filter(i => i.status === 'Sẵn có').reduce((acc, curr) => acc + curr.quantity, 0);
     const sold = items.filter(i => i.status === 'Đã bán').reduce((acc, curr) => acc + curr.quantity, 0);
-    document.getElementById('countAvailable').innerText = avail;
-    document.getElementById('countSold').innerText = sold;
+    const availEl = document.getElementById('countAvailable');
+    const soldEl = document.getElementById('countSold');
+    if (availEl) availEl.innerText = avail;
+    if (soldEl) soldEl.innerText = sold;
 }
 
 function debounceFetch() {
@@ -845,7 +928,7 @@ function resetFilters() {
     document.getElementById('searchInput').value = '';
     document.getElementById('filterStatus').value = '';
     document.getElementById('filterClassification').value = '';
-    document.getElementById('filterDepartment').value = '';
+    document.getElementById('filterDepartment').value = DEFAULT_DEPT_FILTER;
     document.getElementById('filterCreatedBy').value = '';
     fetchCleanedPrinters();
 }

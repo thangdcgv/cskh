@@ -29,12 +29,17 @@
 {% block scripts %}
 {{ super() }}
 <script>
-  window.SUPABASE_URL = "{{ supabase_url or SUPABASE_URL or '' }}";
-  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key or SUPABASE_KEY or '' }}";
+  window.SUPABASE_URL = "{{ supabase_url | default('', true) }}";
+  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key | default('', true) }}";
   window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
+  window.CAN_DELETE_TICKET = "{{ 'true' if (user_perms and user_perms.get('can_delete')) else 'false' }}" === "true";
   window.CURRENT_USER = {
-    role: "{{ current_user.role or session.get('role', 'admin') }}",
-    username: "{{ current_user.username or session.get('username', '') }}"
+    id: "{{ current_user.get('id', '') if current_user else '' }}",
+    username: "{{ current_user.get('username', '') if current_user else '' }}",
+    ho_ten: "{{ current_user.get('ho_ten', '') if current_user else '' }}",
+    email: "{{ current_user.get('email', '') if current_user else '' }}",
+    role: "{{ current_user.get('role', '') if current_user else '' }}",
+    department: "{{ current_user.get('department', '') if current_user else '' }}"
   };
 </script>
 
@@ -96,7 +101,6 @@ const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
   const cleanCustomerName =
     removeAccents(record.customer_name || '').trim() || 'Khach le';
 
-  // Chọn ghi chú thực tế đầu tiên giữa received_note và note, bỏ qua các chuỗi mặc định
   const recNote = removeAccents(record.received_note || '').trim();
   const reqNote = removeAccents(record.note || '').trim();
   const validNote = !EMPTY_SMS_NOTES.has(recNote.toLowerCase())
@@ -137,7 +141,6 @@ function ReceptionApp() {
   const [activeWorkflow, setActiveWorkflow] = useState('repair');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // Lịch sử đã bấm gửi SMS (lưu localStorage để cảnh báo kể cả sau khi tải lại trang)
   const [sentSmsMap, setSentSmsMap] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('reception_sent_sms') || '{}');
@@ -158,12 +161,22 @@ function ReceptionApp() {
   const [deleteModalRecord, setDeleteModalRecord] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  const currentUser = window.CURRENT_USER || { role: 'admin', username: '' };
+  const currentUser = window.CURRENT_USER || { role: '', username: '' };
 
   const showToast = (message, type = 'success') => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast({ message, type });
     toastTimerRef.current = setTimeout(() => setToast(null), 5000);
+  };
+
+  // Kiểm tra quyền Sửa/Xóa đồng bộ 100% với can_modify_warranty_record (permissions.py)
+  const canDeleteTicket = Boolean(window.CAN_DELETE_TICKET);
+
+  const openDeleteModal = (record) => {
+    if (!canDeleteTicket) {
+      return showToast("⚠️ Bạn không có quyền xóa phiếu này!", "error");
+    }
+    setDeleteModalRecord(record);
   };
 
   useEffect(() => {
@@ -172,49 +185,35 @@ function ReceptionApp() {
         const res = await fetch('/api/settings/config');
         if (res.ok) {
           const config = await res.json();
-          if (config && config.sms_hotline) setHotlinePhone(config.sms_hotline.trim());
-          if (config && config.tracking_domain) setTrackingDomain(config.tracking_domain.trim());
+          const hotline = config?.sms_hotline || config?.hotline_repair || config?.hotline_warranty || '';
+          if (hotline) setHotlinePhone(String(hotline).trim());
+          if (config?.tracking_domain) setTrackingDomain(String(config.tracking_domain).trim());
         }
       } catch (err) {}
     };
     fetchSettings();
   }, []);
 
-  // Gửi SMS có cảnh báo chống gửi trùng lặp
+  // Gửi SMS có xác nhận lần đầu & cảnh báo chống gửi trùng lặp
   const handleSmsClick = (record) => {
     if (!record || !record.phone) {
       return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
     }
-    if (!r?.phone) {
-    alert('Phiếu này chưa có số điện thoại khách hàng!');
-    return;
-  }
 
-    // Lấy mốc thời gian đã gửi (từ nút bấm truyền vào hoặc từ dữ liệu phiếu hiện tại)
-    const sentTime = existingSmsTime || r.sms_sent_at;
+    const key = String(record.id || record.code);
+    const previousSentAt = sentSmsMap[key] || record.sms_sent_at;
 
-    if (sentTime) {
-      // 1. GIỮ NGUYÊN: Bắt tin nhắn trùng nếu đã từng gửi
+    if (previousSentAt) {
       const confirmDuplicate = window.confirm(
-        `⚠️ Phiếu ${r.code} đã gửi SMS lúc ${sentTime}.\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
+        `⚠️ Phiếu [${record.code}] đã gửi SMS lúc ${previousSentAt}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
       );
       if (!confirmDuplicate) return;
     } else {
-      // 2. BỔ SUNG: Yêu cầu xác nhận khi nhấn gửi SMS lần đầu
       const confirmFirstSend = window.confirm(
-        `Xác nhận gửi tin nhắn SMS cho khách ${r.customer_name || ''} (${r.phone})?\n\n` +
+        `Xác nhận gửi tin nhắn SMS cho khách ${record.customer_name || ''} (${record.phone})?\n\n` +
         `Lưu ý: Chỉ nhấn "OK" nếu bạn thực sự thao tác gửi tin nhắn (hệ thống sẽ ghi nhận trạng thái Đã SMS).`
       );
       if (!confirmFirstSend) return;
-    }
-    const key = String(record.id || record.code);
-    const previousSentAt = sentSmsMap[key];
-
-    if (previousSentAt) {
-      const ok = window.confirm(
-        `⚠️ Phiếu [${record.code}] đã được nhấn gửi SMS trước đó lúc ${previousSentAt}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn cho khách không?`
-      );
-      if (!ok) return;
     }
 
     const timeLabel = new Date().toLocaleTimeString('vi-VN', {
@@ -234,41 +233,41 @@ function ReceptionApp() {
 
   // Copy link tra cứu hành trình đơn để nhân viên gửi khách qua Zalo/Messenger
   const handleShareTrackingLink = async (record) => {
-  const cleanCode = String(record?.code || '').trim();
-  const cleanPhone = String(record?.phone || '').replace(/[\s\-\.]/g, '');
-  const keyword = cleanCode || cleanPhone;
+    const cleanCode = String(record?.code || '').trim();
+    const cleanPhone = String(record?.phone || '').replace(/[\s\-\.]/g, '');
+    const keyword = cleanCode || cleanPhone;
 
-  if (!keyword) {
-    return showToast("⚠️ Không có mã phiếu hoặc SĐT để tạo link tra cứu!", "error");
-  }
-
-  const rawDomain = (trackingDomain || 'https://cskh-nu.vercel.app').trim();
-  const baseUrl = rawDomain.startsWith('http')
-    ? rawDomain.replace(/\/+$/, '')
-    : `https://${rawDomain.replace(/\/+$/, '')}`;
-  const shareUrl = `${baseUrl}/tracking/${encodeURIComponent(keyword)}`;
-
-  try {
-    if (navigator.clipboard && window.isSecureContext) {
-      await navigator.clipboard.writeText(shareUrl);
-    } else {
-      const tempInput = document.createElement('input');
-      tempInput.value = shareUrl;
-      document.body.appendChild(tempInput);
-      tempInput.select();
-      document.execCommand('copy');
-      document.body.removeChild(tempInput);
+    if (!keyword) {
+      return showToast("⚠️ Không có mã phiếu hoặc SĐT để tạo link tra cứu!", "error");
     }
 
-    setCopiedTicketId(record.id);
-    showToast(`📋 Đã copy link tra cứu phiếu [${cleanCode || keyword}]!`, 'success');
-    setTimeout(() => {
-      setCopiedTicketId((prev) => (prev === record.id ? null : prev));
-    }, 2000);
-  } catch {
-    window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
-  }
-};
+    const rawDomain = (trackingDomain || 'https://cskh-nu.vercel.app').trim();
+    const baseUrl = rawDomain.startsWith('http')
+      ? rawDomain.replace(/\/+$/, '')
+      : `https://${rawDomain.replace(/\/+$/, '')}`;
+    const shareUrl = `${baseUrl}/tracking/${encodeURIComponent(keyword)}`;
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(shareUrl);
+      } else {
+        const tempInput = document.createElement('input');
+        tempInput.value = shareUrl;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
+      }
+
+      setCopiedTicketId(record.id);
+      showToast(`📋 Đã copy link tra cứu phiếu [${cleanCode || keyword}]!`, 'success');
+      setTimeout(() => {
+        setCopiedTicketId((prev) => (prev === record.id ? null : prev));
+      }, 2000);
+    } catch {
+      window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
+    }
+  };
 
   const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
     const reqId = ++searchReqIdRef.current;
@@ -296,12 +295,10 @@ function ReceptionApp() {
     }
   }, [activeWorkflow]);
 
-  // Tải ngay khi đổi quy trình
   useEffect(() => {
     handleSearch(searchQuery, activeWorkflow);
   }, [activeWorkflow]);
 
-  // Debounce khi gõ ô tìm kiếm
   useEffect(() => {
     const timer = setTimeout(() => {
       handleSearch(searchQuery, activeWorkflow);
@@ -462,23 +459,13 @@ function ReceptionApp() {
     ];
   }, [records, activeWorkflow]);
 
-  const openDeleteModal = (record) => {
-    const isCreator = record.created_by && record.created_by === currentUser.username;
-    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
-
-    if (!isAdmin && !isCreator) {
-      return showToast("⚠️ Bạn không có quyền xóa phiếu này!", "error");
-    }
-    setDeleteModalRecord(record);
-  };
-
   const handleDeleteConfirm = async () => {
     if (!deleteModalRecord) return;
     setIsDeleting(true);
     try {
       const res = await fetch(`${API_BASE}/${deleteModalRecord.id}`, { method: 'DELETE' });
       await handleResponse(res);
-      showToast(`Đã hủy phiếu [${deleteModalRecord.code}]!`, 'success');
+      showToast(`Đã xóa vĩnh viễn phiếu [${deleteModalRecord.code}]!`, 'success');
       setDeleteModalRecord(null);
       handleSearch(searchQuery, activeWorkflow);
     } catch (err) {
@@ -674,11 +661,8 @@ function ReceptionApp() {
                     const isDelivery = process === 'delivery' || (deliveryStatus && !['delivered', 'failed'].includes(deliveryStatus));
                     const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
 
-                    const isCreator = r.created_by && r.created_by === currentUser.username;
-                    const isAdmin = ['admin', 'super admin', 'system admin'].includes((currentUser.role || '').toLowerCase());
-                    const canDelete = isAdmin || isCreator;
-
-                    const smsSentTime = sentSmsMap[String(r.id || r.code)];
+                    const canDelete = canDeleteTicket;
+                    const smsSentTime = sentSmsMap[String(r.id || r.code)] || r.sms_sent_at;
                     const isCopied = copiedTicketId === r.id;
 
                     return (
@@ -786,7 +770,7 @@ function ReceptionApp() {
                           </button>
 
                           <button
-                            onClick={() => handleSmsClick(r, smsSentTime)}
+                            onClick={() => handleSmsClick(r)}
                             className={`flex-[2] h-8 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
                               smsSentTime
                                 ? 'bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40'

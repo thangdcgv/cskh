@@ -1,8 +1,8 @@
 import asyncio
 import logging
-import unicodedata
 import re
 import time
+import unicodedata
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -12,9 +12,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, sta
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from database import supabase, supabase_admin
+from database import settings, supabase, supabase_admin
 from routers.auth import get_current_user, get_current_user_or_redirect
-from routers.permissions import can_access
+from routers.permissions import can_access, can_modify_warranty_record
 from templates_config import templates
 from websocket_manager import manager
 
@@ -112,7 +112,7 @@ def _get_sms_settings() -> dict:
     try:
         res = (
             supabase_admin.table("system_settings")
-            .select("key", "value")
+            .select("key, value")
             .in_("key", ["sms_hotline", "tracking_domain", "company_name"])
             .execute()
         )
@@ -165,6 +165,7 @@ def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[di
         "sms_link_ios": f"sms:{phone_clean}&body={encoded_text}",
     }
 
+
 async def get_next_code() -> tuple[str, int]:
     now_vn = datetime.now(VN_TZ)
     prefix = f"NT-{now_vn.strftime('%m%d')}-"
@@ -202,8 +203,9 @@ async def safe_broadcast(message: dict) -> None:
 
 # ==================== TRANG GIAO DIỆN ====================
 @router.get("/page", response_class=HTMLResponse)
-def reception_page(request: Request, user: dict = Depends(get_current_user_or_redirect)):
-    if not can_access("reception", user):
+async def reception_page(request: Request, user: dict = Depends(get_current_user_or_redirect)):
+    allowed = await asyncio.to_thread(can_access, "reception", user)
+    if not allowed:
         return HTMLResponse(
             "⛔ Bạn không có quyền truy cập trang Lễ tân tiếp nhận!",
             status_code=status.HTTP_403_FORBIDDEN,
@@ -211,7 +213,14 @@ def reception_page(request: Request, user: dict = Depends(get_current_user_or_re
     return templates.TemplateResponse(
         request=request,
         name="reception.html",
-        context={"request": request, "current_user": user},
+        context={
+            "current_user": user,
+            "session": request.session,
+            "supabase_url": getattr(settings, "SUPABASE_URL", ""),
+            "supabase_anon_key": getattr(
+                settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")
+            ),
+        },
     )
 
 
@@ -226,6 +235,12 @@ async def create_reception_record(
         raise HTTPException(status_code=400, detail="Số điện thoại không hợp lệ")
 
     now_utc = datetime.now(timezone.utc).isoformat()
+    creator_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
     record = None
     final_code = None
 
@@ -269,7 +284,8 @@ async def create_reception_record(
         raise HTTPException(status_code=500, detail="Không thể tạo mã phiếu, vui lòng thử lại")
 
     await safe_broadcast({"type": "reception_new", "record": record})
-    sms_info = generate_sms_info(phone_clean, data.customer_name, final_code, data.received_note, "receive")
+    sms_note = data.received_note or data.note
+    sms_info = generate_sms_info(phone_clean, data.customer_name, final_code, sms_note, "receive")
     return {"success": True, "message": "Đã tạo phiếu tiếp nhận!", "data": record, "sms_info": sms_info}
 
 
@@ -300,7 +316,7 @@ async def search_reception_records(
         if st == "received":
             db_query = db_query.eq("status", "received").eq("current_process", "repair")
         elif st in ("processing", "repairing"):
-            db_query = db_query.eq("status", "processing").eq("current_process", "repair")
+            db_query = db_query.in_("status", ["processing", "repairing"]).eq("current_process", "repair")
         elif st == "fixed":
             db_query = db_query.eq("status", "fixed").eq("current_process", "repair")
         elif st == "storage":
@@ -444,12 +460,18 @@ async def return_item_to_customer(
     record = existing.data[0]
     current_status = str(record.get("status") or "").lower()
     current_process = str(record.get("current_process") or "repair").lower()
+    storage_status = str(record.get("storage_status") or "").lower()
+    delivery_status = str(record.get("delivery_status") or "").lower()
 
+    if storage_status == "destroyed":
+        raise HTTPException(status_code=400, detail="Thiết bị đã được xác nhận tiêu hủy tại kho, không thể trả khách.")
+    if delivery_status == "failed":
+        raise HTTPException(status_code=400, detail="Đơn giao nhận đang ở trạng thái thất bại.")
     if current_process == "delivery":
         raise HTTPException(status_code=400, detail="Đơn đang thuộc Quy trình Giao nhận! Bàn giao do Shipper thực hiện.")
-    if current_process == "repair" and current_status == "processing":
+    if current_process == "repair" and current_status in {"processing", "repairing"}:
         raise HTTPException(status_code=400, detail="Thiết bị đang sửa chữa! Cần hoàn thành trước khi trả máy.")
-    if current_status == "returned":
+    if current_status == "returned" or storage_status == "dispatched":
         raise HTTPException(status_code=400, detail="Phiếu này đã được xác nhận trả trước đó.")
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -489,7 +511,7 @@ async def return_item_to_customer(
     return {"success": True, "message": "Đã ghi nhận trả máy!", "data": updated, "sms_info": sms_info}
 
 
-# ==================== 6. XÓA / HỦY PHIẾU (Soft Delete) ====================
+# ==================== 6. XÓA VĨNH VIỄN PHIẾU (Hard Delete) ====================
 @router.delete("/{ticket_id}")
 async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
     try:
@@ -497,30 +519,29 @@ async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_curre
     except ValueError:
         raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-    now_utc = datetime.now(timezone.utc).isoformat()
+    allowed = await asyncio.to_thread(can_access, "reception", user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền xóa phiếu theo phân quyền hệ thống.",
+        )
+
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table(TABLE)
-            .update({
-                "status": "cancelled",
-                "is_fixed": False,
-                "repair_result": "failed",
-                "failure_reason": "Đã xóa trực tiếp tại Lễ tân",
-                "updated_at": now_utc,
-            })
-            .eq("id", ticket_id)
-            .execute()
+            lambda: supabase.table(TABLE).delete().eq("id", ticket_id).execute()
         )
     except Exception as e:
         logger.error(f"Lỗi khi xóa phiếu: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Lỗi hệ thống khi xóa phiếu")
+
     if not res.data:
         raise HTTPException(status_code=404, detail="Không tìm thấy phiếu cần xóa")
 
     deleted_record = res.data[0]
     await safe_broadcast({"type": "reception_deleted", "record": deleted_record})
     return {
+        "success": True,
         "status": "success",
-        "message": f"Đã xóa thành công phiếu {deleted_record.get('code', ticket_id)}",
+        "message": f"Đã xóa vĩnh viễn phiếu {deleted_record.get('code', ticket_id)}",
         "data": deleted_record,
     }

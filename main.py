@@ -22,7 +22,6 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from database import settings, supabase
-# 🟢 1. TÍCH HỢP ROUTER & TEMPLATES_CONFIG DÙNG CHUNG
 from templates_config import templates
 from routers import (
     auth,
@@ -33,14 +32,13 @@ from routers import (
     tickets,
     webhook,
 )
-# Bổ sung import module phân quyền
+
 try:
     from routers import permissions as permissions_router
 except ImportError:
     permissions_router = None
 
 from routers.auth import (
-    SUPER_ADMIN_ROLES,
     AuthRequiredError,
     DatabaseConnectionError,
     extract_user_from_session,
@@ -67,8 +65,8 @@ SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("🚀 [SYSTEM] Hệ thống Quản lý Sửa chữa & Máy in - Đại Thành đang khởi động...")
-    
-    # 🟢 2. NẠP TRƯỚC MA TRẬN PHÂN QUYỀN VÀO RAM CACHE KHI VỪA KHỞI ĐỘNG SERVER
+
+    # Nạp trước ma trận phân quyền từ Center Hub vào RAM Cache
     try:
         await run_in_threadpool(lambda: load_permissions_cache(force=True))
         logger.info("✅ [SYSTEM] Đã khởi tạo bộ nhớ đệm RAM Phân quyền thành công.")
@@ -115,15 +113,17 @@ app.add_middleware(
 # === Mount Static Files ===
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+
 def mask_phone(phone: Optional[str], hide_count: int = 5) -> str:
     if not phone:
         return ""
     digits = "".join(ch for ch in str(phone) if ch.isdigit())
     if len(digits) < 7:
         return str(phone).strip()
-    # Luôn che từ 4 đến 6 số đuôi, giữ lại tối thiểu 4 số đầu
     mask_len = min(max(hide_count, 4), 6, len(digits) - 4)
     return digits[:-mask_len] + ("*" * mask_len)
+
+
 # =========================================================
 # API TRA CỨU CÔNG KHAI (PUBLIC TRACKING API)
 # =========================================================
@@ -134,7 +134,6 @@ async def public_search_ticket(keyword: str):
     if not safe_kw:
         raise HTTPException(status_code=400, detail="Vui lòng nhập từ khóa tra cứu")
 
-    # Chuẩn hóa SĐT (0986.195.215 / +84986195215 -> 0986195215) hoặc viết hoa mã phiếu
     digits = "".join(ch for ch in safe_kw if ch.isdigit())
     if digits.startswith("84") and len(digits) == 11:
         digits = "0" + digits[2:]
@@ -157,7 +156,6 @@ async def public_search_ticket(keyword: str):
         if not res.data:
             raise HTTPException(status_code=404, detail="Không tìm thấy thông tin phiếu phù hợp")
 
-        # Che 5 số đuôi SĐT trước khi trả JSON ra ngoài (đổi hide_count=4 hoặc 6 nếu muốn)
         for item in res.data:
             item["phone"] = mask_phone(item.get("phone"), hide_count=5)
 
@@ -179,7 +177,6 @@ app.include_router(settings_router.router)
 app.include_router(public_router)
 app.include_router(cleaned_printers.router)
 
-# 🟢 3. ĐĂNG KÝ ROUTER PHÂN QUYỀN TRANG (/admin/phan-quyen)
 if permissions_router and hasattr(permissions_router, "router"):
     app.include_router(permissions_router.router)
 
@@ -211,11 +208,22 @@ async def health_check():
 @app.get("/", response_class=HTMLResponse)
 async def home_dashboard(request: Request):
     user = extract_user_from_session(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    user_perms = {
+        "settings": can_access("settings", user),
+        "sync": can_access("sync", user),
+        "can_delete": can_access("reception", user),
+    }
+
     return templates.TemplateResponse(
         request=request,
         name="reception.html",
         context={
             "current_user": user,
+            "user_perms": user_perms,
+            "session": request.session,
             "supabase_url": getattr(settings, "SUPABASE_URL", ""),
             "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")),
         },
@@ -233,6 +241,7 @@ async def tracking_page(request: Request, keyword: Optional[str] = None):
         context={
             "current_request": request,
             "current_user": user,
+            "session": request.session,
             "keyword": keyword or "",
             "supabase_url": getattr(settings, "SUPABASE_URL", ""),
             "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")),
@@ -240,7 +249,7 @@ async def tracking_page(request: Request, keyword: Optional[str] = None):
     )
 
 
-# === Cài đặt Hệ thống (Chỉ dành cho Admin hoặc User được cấp quyền) ===
+# === Cài đặt Hệ thống (100% theo ma trận phân quyền Center Hub) ===
 @app.get("/settings", response_class=HTMLResponse)
 @app.get("/setting", response_class=HTMLResponse)
 async def settings_page(request: Request):
@@ -250,14 +259,10 @@ async def settings_page(request: Request):
         logger.warning("Truy cập /settings thất bại: Không tìm thấy Session người dùng")
         return RedirectResponse(url="/login?error=unauthorized", status_code=status.HTTP_303_SEE_OTHER)
 
-    role = str(user.get("role", "")).strip().lower().replace("_", " ")
-    admin_roles = {"admin", "super admin", "system admin", "systemadmin"}.union(SUPER_ADMIN_ROLES)
-
-    # 🟢 4. KIỂM TRA QUYỀN TRUY CẬP ĐỘNG KẾT HỢP VỚI VAI TRÒ MẶC ĐỊNH
-    has_permission = (role in admin_roles) or can_access("settings", user)
-
-    if not has_permission:
-        logger.warning(f"Người dùng {user.get('username')} (Role: {role}) không có quyền truy cập /settings")
+    if not can_access("settings", user):
+        logger.warning(
+            f"Người dùng {user.get('username')} (Role: {user.get('role')}) không có quyền truy cập /settings"
+        )
         return RedirectResponse(url="/?error=unauthorized", status_code=status.HTTP_303_SEE_OTHER)
 
     return templates.TemplateResponse(
@@ -265,7 +270,7 @@ async def settings_page(request: Request):
         name="settings.html",
         context={
             "current_user": user,
-            "user_role": role,
+            "session": request.session,
             "supabase_url": getattr(settings, "SUPABASE_URL", ""),
             "supabase_anon_key": getattr(settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")),
         },

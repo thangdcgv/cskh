@@ -9,7 +9,11 @@ from starlette.concurrency import run_in_threadpool
 
 from database import supabase_admin
 from routers.auth import get_current_user
-from routers.permissions import can_access, get_staff_department_map
+from routers.permissions import (
+    can_access,
+    can_modify_warranty_record,
+    get_staff_department_map,
+)
 from schemas import (
     CleanedPrinterCreate,
     CleanedPrinterMoveRequest,
@@ -28,7 +32,7 @@ router = APIRouter(
 
 
 # --------------------------------------------------------------------------
-# HELPERS
+# HELPERS & PHÂN QUYỀN CENTER HUB
 # --------------------------------------------------------------------------
 def sanitize_search_query(query_str: str) -> str:
     """Escapes SQL/PostgREST wildcard characters to prevent search exploitation."""
@@ -37,14 +41,34 @@ def sanitize_search_query(query_str: str) -> str:
     return re.sub(r"([\%\_\\])", r"\\\1", query_str.strip())
 
 
+def normalize_dept_code(raw_dept: Optional[str]) -> str:
+    """Chuẩn hóa mã phòng ban về dạng chuẩn (GN, KTDM, KTSC, KD...)."""
+    d = str(raw_dept or "").strip().upper()
+    if d in {"GN", "GIAO NHẬN", "GIAO NHAN", "PHÒNG GIAO NHẬN", "PHONG GIAO NHAN"}:
+        return "GN"
+    if d in {"KTDM", "KỸ THUẬT DỌN MÁY", "KY THUAT DON MAY", "DỌN MÁY", "DON MAY"}:
+        return "KTDM"
+    return d or "KTSC"
+
+
+async def require_cleaned_printers_access(
+    current_user: dict = Depends(get_current_user),
+) -> dict:
+    """Kiểm tra quyền truy cập phân hệ Kho Máy Dọn theo ma trận Center Hub."""
+    allowed = await run_in_threadpool(can_access, "cleaned_printers", current_user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền truy cập chức năng Quản lý kho máy dọn.",
+        )
+    return current_user
+
+
 def _format_printer_row(row: dict, staff_dept_map: dict) -> dict:
     """Chuẩn hóa dữ liệu trả về và tự động ánh xạ phòng ban của KTV."""
     creator = str(row.get("created_by") or "").strip()
-    dept = (
-        row.get("department")
-        or staff_dept_map.get(creator.lower())
-        or "KTSC"
-    ).strip().upper()
+    raw_dept = row.get("department") or staff_dept_map.get(creator.lower()) or "KTSC"
+    dept = normalize_dept_code(raw_dept)
 
     return {
         "id": row["id"],
@@ -59,6 +83,7 @@ def _format_printer_row(row: dict, staff_dept_map: dict) -> dict:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
 
 def _normalize_note(note: Optional[str]) -> Optional[str]:
     if not note:
@@ -96,16 +121,18 @@ def _find_matching_printer_row(
             return row
     return None
 
+
 # --------------------------------------------------------------------------
 # 0. GIAO DIỆN TEMPLATE HTML
 # --------------------------------------------------------------------------
 @router.get("/page", response_class=HTMLResponse)
 async def cleaned_printers_page(
     request: Request,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(get_current_user),
 ):
     """Render trang giao diện quản lý kho máy dọn (kiểm tra phân quyền động)."""
-    if not can_access("cleaned_printers", current_user):
+    allowed = await run_in_threadpool(can_access, "cleaned_printers", current_user)
+    if not allowed:
         return HTMLResponse(
             "⛔ Bạn không có quyền truy cập trang Quản lý kho máy dọn!",
             status_code=status.HTTP_403_FORBIDDEN,
@@ -129,7 +156,7 @@ async def get_cleaned_printers(
     status_filter: Optional[str] = Query(None, alias="status"),
     classification: Optional[str] = Query(None),
     search: Optional[str] = Query(None, description="Search by printer model"),
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     try:
         clean_search = sanitize_search_query(search) if search else None
@@ -161,7 +188,9 @@ async def get_cleaned_printers(
 # 2. GET PRINTER MODELS LIST (FOR DROPDOWN FROM list_printer TABLE)
 # --------------------------------------------------------------------------
 @router.get("/models", response_model=List[dict])
-async def get_printer_model_options(current_user: dict = Depends(get_current_user)):
+async def get_printer_model_options(
+    current_user: dict = Depends(require_cleaned_printers_access),
+):
     try:
         res = await run_in_threadpool(
             lambda: supabase_admin.table("list_printer")
@@ -194,7 +223,7 @@ async def get_printer_model_options(current_user: dict = Depends(get_current_use
 @router.get("/{printer_id}", response_model=CleanedPrinterResponse)
 async def get_cleaned_printer_by_id(
     printer_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     try:
         res = await run_in_threadpool(
@@ -229,7 +258,7 @@ async def get_cleaned_printer_by_id(
 @router.post("", response_model=CleanedPrinterResponse, status_code=status.HTTP_201_CREATED)
 async def create_cleaned_printer(
     payload: CleanedPrinterCreate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     username = current_user.get("ho_ten") or current_user.get("username") or "System"
     clean_model_name = payload.model_name.strip()
@@ -303,7 +332,7 @@ async def create_cleaned_printer(
 async def move_cleaned_printer_stock(
     printer_id: int,
     payload: CleanedPrinterMoveRequest,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     username = current_user.get("ho_ten") or current_user.get("username") or "System"
     move_qty = max(1, payload.quantity)
@@ -339,7 +368,6 @@ async def move_cleaned_printer_stock(
             else:
                 final_note = _normalize_note(src.get("ghi_chu"))
 
-            # Tìm bản ghi đích cùng loại (loại trừ chính dòng nguồn) để cộng dồn
             existing_target = _find_matching_printer_row(
                 model_name=src["model_name"],
                 classification=src["phan_loai"],
@@ -349,7 +377,6 @@ async def move_cleaned_printer_stock(
                 exclude_id=printer_id,
             )
 
-            # 1. Cộng dồn vào dòng đích hoặc tạo mới
             if existing_target:
                 target_res = (
                     supabase_admin.table("may_don_ton_kho")
@@ -362,7 +389,6 @@ async def move_cleaned_printer_stock(
                     .execute()
                 )
             elif move_qty == current_qty:
-                # Chuyển toàn bộ và chưa có dòng đích -> cập nhật trực tiếp dòng hiện tại
                 return (
                     supabase_admin.table("may_don_ton_kho")
                     .update({
@@ -389,7 +415,6 @@ async def move_cleaned_printer_stock(
                     .execute()
                 )
 
-            # 2. Trừ hoặc xóa dòng nguồn sau khi đã cộng dồn sang dòng đích
             if move_qty < current_qty:
                 supabase_admin.table("may_don_ton_kho").update({
                     "so_luong": current_qty - move_qty,
@@ -422,7 +447,7 @@ async def move_cleaned_printer_stock(
 async def update_cleaned_printer(
     printer_id: int,
     payload: CleanedPrinterUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     username = current_user.get("ho_ten") or current_user.get("username") or "System"
     fields_set = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
@@ -451,21 +476,38 @@ async def update_cleaned_printer(
             detail="Vui lòng cung cấp ít nhất một thông tin cần cập nhật!",
         )
 
-    update_data["updated_by"] = username
-    update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-
     try:
+        existing_res = await run_in_threadpool(
+            lambda: supabase_admin.table("may_don_ton_kho")
+            .select("*")
+            .eq("id", printer_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy máy dọn #{printer_id} để cập nhật!",
+            )
+
+        allowed_modify = await run_in_threadpool(
+            can_modify_warranty_record, current_user, existing_res.data[0]
+        )
+        if not allowed_modify:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn chỉ được sửa bản ghi của chính mình hoặc cùng phòng ban.",
+            )
+
+        update_data["updated_by"] = username
+        update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+
         res = await run_in_threadpool(
             lambda: supabase_admin.table("may_don_ton_kho")
             .update(update_data)
             .eq("id", printer_id)
             .execute()
         )
-        if not res.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Không tìm thấy máy dọn #{printer_id} để cập nhật!",
-            )
 
         staff_dept_map = await run_in_threadpool(get_staff_department_map)
         return _format_printer_row(res.data[0], staff_dept_map)
@@ -487,7 +529,7 @@ async def update_cleaned_printer(
 async def update_cleaned_printer_status(
     printer_id: int,
     payload: CleanedPrinterStatusUpdate,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     username = current_user.get("ho_ten") or current_user.get("username") or "System"
     fields_set = getattr(payload, "model_fields_set", getattr(payload, "__fields_set__", set()))
@@ -533,20 +575,37 @@ async def update_cleaned_printer_status(
 @router.delete("/{printer_id}", status_code=status.HTTP_200_OK)
 async def delete_cleaned_printer(
     printer_id: int,
-    current_user: dict = Depends(get_current_user)
+    current_user: dict = Depends(require_cleaned_printers_access),
 ):
     try:
-        res = await run_in_threadpool(
+        existing_res = await run_in_threadpool(
+            lambda: supabase_admin.table("may_don_ton_kho")
+            .select("*")
+            .eq("id", printer_id)
+            .limit(1)
+            .execute()
+        )
+        if not existing_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Không tìm thấy bản ghi #{printer_id} để xóa!",
+            )
+
+        allowed_modify = await run_in_threadpool(
+            can_modify_warranty_record, current_user, existing_res.data[0]
+        )
+        if not allowed_modify:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Bạn chỉ được xóa bản ghi của chính mình hoặc cùng phòng ban.",
+            )
+
+        await run_in_threadpool(
             lambda: supabase_admin.table("may_don_ton_kho")
             .delete()
             .eq("id", printer_id)
             .execute()
         )
-        if not res.data:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Không tìm thấy bản ghi #{printer_id} để xóa!",
-            )
 
         return {"success": True, "message": f"Đã xóa thành công bản ghi máy dọn #{printer_id}"}
     except HTTPException:

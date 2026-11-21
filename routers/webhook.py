@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
 from database import supabase
+from services.base_client import base_client
 from utils import (
     clean_base_content,
     extract_all_base_images,
@@ -41,9 +43,6 @@ RECONCILE_COOLDOWN = 120.0
 INVALID_BASE_VALUES = {"no value", "null", "none", "0", "false", ""}
 PLACEHOLDER_NOTES = {"chưa ghi chú", "chưa ghi nhận"}
 
-# =========================================================
-# Từ khóa quét custom field (input key mỗi workflow có thể khác nhau)
-# =========================================================
 _PHONE_KEYWORDS = ("dien_thoai", "dienthoai", "so_dien_thoai", "sodienthoai", "sdt", "so_dt", "phone", "mobile")
 _ADDR_KEYWORDS = ("dia_chi", "diachi", "address", "dia_chi_giao_hang", "diachinhanhang", "noigiao")
 _NOTE_KEYWORDS = ("ghi_chu", "ghichu", "note", "description", "mo_ta", "mota", "content", "noidung")
@@ -63,6 +62,25 @@ def _ensure_list(val) -> list:
     return val if isinstance(val, list) else []
 
 
+def _normalize_id_token(raw_id) -> List[str]:
+    """Chuẩn hóa ID từ Base (hỗ trợ '12345', '18190:12345', '12345,67890')."""
+    s = str(raw_id or "").strip()
+    if not s or s.lower() in {"0", "none", "null"}:
+        return []
+    out = []
+    for part in re.split(r"[,;\s]+", s):
+        p = part.strip()
+        if not p or p.lower() in {"0", "none", "null"}:
+            continue
+        if p not in out:
+            out.append(p)
+        if ":" in p:
+            tail = p.rsplit(":", 1)[-1].strip()
+            if tail and tail.isdigit() and tail not in out:
+                out.append(tail)
+    return out
+
+
 def _scan_custom_field(custom_fields: dict, keywords: tuple) -> Optional[str]:
     if not isinstance(custom_fields, dict):
         return None
@@ -77,19 +95,54 @@ def _scan_custom_field(custom_fields: dict, keywords: tuple) -> Optional[str]:
     return None
 
 
+def _extract_form_custom_fields(job_obj: dict) -> dict:
+    """Base API /job/get thường trả custom fields trong mảng 'form'."""
+    extracted = {}
+    if not isinstance(job_obj, dict):
+        return extracted
+    form_list = job_obj.get("form")
+    if isinstance(form_list, list):
+        for item in form_list:
+            if not isinstance(item, dict):
+                continue
+            k = str(item.get("id") or item.get("name") or item.get("code") or "").strip()
+            v = item.get("value")
+            if k and v is not None and not isinstance(v, (dict, list)):
+                extracted[k] = v
+    return extracted
+
+
 def collect_related_job_ids(payload: dict, job_id: str, job_data: Optional[dict] = None) -> list:
-    ids = []
+    ids: List[str] = []
     sources = [payload] + ([job_data] if isinstance(job_data, dict) else [])
 
     def add(v):
-        s = str(v or "").strip()
-        if s and s not in {"0", "none", "None", job_id} and s not in ids:
-            ids.append(s)
+        for token in _normalize_id_token(v):
+            if token != job_id and token not in ids:
+                ids.append(token)
+
+    direct_keys = (
+        "forwarded_from",
+        "forwarded_from_job_id",
+        "source_job_id",
+        "origin_job_id",
+        "parent_id",
+        "parent_job_id",
+        "prev_job_id",
+        "prev_id",
+        "root_id",
+        "original_job_id",
+        "from_job_id",
+        "source_id",
+        "origin_id",
+        "ref_id",
+        "link_id",
+    )
 
     for src in sources:
-        add(src.get("forwarded_from"))
-        add(src.get("source_job_id"))
-        add(src.get("parent_id"))
+        for dk in direct_keys:
+            add(src.get(dk))
+
         for key in ("gen_prev", "gen_list"):
             raw = src.get(key)
             if isinstance(raw, str):
@@ -108,7 +161,7 @@ def collect_related_job_ids(payload: dict, job_id: str, job_data: Optional[dict]
                 items = [raw]
             for g in items:
                 if isinstance(g, dict):
-                    add(g.get("id"))
+                    add(g.get("id") or g.get("job_id"))
                 elif isinstance(g, (str, int)):
                     add(g)
     return ids
@@ -183,6 +236,12 @@ async def get_system_settings() -> Dict[str, str]:
     if _settings_cache is not None and (now - _settings_updated) < ttl:
         return _settings_cache
 
+    merged = {
+        "workflow_repair_id": os.getenv("WORKFLOW_REPAIR_ID", "18190").strip(),
+        "workflow_storage_id": os.getenv("WORKFLOW_STORAGE_ID", "18720").strip(),
+        "workflow_delivery_id": os.getenv("WORKFLOW_DELIVERY_ID", "18249").strip(),
+    }
+
     try:
         res = await asyncio.to_thread(
             lambda: supabase.table("system_settings")
@@ -190,13 +249,18 @@ async def get_system_settings() -> Dict[str, str]:
             .execute()
         )
         if res.data:
-            _settings_cache = {str(item["key"]).strip(): str(item["value"]).strip() for item in res.data}
+            for item in res.data:
+                k = str(item.get("key") or "").strip()
+                v = str(item.get("value") or "").strip()
+                if k and v and v.lower() != "none":
+                    merged[k] = v
+            _settings_cache = merged
             _settings_updated = now
             return _settings_cache
     except Exception as e:
         logger.warning(f"Không thể tải system_settings từ DB: {e}")
 
-    return _settings_cache or {}
+    return _settings_cache or merged
 
 
 async def get_dynamic_status_map() -> dict:
@@ -247,19 +311,21 @@ async def find_existing_repair_ticket(
     candidate_job_ids: list,
     code: Optional[str],
     phone: Optional[str],
+    customer_name: Optional[str] = None,
     allow_phone_match: bool = False,
 ) -> Optional[dict]:
     """
     Tìm phiếu đã tồn tại trong CSDL theo thứ tự ưu tiên:
-    1. Danh sách Job ID (job hiện tại / job gốc trước khi forward / job nguồn).
+    1. Danh sách Job ID (job hiện tại / job gốc trước khi forward / gen_prev).
     2. Mã phiếu (parse từ tiêu đề/ghi chú hoặc custom field).
     3. SĐT (ưu tiên phiếu đang mở -> phiếu đã trả/hủy -> fallback LIKE 9 số cuối).
+    4. Tên khách hàng (chỉ áp dụng cho luồng forward khi không có SĐT/mã phiếu).
     """
-    clean_ids = [
-        str(jid).strip()
-        for jid in dict.fromkeys(candidate_job_ids)
-        if str(jid).strip().lower() not in ("", "none", "null")
-    ]
+    clean_ids: List[str] = []
+    for raw_jid in candidate_job_ids:
+        for token in _normalize_id_token(raw_jid):
+            if token not in clean_ids:
+                clean_ids.append(token)
 
     def _query() -> Optional[dict]:
         # 1. Khớp theo Job ID
@@ -272,19 +338,20 @@ async def find_existing_repair_ticket(
                 .execute()
             )
             if res.data:
+                logger.info(f"🔗 [MATCH-JOBID] Khớp phiếu {res.data[0].get('code')} qua job_id={jid}")
                 return res.data[0]
 
         # 2. Khớp qua Mã phiếu
         if code:
-            res_code = supabase.table("repairs").select("*").eq("code", code).limit(1).execute()
+            res_code = supabase.table("repairs").select("*").eq("code", code.upper()).limit(1).execute()
             if res_code.data:
+                logger.info(f"🔗 [MATCH-CODE] Khớp phiếu {res_code.data[0].get('code')}")
                 return res_code.data[0]
 
         # 3. Khớp theo SĐT (dành cho luồng forward hoặc workflow không rõ)
         if allow_phone_match and phone:
             phone_variants = _expand_phone_variants(phone)
             if phone_variants:
-                # 3a. Ưu tiên phiếu đang mở
                 res_active = (
                     supabase.table("repairs")
                     .select("*")
@@ -295,9 +362,9 @@ async def find_existing_repair_ticket(
                     .execute()
                 )
                 if res_active.data:
+                    logger.info(f"🔗 [MATCH-PHONE-ACTIVE] Khớp phiếu {res_active.data[0].get('code')}")
                     return res_active.data[0]
 
-                # 3b. Fallback: Tìm phiếu vừa hoàn thành/trả máy/hủy sửa để nối sang Lưu kho/Giao nhận
                 res_closed = (
                     supabase.table("repairs")
                     .select("*")
@@ -314,7 +381,6 @@ async def find_existing_repair_ticket(
                     )
                     return res_closed.data[0]
 
-                # 3c. Cuối cùng: LIKE 9 số cuối (chỉ quét phiếu đang mở để tránh nhầm lẫn)
                 digits = re.sub(r"\D", "", phone)
                 if len(digits) >= 9:
                     last9 = digits[-9:]
@@ -323,7 +389,6 @@ async def find_existing_repair_ticket(
                             supabase.table("repairs")
                             .select("*")
                             .like("phone", f"%{last9}%")
-                            .not_.in_("status", ["returned", "cancelled"])
                             .order("updated_at", desc=True)
                             .limit(1)
                             .execute()
@@ -336,6 +401,28 @@ async def find_existing_repair_ticket(
                             return res_like.data[0]
                     except Exception as e:
                         logger.warning(f"[MATCH-LIKE] Query thất bại: {e}")
+
+        # 4. Fallback cuối cho luồng forward: khớp theo Tên khách hàng khi đơn sửa chưa có SĐT
+        clean_cname = (customer_name or "").strip()
+        if allow_phone_match and clean_cname and clean_cname != "Khách lẻ" and len(clean_cname) >= 3:
+            try:
+                res_name = (
+                    supabase.table("repairs")
+                    .select("*")
+                    .ilike("customer_name", clean_cname)
+                    .is_("storage_job_id", "null")
+                    .order("updated_at", desc=True)
+                    .limit(1)
+                    .execute()
+                )
+                if res_name.data:
+                    logger.info(
+                        f"🔗 [MATCH-NAME] Khớp phiếu qua tên khách '{clean_cname}': "
+                        f"{res_name.data[0].get('code')}"
+                    )
+                    return res_name.data[0]
+            except Exception as e:
+                logger.warning(f"[MATCH-NAME] Query thất bại: {e}")
 
         return None
 
@@ -418,14 +505,25 @@ async def _process_storage_webhook(
     curr_p = str(existing_ticket.get("current_process") or "").lower()
     target_storage_process = "delivery" if curr_p == "delivery" else "storage"
 
+    # Bảo toàn dữ liệu sạch của phiếu gốc khi forward sang Kho
+    safe_customer = existing_ticket.get("customer_name")
+    if not safe_customer or safe_customer == "Khách lẻ":
+        safe_customer = final_customer_name
+
+    safe_phone = existing_ticket.get("phone") or final_phone
+    safe_address = existing_ticket.get("address") or final_address
+    safe_note = existing_ticket.get("note")
+    if not safe_note or str(safe_note).strip().lower() in PLACEHOLDER_NOTES:
+        safe_note = final_note
+
     update_payload = {
         "storage_job_id": job_id,
         "storage_status": storage_status,
         "current_process": target_storage_process,
-        "customer_name": final_customer_name,
-        "phone": final_phone,
-        "address": final_address,
-        "note": final_note,
+        "customer_name": safe_customer,
+        "phone": safe_phone,
+        "address": safe_address,
+        "note": safe_note,
         "updated_at": now_iso,
     }
 
@@ -447,7 +545,7 @@ async def _process_storage_webhook(
         lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
     )
     ticket_code = existing_ticket.get("code")
-    logger.info(f"📦 [LƯU KHO] Cập nhật phiếu {ticket_code} -> storage_status: {storage_status}")
+    logger.info(f"📦 [LƯU KHO] Cập nhật phiếu {ticket_code} (storage_job_id={job_id}) -> storage_status: {storage_status}")
     return ticket_code
 
 
@@ -482,15 +580,23 @@ async def _process_delivery_webhook(
         or custom_fields_data.get("chanh_xe")
         or custom_fields_data.get("dia_chi_giao_hang")
     )
-    delivery_address = raw_shipping_info or final_address
+    safe_customer = existing_ticket.get("customer_name")
+    if not safe_customer or safe_customer == "Khách lẻ":
+        safe_customer = final_customer_name
+
+    safe_phone = existing_ticket.get("phone") or final_phone
+    delivery_address = raw_shipping_info or existing_ticket.get("address") or final_address
+    safe_note = existing_ticket.get("note")
+    if not safe_note or str(safe_note).strip().lower() in PLACEHOLDER_NOTES:
+        safe_note = final_note
 
     update_payload = {
         "delivery_job_id": job_id,
         "current_process": "delivery",
-        "customer_name": final_customer_name,
-        "phone": final_phone,
+        "customer_name": safe_customer,
+        "phone": safe_phone,
         "address": delivery_address,
-        "note": final_note,
+        "note": safe_note,
         "updated_at": now_iso,
     }
 
@@ -540,7 +646,7 @@ async def _process_delivery_webhook(
         lambda: supabase.table("repairs").update(update_payload).eq("id", existing_ticket["id"]).execute()
     )
     ticket_code = existing_ticket.get("code")
-    logger.info(f"🚚 [GIAO NHẬN] Cập nhật phiếu {ticket_code} -> delivery_status: {delivery_status}")
+    logger.info(f"🚚 [GIAO NHẬN] Cập nhật phiếu {ticket_code} (delivery_job_id={job_id}) -> delivery_status: {delivery_status}")
     return ticket_code
 
 
@@ -726,6 +832,31 @@ async def _process_repair_webhook(
     return ticket_code
 
 
+def _extract_wf_id(payload: dict, job_data: dict, workflow_obj: dict, workflow_storage: str, workflow_delivery: str) -> str:
+    """Trích xuất workflow_id chuẩn xác, ưu tiên target workflow nếu là sự kiện forward."""
+    target_wf = str(
+        payload.get("target_container_id")
+        or payload.get("destination_workflow_id")
+        or payload.get("to_workflow_id")
+        or job_data.get("target_container_id")
+        or ""
+    ).strip()
+    if target_wf in {workflow_storage, workflow_delivery}:
+        return target_wf
+
+    raw_wf = (
+        payload.get("workflow_id")
+        or job_data.get("workflow_id")
+        or job_data.get("wf_id")
+        or (workflow_obj.get("id") if isinstance(workflow_obj, dict) else None)
+        or target_wf
+        or payload.get("container_id")
+        or payload.get("source_container_id")
+        or ""
+    )
+    return str(raw_wf).strip()
+
+
 # =========================================================
 # 3. ENDPOINT DUY NHẤT NHẬN WEBHOOK TỪ BASE.VN
 # =========================================================
@@ -733,9 +864,9 @@ async def _process_repair_webhook(
 async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
     try:
         settings = await get_system_settings()
-        workflow_repair = str(settings.get("workflow_repair_id") or settings.get("workflow_repair", "18190")).strip()
-        workflow_storage = str(settings.get("workflow_storage_id") or settings.get("workflow_storage", "18720")).strip()
-        workflow_delivery = str(settings.get("workflow_delivery_id") or settings.get("workflow_delivery", "18249")).strip()
+        workflow_repair = str(settings.get("workflow_repair_id") or settings.get("workflow_repair") or "18190").strip()
+        workflow_storage = str(settings.get("workflow_storage_id") or settings.get("workflow_storage") or "18720").strip()
+        workflow_delivery = str(settings.get("workflow_delivery_id") or settings.get("workflow_delivery") or "18249").strip()
         configured_secret = settings.get("base_shared_secret", "")
 
         # 1. Parse Request Body & chuẩn hóa key ngoặc vuông từ Base form-urlencoded
@@ -772,6 +903,35 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         if not job_id or job_id.lower() == "none":
             return {"status": "ignored", "message": "Thiếu job_id hợp lệ", "code": None}
 
+        workflow_obj = payload.get("workflow") or job_data.get("workflow") or {}
+        if isinstance(workflow_obj, str):
+            try:
+                workflow_obj = json.loads(workflow_obj)
+            except Exception:
+                workflow_obj = {}
+
+        workflow_id = _extract_wf_id(payload, job_data, workflow_obj, workflow_storage, workflow_delivery)
+
+        # Nếu là quy trình Kho/Giao nhận hoặc thiếu workflow_id: gọi thêm Base API /job/get để lấy full gen_prev + custom_fields
+        need_api_enrich = (
+            not workflow_id
+            or workflow_id in {workflow_storage, workflow_delivery}
+            or not (payload.get("gen_prev") or payload.get("parent_id") or job_data.get("gen_prev"))
+        )
+        if need_api_enrich and workflow_id != workflow_repair:
+            preferred = (
+                ["storage", "delivery", "repair"]
+                if workflow_id != workflow_delivery
+                else ["delivery", "storage", "repair"]
+            )
+            fetched_job = await base_client.fetch_job_detail(job_id, preferred_apps=preferred)
+            if isinstance(fetched_job, dict):
+                job_data = {**fetched_job, **job_data}
+                if not workflow_id:
+                    workflow_id = _extract_wf_id(payload, job_data, workflow_obj, workflow_storage, workflow_delivery)
+
+        original_workflow_id = workflow_id
+
         task_name = str(
             payload.get("task_name")
             or payload.get("name")
@@ -782,26 +942,6 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         ).strip()
 
         state = str(payload.get("state") or job_data.get("state") or "").strip().lower()
-
-        workflow_obj = payload.get("workflow") or job_data.get("workflow") or {}
-        if isinstance(workflow_obj, str):
-            try:
-                workflow_obj = json.loads(workflow_obj)
-            except Exception:
-                workflow_obj = {}
-
-        raw_wf_id = (
-            payload.get("workflow_id")
-            or job_data.get("workflow_id")
-            or job_data.get("wf_id")
-            or (workflow_obj.get("id") if isinstance(workflow_obj, dict) else None)
-            or payload.get("target_container_id")
-            or payload.get("container_id")
-            or payload.get("source_container_id")
-            or ""
-        )
-        workflow_id = str(raw_wf_id).strip()
-        original_workflow_id = workflow_id
 
         stage_obj = payload.get("stage") or job_data.get("stage") or {}
         if isinstance(stage_obj, str):
@@ -818,8 +958,8 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             metatype = str(payload.get("metatype") or "").strip().lower()
 
         logger.info(
-            f"⚡ [WEBHOOK] WF: '{workflow_id}' (StorageCfg='{workflow_storage}', DeliveryCfg='{workflow_delivery}') | "
-            f"Stage: '{stage_name}' | Job: '{job_id}' | Name: '{task_name}' | Keys: {list(raw_payload.keys())}"
+            f"⚡ [WEBHOOK] WF: '{workflow_id}' (RepairCfg='{workflow_repair}', StorageCfg='{workflow_storage}', DeliveryCfg='{workflow_delivery}') | "
+            f"Stage: '{stage_name}' | Job: '{job_id}' | Name: '{task_name}'"
         )
 
         # 4. Bóc tách Custom Fields & thông tin khách hàng
@@ -830,6 +970,8 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             except Exception:
                 job_cf = {}
 
+        form_cf = _extract_form_custom_fields(job_data)
+
         root_custom_fields = {
             k[7:]: v
             for k, v in payload.items()
@@ -839,6 +981,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         }
 
         custom_fields_data = {
+            **form_cf,
             **root_custom_fields,
             **(job_cf if isinstance(job_cf, dict) else {}),
             **(payload.get("custom_fields") if isinstance(payload.get("custom_fields"), dict) else {}),
@@ -868,22 +1011,31 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or custom_fields_data.get("so_dien_thoai")
             or scanned_phone
         )
-        raw_content_short = str(
-            payload.get("content_short") or payload.get("note") or job_data.get("content_short") or ""
-        ).strip()
-        content_fallback = clean_base_content(raw_content_short)
+        raw_content_blob = " ".join(
+            str(x).strip()
+            for x in (
+                payload.get("content_short"),
+                payload.get("content"),
+                payload.get("note"),
+                job_data.get("content_short"),
+                job_data.get("content"),
+            )
+            if x and str(x).strip()
+        )
+        content_fallback = clean_base_content(raw_content_blob)
 
         combined_parts = [p for p in (raw_addr_field, raw_note_field) if p]
         base_note = "\n".join(combined_parts) if combined_parts else content_fallback
 
-        # Trích xuất Mã phiếu & SĐT từ dữ liệu THÔ trước khi strip_base_boilerplate xóa nhãn "Số điện thoại: ..."
+        # Quét Mã phiếu & SĐT từ chuỗi THÔ trước khi strip_base_boilerplate xóa nhãn
         raw_search_blob = " ".join(
             part for part in (
                 task_name,
                 raw_phone_field,
                 raw_addr_field,
                 raw_note_field,
-                raw_content_short,
+                raw_content_blob,
+                json.dumps(custom_fields_data, ensure_ascii=False) if custom_fields_data else "",
             ) if part
         )
 
@@ -897,57 +1049,48 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         )
 
         # 5. Tìm phiếu đã tồn tại trong CSDL
-        parent_job_id = str(
-            payload.get("parent_id")
-            or payload.get("source_job_id")
-            or payload.get("origin_job_id")
-            or payload.get("source_id")
-            or payload.get("origin_id")
-            or payload.get("forwarded_from_job_id")
-            or payload.get("from_job_id")
-            or job_data.get("parent_id")
-            or job_data.get("parent_job_id")
-            or job_data.get("source_job_id")
-            or job_data.get("origin_job_id")
-            or scanned_source_job
-            or ""
-        ).strip()
-
         related_ids = collect_related_job_ids(payload, job_id, job_data)
+        if scanned_source_job:
+            for tok in _normalize_id_token(scanned_source_job):
+                if tok != job_id and tok not in related_ids:
+                    related_ids.append(tok)
 
         possibly_forwarded = (
             workflow_id in {workflow_storage, workflow_delivery, ""}
             or "[fwd]" in task_name.lower()
             or bool(related_ids)
-            or bool(parent_job_id)
             or bool(scanned_source_job)
         )
 
         final_code_for_match = extracted_code or scanned_ticket_code
+        extracted_name = parsed_info.get("customer_name", "").strip()
 
         existing_ticket = await find_existing_repair_ticket(
-            candidate_job_ids=[job_id, *related_ids, parent_job_id, scanned_source_job or ""],
+            candidate_job_ids=[job_id, *related_ids],
             code=final_code_for_match,
             phone=extracted_phone_norm,
+            customer_name=extracted_name,
             allow_phone_match=possibly_forwarded,
         )
 
-        # Chuẩn hóa Workflow ID nếu Base gửi thiếu (chỉ khi đã tìm thấy phiếu)
+        # Chuẩn hóa Workflow ID nếu Base gửi thiếu (KHÔNG bao giờ ép job forward mới về repair)
         if existing_ticket:
             stored_base_job_id = str(existing_ticket.get("base_job_id") or "").strip()
             stored_delivery_job_id = str(existing_ticket.get("delivery_job_id") or "").strip()
             stored_storage_job_id = str(existing_ticket.get("storage_job_id") or "").strip()
 
-            if stored_delivery_job_id and job_id == stored_delivery_job_id:
-                workflow_id = workflow_delivery
-            elif stored_storage_job_id and job_id == stored_storage_job_id:
-                workflow_id = workflow_storage
-            elif not workflow_id and job_id != stored_base_job_id:
-                curr_proc = str(existing_ticket.get("current_process") or "").strip().lower()
-                if curr_proc == "delivery":
+            if workflow_id not in {workflow_storage, workflow_delivery}:
+                if stored_delivery_job_id and job_id == stored_delivery_job_id:
                     workflow_id = workflow_delivery
-                elif curr_proc == "storage":
+                elif stored_storage_job_id and job_id == stored_storage_job_id:
                     workflow_id = workflow_storage
+                elif not workflow_id and job_id != stored_base_job_id:
+                    # Đây là job_id MỚI gắn vào phiếu đã có -> chắc chắn là chuyển tiếp (Forward)
+                    st_lower = stage_name.lower()
+                    if any(kw in st_lower for kw in ["giao", "vận chuyển", "chành xe", "ship", "delivery"]):
+                        workflow_id = workflow_delivery
+                    else:
+                        workflow_id = workflow_storage
 
             if not workflow_id:
                 workflow_id = workflow_repair
@@ -960,19 +1103,17 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 logger.warning(
                     f"⛔ [BLOCKED] Không nối được phiếu gốc. "
                     f"WF_orig='{original_workflow_id}' WF_norm='{workflow_id}' Job='{job_id}' "
-                    f"Parent='{parent_job_id}' ScannedSrc='{scanned_source_job}' "
-                    f"Code='{final_code_for_match}' Phone='{extracted_phone_norm}' "
-                    f"Task='{task_name}' PayloadKeys={list(payload.keys())}"
+                    f"RelatedIDs={related_ids} Code='{final_code_for_match}' "
+                    f"Phone='{extracted_phone_norm}' Name='{extracted_name}' Task='{task_name}'"
                 )
                 return {
                     "status": "ignored",
-                    "message": "Không tìm thấy phiếu sửa chữa gốc để chuyển tiếp (đã thử JobID/Parent/Mã phiếu/SĐT).",
+                    "message": "Không tìm thấy phiếu sửa chữa gốc để chuyển tiếp (đã thử JobID/GenPrev/Mã phiếu/SĐT/Tên).",
                     "code": None,
                 }
 
         # 6. Hợp nhất dữ liệu & trích xuất hình ảnh theo từng rổ giai đoạn
         now_iso = datetime.now(timezone.utc).isoformat()
-        extracted_name = parsed_info.get("customer_name", "").strip()
         extracted_addr = parsed_info.get("address", "").strip() or raw_addr_field
         extracted_req_note = parsed_info.get("note", "").strip() or raw_note_field
         extracted_rec_note = parsed_info.get("received_note", "").strip()
@@ -1005,8 +1146,10 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             stage_name or "Tiếp nhận", status_map, metatype=metatype, state=state
         ) or "received"
 
+        # Merge thêm job_data vào payload để trích xuất cả ảnh nằm trong job_data trả về từ Base API
+        merged_image_payload = {**job_data, **payload}
         img_groups, _ = extract_all_base_images(
-            payload,
+            merged_image_payload,
             workflow_id,
             {**settings, "workflow_storage_id": workflow_storage, "workflow_delivery_id": workflow_delivery},
             stage_status=preview_stage_status,

@@ -85,11 +85,53 @@ class BaseClient:
         wf_key = f"workflow_{app}_id"
         wf_key_alt = f"workflow_{app}"
 
-        # Tuyệt đối không dùng base_shared_secret làm API Token
         token = settings.get(token_key, "").strip()
         wf_id = (settings.get(wf_key) or settings.get(wf_key_alt, "")).strip()
 
         return token, wf_id
+
+    async def fetch_job_detail(
+        self, job_id: str, preferred_apps: Optional[List[str]] = None
+    ) -> Optional[dict]:
+        """
+        Gọi Base API (/extapi/v1/job/get) để lấy full dữ liệu 1 công việc
+        (bao gồm workflow_id, gen_prev, custom_fields, form, content) khi webhook gửi thiếu.
+        """
+        jid = str(job_id or "").strip()
+        if not jid:
+            return None
+
+        apps_order = preferred_apps or ["storage", "delivery", "repair"]
+        tried_tokens = set()
+
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            for app in apps_order:
+                token, _ = await self.get_token_and_wf(app)
+                if not token or token in tried_tokens:
+                    continue
+                tried_tokens.add(token)
+
+                try:
+                    res = await client.post(
+                        f"{BASE_API_URL}/job/get",
+                        data={"access_token": token, "id": jid},
+                    )
+                    if res.status_code != 200:
+                        continue
+                    data = res.json()
+                    if not isinstance(data, dict):
+                        continue
+                    job_obj = data.get("job") or data.get("data")
+                    if isinstance(job_obj, dict) and str(job_obj.get("id") or "").strip():
+                        logger.info(
+                            f"🔎 [BASE-JOB-GET] Lấy chi tiết job {jid} thành công qua token [{app}] "
+                            f"(wf={job_obj.get('workflow_id') or job_obj.get('wf_id')})"
+                        )
+                        return job_obj
+                except Exception as e:
+                    logger.warning(f"[BASE-JOB-GET] Lỗi gọi job/get ({app}, job={jid}): {e}")
+
+        return None
 
     async def _post_page_with_retry(
         self, client: httpx.AsyncClient, url: str, form_data: dict, app_name: str, page: int
@@ -110,7 +152,6 @@ class BaseClient:
                 logger.warning(
                     f"Base API HTTP [{res.status_code}] ({app_name}, page {page}, lần {attempt}/{PAGE_RETRY_ATTEMPTS}): {res.text[:200]}"
                 )
-                # Lỗi 4xx (sai token, sai endpoint) thì dừng ngay, không retry
                 if 400 <= res.status_code < 500:
                     return None
             except Exception as e:
@@ -159,7 +200,6 @@ class BaseClient:
                 if data is None:
                     return None
 
-                # Base.vn ExtAPI trả code = 1 khi thành công; code = 0 hoặc số âm là lỗi
                 resp_code = data.get("code")
                 if resp_code is not None and str(resp_code).strip() not in {"1", "200"}:
                     logger.error(f"Base API báo lỗi ({app}, page {page}): {str(data)[:300]}")

@@ -23,7 +23,11 @@ PHONE_PATTERN = re.compile(
     r'([35789]\d{8})'            # Đầu số di động + 8 số đuôi
 )
 
-# Các nhãn hệ thống / trường đã tách cột riêng không được phép lọt vào ghi chú
+# Bắt SĐT có khoảng trắng, dấu chấm hoặc gạch nối (VD: 0986 195 215, 0986.195.215)
+PHONE_FLEX_PATTERN = re.compile(
+    r'(?:(?:\+?84)|0)[\s.\-]*[35789](?:[\s.\-]*\d){8}'
+)
+
 _BOILERPLATE_FIELD_PATTERNS = [
     r"khách\s*quen\s*:\s*(?:\[external\]|\[internal\]|[^,·•|\n\-]*)",
     r"phân\s*loại\s*khách\s*hàng\s*:\s*[^,·•|\n\-]*",
@@ -67,8 +71,7 @@ def strip_forward_tags(text: Optional[str]) -> str:
 def strip_base_boilerplate(text: Optional[str]) -> str:
     """
     Loại bỏ hoàn toàn [FWD], nhãn tự động sinh ra khi forward trên Base.vn
-    (Khách Quen: [EXTERNAL], Phân loại khách hàng, Tên Khách Hàng, Thông tin Chành xe/Chuyển phát...)
-    và các trường custom field để trống (dạng 'Tên trường: ,').
+    và các trường custom field để trống.
     """
     if not text or str(text).strip().lower() in _EMPTY_NOTE_TOKENS:
         return ""
@@ -77,11 +80,9 @@ def strip_base_boilerplate(text: Optional[str]) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = re.sub(r"^\s*Ghi chú:\s*", "", cleaned, flags=re.IGNORECASE)
 
-    # 1. Xóa các cụm từ dư thừa đặc thù khi forward quy trình trên Base
     for pattern in _BOILERPLATE_FIELD_PATTERNS:
         cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
 
-    # 2. Xóa các nhãn custom field để trống giá trị (VD: "Tên trường: ," hoặc "Mã vận đơn: ·")
     cleaned = re.sub(
         r"(?:^|(?<=[,·•|\n]))\s*[^:,\n]{1,45}:\s*(?:no value|none|null)?\s*(?=[,·•|\n]|$)",
         " ",
@@ -89,7 +90,6 @@ def strip_base_boilerplate(text: Optional[str]) -> str:
         flags=re.IGNORECASE,
     )
 
-    # 3. Chuẩn hóa dấu phân cách và dọn ký tự thừa còn sót lại
     cleaned = re.sub(r"\s*[·•|]+\s*", ", ", cleaned)
     cleaned = re.sub(r"\s*,\s*", ", ", cleaned)
     cleaned = re.sub(r"(?:,\s*){2,}", ", ", cleaned)
@@ -141,23 +141,24 @@ def extract_identifier_code_or_phone(text: str) -> Tuple[Optional[str], Optional
     if not text:
         return None, None
 
-    code_match = re.search(r'(?:NT|DT)-?\d{4}-\d{3,5}', text, re.IGNORECASE)
+    clean_text = html.unescape(str(text))
+
+    code_match = re.search(r'(?:NT|DT)-?\d{4}-\d{3,5}', clean_text, re.IGNORECASE)
     code = code_match.group(0).upper() if code_match else None
 
-    phone_match = PHONE_PATTERN.search(text)
-    phone = normalize_phone(phone_match.group(0)) if phone_match else None
+    phone = ""
+    flex_match = PHONE_FLEX_PATTERN.search(clean_text)
+    if flex_match:
+        phone = normalize_phone(flex_match.group(0))
+    if not phone:
+        phone_match = PHONE_PATTERN.search(clean_text)
+        if phone_match:
+            phone = normalize_phone(phone_match.group(0))
 
     return code, (phone or None)
 
 
 def validate_status(raw_status: str, status_map: dict, metatype: str = "", state: str = "") -> str:
-    """
-    Chuẩn hóa & ánh xạ trạng thái chính xác theo thứ tự ưu tiên:
-    1. Ánh xạ từ status_map động
-    2. Kiểm tra metatype / state trực tiếp
-    3. Tìm từ khóa trong tên stage
-    4. Mặc định: "received"
-    """
     normalized = (raw_status or "").strip().lower()
 
     if normalized in status_map:
@@ -184,12 +185,6 @@ def validate_status(raw_status: str, status_map: dict, metatype: str = "", state
 
 
 def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
-    """
-    Tách thông tin thông minh dựa trên mốc SĐT (Pivot) sau khi đã loại bỏ [FWD] & rác Base:
-    - TRƯỚC SĐT -> Họ tên khách hàng
-    - SĐT       -> Chuẩn hóa SĐT
-    - SAU SĐT   -> Địa chỉ / Chành xe / Tỉnh thành
-    """
     clean_base_note = strip_base_boilerplate(base_note)
     clean_task_name = strip_forward_tags(task_name)
 
@@ -206,7 +201,7 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
     customer_name = "Khách lẻ"
     address = ""
 
-    phone_match = PHONE_PATTERN.search(clean_task_name)
+    phone_match = PHONE_FLEX_PATTERN.search(clean_task_name) or PHONE_PATTERN.search(clean_task_name)
 
     if phone_match:
         raw_phone = phone_match.group(0)
@@ -254,7 +249,6 @@ def parse_task_name(task_name: str, base_note: str = "") -> Dict[str, str]:
 # =========================================================
 
 def _build_base_cdn_url(fid: str) -> str:
-    """Dựng URL CDN công khai của Base.vn từ fid."""
     parts = fid.split(":")
     if len(parts) < 8:
         raise ValueError(f"FID không đủ phần (cần >=8): {fid}")
@@ -313,18 +307,6 @@ def _classify_image_bucket(
     stage_status: str = "",
     has_existing_received: bool = False,
 ) -> str:
-    """
-    Phân loại chính xác rổ chứa ảnh theo Quy trình + Giai đoạn + Tên trường:
-    - Workflow Giao nhận -> 'delivery'
-    - Workflow Lưu kho -> 'storage' (trừ field giao_nhan/chanh_xe -> 'delivery')
-    - Workflow Sửa chữa:
-        + Field kho/hóa đơn/hàng đã soạn -> 'storage'
-        + Field kỹ thuật/sửa chữa/kiểm tra -> 'repair'
-        + Field tiếp nhận/nhận máy/hiện trạng -> 'received'
-        + Giai đoạn 'received' (tạo mới / tiếp nhận) -> 'received'
-        + Giai đoạn 'returned' + field giao nhận/bàn giao -> 'delivery'
-        + Các giai đoạn kiểm tra/sửa chữa ('processing', 'fixed', ...) -> 'repair'
-    """
     fn = (field_name or "").lower()
     target_storage = str(workflow_settings.get("workflow_storage_id", "18720")).strip()
     target_delivery = str(workflow_settings.get("workflow_delivery_id", "18249")).strip()
@@ -376,10 +358,6 @@ def extract_all_base_images(
     stage_status: str = "",
     has_existing_received: bool = False,
 ) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
-    """
-    Quét động các trường '-fids' (và fallback '-direct_links'), giải mã Base64
-    và phân vào đúng 4 rổ: received / repair / storage / delivery.
-    """
     sources = []
     if isinstance(payload, dict):
         sources.append(("root", payload))

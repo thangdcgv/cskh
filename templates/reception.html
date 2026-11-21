@@ -185,7 +185,28 @@ function ReceptionApp() {
     if (!record || !record.phone) {
       return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
     }
+    if (!r?.phone) {
+    alert('Phiếu này chưa có số điện thoại khách hàng!');
+    return;
+  }
 
+    // Lấy mốc thời gian đã gửi (từ nút bấm truyền vào hoặc từ dữ liệu phiếu hiện tại)
+    const sentTime = existingSmsTime || r.sms_sent_at;
+
+    if (sentTime) {
+      // 1. GIỮ NGUYÊN: Bắt tin nhắn trùng nếu đã từng gửi
+      const confirmDuplicate = window.confirm(
+        `⚠️ Phiếu ${r.code} đã gửi SMS lúc ${sentTime}.\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
+      );
+      if (!confirmDuplicate) return;
+    } else {
+      // 2. BỔ SUNG: Yêu cầu xác nhận khi nhấn gửi SMS lần đầu
+      const confirmFirstSend = window.confirm(
+        `Xác nhận gửi tin nhắn SMS cho khách ${r.customer_name || ''} (${r.phone})?\n\n` +
+        `Lưu ý: Chỉ nhấn "OK" nếu bạn thực sự thao tác gửi tin nhắn (hệ thống sẽ ghi nhận trạng thái Đã SMS).`
+      );
+      if (!confirmFirstSend) return;
+    }
     const key = String(record.id || record.code);
     const previousSentAt = sentSmsMap[key];
 
@@ -765,7 +786,7 @@ function ReceptionApp() {
                           </button>
 
                           <button
-                            onClick={() => handleSmsClick(r)}
+                            onClick={() => handleSmsClick(r, smsSentTime)}
                             className={`flex-[2] h-8 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
                               smsSentTime
                                 ? 'bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40'

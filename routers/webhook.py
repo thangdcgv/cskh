@@ -89,6 +89,7 @@ def collect_related_job_ids(payload: dict, job_id: str, job_data: Optional[dict]
     for src in sources:
         add(src.get("forwarded_from"))
         add(src.get("source_job_id"))
+        add(src.get("parent_id"))
         for key in ("gen_prev", "gen_list"):
             raw = src.get(key)
             if isinstance(raw, str):
@@ -97,7 +98,14 @@ def collect_related_job_ids(payload: dict, job_id: str, job_data: Optional[dict]
                 except Exception:
                     add(raw)
                     continue
-            items = raw if isinstance(raw, list) else [raw]
+            if isinstance(raw, dict):
+                if "id" in raw:
+                    add(raw.get("id"))
+                items = list(raw.values())
+            elif isinstance(raw, list):
+                items = raw
+            else:
+                items = [raw]
             for g in items:
                 if isinstance(g, dict):
                     add(g.get("id"))
@@ -860,17 +868,27 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or custom_fields_data.get("so_dien_thoai")
             or scanned_phone
         )
-        content_fallback = clean_base_content(
+        raw_content_short = str(
             payload.get("content_short") or payload.get("note") or job_data.get("content_short") or ""
-        )
+        ).strip()
+        content_fallback = clean_base_content(raw_content_short)
 
         combined_parts = [p for p in (raw_addr_field, raw_note_field) if p]
         base_note = "\n".join(combined_parts) if combined_parts else content_fallback
 
-        parsed_info = parse_task_name(task_name, base_note)
-        extracted_code, extracted_phone_title = extract_identifier_code_or_phone(
-            f"{task_name} {base_note}"
+        # Trích xuất Mã phiếu & SĐT từ dữ liệu THÔ trước khi strip_base_boilerplate xóa nhãn "Số điện thoại: ..."
+        raw_search_blob = " ".join(
+            part for part in (
+                task_name,
+                raw_phone_field,
+                raw_addr_field,
+                raw_note_field,
+                raw_content_short,
+            ) if part
         )
+
+        parsed_info = parse_task_name(task_name, base_note)
+        extracted_code, extracted_phone_title = extract_identifier_code_or_phone(raw_search_blob)
         extracted_phone_norm = (
             normalize_phone(raw_phone_field)
             or normalize_phone(parsed_info.get("phone", "").strip())

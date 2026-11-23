@@ -547,8 +547,8 @@ async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_curre
         "data": deleted_record,
     }
     
-    #==============7. XỬ LÝ VẤN ĐỀ SMS ĐÃ GỬI - LINK ĐÃ GỬI ======================
-    @router.post("/{record_id}/sms-sent")
+  # ==================== 7. XỬ LÝ VẤN ĐỀ SMS ĐÃ GỬI - LINK ĐÃ GỬI ====================
+@router.post("/{record_id}/sms-sent")
 async def mark_reception_sms_sent(record_id: str, user: dict = Depends(get_current_user)):
     try:
         UUID(record_id)
@@ -583,9 +583,10 @@ async def mark_reception_sms_sent(record_id: str, user: dict = Depends(get_curre
     updated_record = res.data[0]
     await safe_broadcast({"type": "reception_updated", "record": updated_record})
     return {"success": True, "data": updated_record}
-    
-    #====Link đã gửi====
-    @router.post("/{record_id}/link-sent")
+
+
+# ==== Link đã gửi ====
+@router.post("/{record_id}/link-sent")
 async def mark_reception_link_sent(record_id: str, user: dict = Depends(get_current_user)):
     try:
         UUID(record_id)

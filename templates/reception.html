@@ -148,6 +148,14 @@ function ReceptionApp() {
       return {};
     }
   });
+
+  const [sentLinkMap, setSentLinkMap] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('reception_sent_link') || '{}');
+    } catch {
+      return {};
+    }
+  });
   const [copiedTicketId, setCopiedTicketId] = useState(null);
 
   const [editingRecord, setEditingRecord] = useState(null);

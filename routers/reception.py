@@ -224,6 +224,7 @@ async def reception_page(request: Request, user: dict = Depends(get_current_user
     )
 
 
+
 # ==================== 1. TIẾP NHẬN MÁY ====================
 @router.post("/receive")
 async def create_reception_record(
@@ -545,3 +546,77 @@ async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_curre
         "message": f"Đã xóa vĩnh viễn phiếu {deleted_record.get('code', ticket_id)}",
         "data": deleted_record,
     }
+    
+    #==============7. XỬ LÝ VẤN ĐỀ SMS ĐÃ GỬI - LINK ĐÃ GỬI ======================
+    @router.post("/{record_id}/sms-sent")
+async def mark_reception_sms_sent(record_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+    sender_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE)
+            .update({
+                "sms_sent_at": now_utc,
+                "sms_sent_by": sender_name,
+            })
+            .eq("id", record_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi lưu trạng thái đã gửi SMS: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể lưu trạng thái gửi SMS")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
+
+    updated_record = res.data[0]
+    await safe_broadcast({"type": "reception_updated", "record": updated_record})
+    return {"success": True, "data": updated_record}
+    
+    #====Link đã gửi====
+    @router.post("/{record_id}/link-sent")
+async def mark_reception_link_sent(record_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+    sender_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE)
+            .update({
+                "link_sent_at": now_utc,
+                "link_sent_by": sender_name,
+            })
+            .eq("id", record_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi lưu trạng thái đã gửi link: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể lưu trạng thái gửi link")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
+
+    updated_record = res.data[0]
+    await safe_broadcast({"type": "reception_updated", "record": updated_record})
+    return {"success": True, "data": updated_record}

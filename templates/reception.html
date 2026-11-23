@@ -194,44 +194,71 @@ function ReceptionApp() {
     fetchSettings();
   }, []);
 
-  // Gửi SMS có xác nhận lần đầu & cảnh báo chống gửi trùng lặp
+  const formatSmsTime = (rawTime) => {
+    if (!rawTime) return '';
+    const parsed = new Date(rawTime);
+    if (Number.isNaN(parsed.getTime())) return String(rawTime);
+    return parsed.toLocaleTimeString('vi-VN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+    });
+  };
+
+  // Gửi SMS có xác nhận lần đầu, cảnh báo chống gửi trùng & đồng bộ lên Server
   const handleSmsClick = (record) => {
     if (!record || !record.phone) {
       return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
     }
 
     const key = String(record.id || record.code);
-    const previousSentAt = sentSmsMap[key] || record.sms_sent_at;
+    const rawPrevTime = record.sms_sent_at || sentSmsMap[key];
+    const previousSentAt = formatSmsTime(rawPrevTime);
 
     if (previousSentAt) {
+      const senderInfo = record.sms_sent_by ? ` bởi ${record.sms_sent_by}` : '';
       const confirmDuplicate = window.confirm(
-        `⚠️ Phiếu [${record.code}] đã gửi SMS lúc ${previousSentAt}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
+        `⚠️ Phiếu [${record.code}] đã gửi SMS lúc ${previousSentAt}${senderInfo}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
       );
       if (!confirmDuplicate) return;
     } else {
       const confirmFirstSend = window.confirm(
         `Xác nhận gửi tin nhắn SMS cho khách ${record.customer_name || ''} (${record.phone})?\n\n` +
-        `Lưu ý: Chỉ nhấn "OK" nếu bạn thực sự thao tác gửi tin nhắn (hệ thống sẽ ghi nhận trạng thái Đã SMS).`
+        `Lưu ý: Chỉ nhấn "OK" nếu bạn thực sự thao tác gửi tin nhắn (hệ thống sẽ ghi nhận trạng thái Đã SMS cho toàn bộ thiết bị).`
       );
       if (!confirmFirstSend) return;
     }
 
-    const timeLabel = new Date().toLocaleTimeString('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      day: '2-digit',
-      month: '2-digit',
-    });
+    const nowIso = new Date().toISOString();
+    const timeLabel = formatSmsTime(nowIso);
+
+    // 1. Cập nhật giao diện ngay lập tức (Optimistic UI)
     const nextMap = { ...sentSmsMap, [key]: timeLabel };
     setSentSmsMap(nextMap);
+    setRecords((prev) =>
+      prev.map((item) =>
+        item.id === record.id ? { ...item, sms_sent_at: nowIso } : item
+      )
+    );
     try {
       localStorage.setItem('reception_sent_sms', JSON.stringify(nextMap));
     } catch {}
 
+    // 2. Gửi API lưu xuống Supabase (keepalive: true giữ kết nối khi mở app Tin nhắn)
+    if (record.id) {
+      fetch(`${API_BASE}/${record.id}/sms-sent`, {
+        method: 'POST',
+        keepalive: true,
+      }).catch(() => {});
+    }
+
+    // 3. Mở ứng dụng nhắn tin trên điện thoại
     sendReceptionSms(record, hotlinePhone, trackingDomain);
   };
 
   // Copy link tra cứu hành trình đơn để nhân viên gửi khách qua Zalo/Messenger
+  // Copy link tra cứu hành trình đơn có xác nhận, chống gửi trùng & đồng bộ toàn hệ thống
   const handleShareTrackingLink = async (record) => {
     const cleanCode = String(record?.code || '').trim();
     const cleanPhone = String(record?.phone || '').replace(/[\s\-\.]/g, '');
@@ -239,6 +266,24 @@ function ReceptionApp() {
 
     if (!keyword) {
       return showToast("⚠️ Không có mã phiếu hoặc SĐT để tạo link tra cứu!", "error");
+    }
+
+    const key = String(record.id || record.code);
+    const rawPrevTime = record.link_sent_at || sentLinkMap[key];
+    const previousSentAt = formatSmsTime(rawPrevTime);
+
+    if (previousSentAt) {
+      const senderInfo = record.link_sent_by ? ` bởi ${record.link_sent_by}` : '';
+      const confirmDuplicate = window.confirm(
+        `⚠️ Link tra cứu phiếu [${cleanCode || keyword}] đã được copy gửi khách lúc ${previousSentAt}${senderInfo}.\n\nBạn có chắc chắn muốn copy gửi lại lần nữa không?`
+      );
+      if (!confirmDuplicate) return;
+    } else {
+      const confirmFirstCopy = window.confirm(
+        `Xác nhận copy link tra cứu hành trình để gửi cho khách ${record.customer_name || ''}?\n\n` +
+        `Lưu ý: Chỉ nhấn "OK" nếu bạn sẽ gửi link này cho khách (hệ thống sẽ đánh dấu "Đã gửi link" để các nhân viên khác nhận biết).`
+      );
+      if (!confirmFirstCopy) return;
     }
 
     const rawDomain = (trackingDomain || 'https://cskh-nu.vercel.app').trim();
@@ -259,8 +304,35 @@ function ReceptionApp() {
         document.body.removeChild(tempInput);
       }
 
+      const nowIso = new Date().toISOString();
+      const timeLabel = formatSmsTime(nowIso);
+      const currentSender =
+        window.CURRENT_USER?.ho_ten || window.CURRENT_USER?.username || '';
+
+      // 1. Cập nhật trạng thái Đã gửi link ngay lập tức trên giao diện
+      const nextMap = { ...sentLinkMap, [key]: timeLabel };
+      setSentLinkMap(nextMap);
+      setRecords((prev) =>
+        prev.map((item) =>
+          item.id === record.id
+            ? { ...item, link_sent_at: nowIso, link_sent_by: currentSender }
+            : item
+        )
+      );
+      try {
+        localStorage.setItem('reception_sent_link', JSON.stringify(nextMap));
+      } catch {}
+
+      // 2. Đồng bộ xuống Supabase để các máy khác thấy ngay
+      if (record.id) {
+        fetch(`${API_BASE}/${record.id}/link-sent`, {
+          method: 'POST',
+          keepalive: true,
+        }).catch(() => {});
+      }
+
       setCopiedTicketId(record.id);
-      showToast(`📋 Đã copy link tra cứu phiếu [${cleanCode || keyword}]!`, 'success');
+      showToast(`📋 Đã copy & ghi nhận gửi link phiếu [${cleanCode || keyword}]!`, 'success');
       setTimeout(() => {
         setCopiedTicketId((prev) => (prev === record.id ? null : prev));
       }, 2000);
@@ -662,7 +734,8 @@ function ReceptionApp() {
                     const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
 
                     const canDelete = canDeleteTicket;
-                    const smsSentTime = sentSmsMap[String(r.id || r.code)] || r.sms_sent_at;
+                    const smsSentTime = formatSmsTime(r.sms_sent_at || sentSmsMap[String(r.id || r.code)]);
+					const linkSentTime = formatSmsTime(r.link_sent_at || sentLinkMap[String(r.id || r.code)]);
                     const isCopied = copiedTicketId === r.id;
 
                     return (
@@ -783,17 +856,28 @@ function ReceptionApp() {
                           </button>
 
                           <button
-                            onClick={() => handleShareTrackingLink(r)}
-                            className={`flex-[2] h-8 rounded text-[11px] font-bold shadow-md transition-all flex items-center justify-center gap-1 ${
-                              isCopied
-                                ? 'bg-emerald-600 text-white'
-                                : 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                            }`}
-                            title="Copy link tra cứu hành trình đơn gửi cho khách"
-                          >
-                            <i className={`fa-solid ${isCopied ? 'fa-check' : 'fa-share-nodes'}`}></i>
-                            <span>{isCopied ? 'Đã Copy' : 'Gửi Link'}</span>
-                          </button>
+							  type="button"
+							  onClick={() => handleShareTrackingLink(r)}
+							  title={
+								linkSentTime
+								  ? `Đã copy gửi khách lúc ${linkSentTime}${r.link_sent_by ? ` (${r.link_sent_by})` : ''}`
+								  : 'Copy link tra cứu hành trình gửi khách'
+							  }
+							  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border transition flex items-center gap-1 cursor-pointer ${
+								copiedTicketId === r.id || linkSentTime
+								  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+								  : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+							  }`}
+							>
+							  <i className={`fa-solid ${copiedTicketId === r.id || linkSentTime ? 'fa-check-double text-emerald-400' : 'fa-link'} text-[10px]`}></i>
+							  <span>
+								{copiedTicketId === r.id
+								  ? 'Đã copy!'
+								  : linkSentTime
+									? 'Đã gửi link'
+									: 'Copy link'}
+							  </span>
+							</button>
                         </div>
                       </div>
                     );

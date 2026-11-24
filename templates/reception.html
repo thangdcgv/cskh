@@ -81,6 +81,29 @@ const removeAccents = (str) => {
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
 };
 
+const normalizePhoneDigits = (phone) => {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('84') && digits.length >= 11) {
+    return '0' + digits.slice(2);
+  }
+  return digits;
+};
+
+const formatDateTimeShort = (rawTime) => {
+  if (!rawTime) return '';
+  const parsed = new Date(rawTime);
+  if (Number.isNaN(parsed.getTime())) return String(rawTime);
+  return parsed.toLocaleTimeString('vi-VN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    day: '2-digit',
+    month: '2-digit',
+  });
+};
+
+const formatSmsTime = formatDateTimeShort;
+
 const EMPTY_SMS_NOTES = new Set([
   '',
   'chua ghi chu',
@@ -94,7 +117,7 @@ const EMPTY_SMS_NOTES = new Set([
 const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
   if (!record || !record.phone) return;
 
-  const cleanPhone = String(record.phone).replace(/[\s\-\.]/g, '');
+  const cleanPhone = normalizePhoneDigits(record.phone);
   if (!cleanPhone) return;
 
   const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
@@ -157,6 +180,7 @@ function ReceptionApp() {
     }
   });
   const [copiedTicketId, setCopiedTicketId] = useState(null);
+  const [copiedPhoneId, setCopiedPhoneId] = useState(null);
 
   const [editingRecord, setEditingRecord] = useState(null);
   const [editForm, setEditForm] = useState({ customer_name: '', phone: '', address: '', note: '', received_note: '' });
@@ -177,7 +201,6 @@ function ReceptionApp() {
     toastTimerRef.current = setTimeout(() => setToast(null), 5000);
   };
 
-  // Kiểm tra quyền Sửa/Xóa đồng bộ 100% với can_modify_warranty_record (permissions.py)
   const canDeleteTicket = Boolean(window.CAN_DELETE_TICKET);
 
   const openDeleteModal = (record) => {
@@ -202,20 +225,38 @@ function ReceptionApp() {
     fetchSettings();
   }, []);
 
-  const formatSmsTime = (rawTime) => {
-    if (!rawTime) return '';
-    const parsed = new Date(rawTime);
-    if (Number.isNaN(parsed.getTime())) return String(rawTime);
-    return parsed.toLocaleTimeString('vi-VN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      day: '2-digit',
-      month: '2-digit',
-    });
+  // Copy nhanh SĐT khách hàng
+  const handleCopyPhone = async (e, record) => {
+    e.stopPropagation();
+    const cleanPhone = normalizePhoneDigits(record?.phone);
+    if (!cleanPhone) {
+      return showToast("⚠️ Phiếu này chưa có số điện thoại!", "error");
+    }
+
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(cleanPhone);
+      } else {
+        const tempInput = document.createElement('input');
+        tempInput.value = cleanPhone;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
+      }
+
+      setCopiedPhoneId(record.id);
+      showToast(`📋 Đã copy SĐT: ${cleanPhone}`, 'success');
+      setTimeout(() => {
+        setCopiedPhoneId((prev) => (prev === record.id ? null : prev));
+      }, 1500);
+    } catch {
+      showToast("⚠️ Không thể copy tự động, vui lòng copy thủ công.", "error");
+    }
   };
 
-  // Gửi SMS có xác nhận lần đầu, cảnh báo chống gửi trùng & đồng bộ lên Server
-  const handleSmsClick = (record) => {
+  // Gửi SMS có xác nhận lần đầu, cảnh báo gửi trùng & đồng bộ server
+  const handleSmsClick = async (record) => {
     if (!record || !record.phone) {
       return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
     }
@@ -240,36 +281,42 @@ function ReceptionApp() {
 
     const nowIso = new Date().toISOString();
     const timeLabel = formatSmsTime(nowIso);
+    const currentSender = currentUser.ho_ten || currentUser.username || '';
 
     // 1. Cập nhật giao diện ngay lập tức (Optimistic UI)
     const nextMap = { ...sentSmsMap, [key]: timeLabel };
     setSentSmsMap(nextMap);
     setRecords((prev) =>
       prev.map((item) =>
-        item.id === record.id ? { ...item, sms_sent_at: nowIso } : item
+        item.id === record.id
+          ? { ...item, sms_sent_at: nowIso, sms_sent_by: currentSender }
+          : item
       )
     );
     try {
       localStorage.setItem('reception_sent_sms', JSON.stringify(nextMap));
     } catch {}
 
-    // 2. Gửi API lưu xuống Supabase (keepalive: true giữ kết nối khi mở app Tin nhắn)
+    // 2. Gửi API lưu xuống Supabase (keepalive: true giữ kết nối khi chuyển sang app Tin nhắn)
     if (record.id) {
       fetch(`${API_BASE}/${record.id}/sms-sent`, {
         method: 'POST',
         keepalive: true,
-      }).catch(() => {});
+      })
+        .then(handleResponse)
+        .catch((err) => {
+          showToast(`⚠️ Chưa lưu được trạng thái SMS lên server: ${err.message}`, 'error');
+        });
     }
 
     // 3. Mở ứng dụng nhắn tin trên điện thoại
     sendReceptionSms(record, hotlinePhone, trackingDomain);
   };
 
-  // Copy link tra cứu hành trình đơn để nhân viên gửi khách qua Zalo/Messenger
   // Copy link tra cứu hành trình đơn có xác nhận, chống gửi trùng & đồng bộ toàn hệ thống
   const handleShareTrackingLink = async (record) => {
     const cleanCode = String(record?.code || '').trim();
-    const cleanPhone = String(record?.phone || '').replace(/[\s\-\.]/g, '');
+    const cleanPhone = normalizePhoneDigits(record?.phone);
     const keyword = cleanCode || cleanPhone;
 
     if (!keyword) {
@@ -300,6 +347,8 @@ function ReceptionApp() {
       : `https://${rawDomain.replace(/\/+$/, '')}`;
     const shareUrl = `${baseUrl}/tracking/${encodeURIComponent(keyword)}`;
 
+    // 1. Copy vào clipboard (tách riêng lỗi clipboard)
+    let copiedOk = false;
     try {
       if (navigator.clipboard && window.isSecureContext) {
         await navigator.clipboard.writeText(shareUrl);
@@ -311,13 +360,25 @@ function ReceptionApp() {
         document.execCommand('copy');
         document.body.removeChild(tempInput);
       }
+      copiedOk = true;
+    } catch {
+      window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
+    }
+
+    // 2. Đồng bộ xuống Supabase để các máy khác thấy ngay
+    try {
+      if (record.id) {
+        const syncRes = await fetch(`${API_BASE}/${record.id}/link-sent`, {
+          method: 'POST',
+          keepalive: true,
+        });
+        await handleResponse(syncRes);
+      }
 
       const nowIso = new Date().toISOString();
       const timeLabel = formatSmsTime(nowIso);
-      const currentSender =
-        window.CURRENT_USER?.ho_ten || window.CURRENT_USER?.username || '';
+      const currentSender = currentUser.ho_ten || currentUser.username || '';
 
-      // 1. Cập nhật trạng thái Đã gửi link ngay lập tức trên giao diện
       const nextMap = { ...sentLinkMap, [key]: timeLabel };
       setSentLinkMap(nextMap);
       setRecords((prev) =>
@@ -331,21 +392,18 @@ function ReceptionApp() {
         localStorage.setItem('reception_sent_link', JSON.stringify(nextMap));
       } catch {}
 
-      // 2. Đồng bộ xuống Supabase để các máy khác thấy ngay
-      if (record.id) {
-        fetch(`${API_BASE}/${record.id}/link-sent`, {
-          method: 'POST',
-          keepalive: true,
-        }).catch(() => {});
-      }
-
       setCopiedTicketId(record.id);
-      showToast(`📋 Đã copy & ghi nhận gửi link phiếu [${cleanCode || keyword}]!`, 'success');
+      showToast(
+        copiedOk
+          ? `📋 Đã copy & đồng bộ gửi link phiếu [${cleanCode || keyword}]!`
+          : `✅ Đã đồng bộ gửi link phiếu [${cleanCode || keyword}]!`,
+        'success'
+      );
       setTimeout(() => {
         setCopiedTicketId((prev) => (prev === record.id ? null : prev));
       }, 2000);
-    } catch {
-      window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
+    } catch (err) {
+      showToast(`⚠️ Đã copy link nhưng lỗi lưu lên server: ${err.message}`, 'error');
     }
   };
 
@@ -745,6 +803,7 @@ function ReceptionApp() {
                     const smsSentTime = formatSmsTime(r.sms_sent_at || sentSmsMap[String(r.id || r.code)]);
 					const linkSentTime = formatSmsTime(r.link_sent_at || sentLinkMap[String(r.id || r.code)]);
                     const isCopied = copiedTicketId === r.id;
+                    const cleanPhone = normalizePhoneDigits(r.phone);
 
                     return (
                       <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative group">
@@ -827,7 +886,46 @@ function ReceptionApp() {
                         </div>
 
                         <h4 className="font-bold text-sm text-white">{r.customer_name}</h4>
-                        <p className="text-[11px] text-gray-400 mt-0.5 font-monospace"><i className="fa-solid fa-phone mr-1"></i>{r.phone || '—'}</p>
+
+                        {/* SỐ ĐIỆN THOẠI + COPY SĐT + MỞ CHAT ZALO */}
+                        {cleanPhone && (
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                            <a
+                              href={`tel:${cleanPhone}`}
+                              onClick={(e) => e.stopPropagation()}
+                              title="Nhấn để gọi điện cho khách hàng"
+                              className="inline-flex items-center gap-1 text-xs font-mono font-semibold text-sky-300 hover:text-sky-200 hover:underline"
+                            >
+                              <i className="fa-solid fa-phone text-[10px] text-sky-400"></i>
+                              <span>{r.phone}</span>
+                            </a>
+
+                            <button
+                              type="button"
+                              onClick={(e) => handleCopyPhone(e, r)}
+                              title="Copy số điện thoại"
+                              className={`px-1.5 py-0.5 rounded border text-[10px] transition cursor-pointer ${
+                                copiedPhoneId === r.id
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-slate-800/90 text-slate-300 border-slate-600/80 hover:bg-slate-700 hover:text-white'
+                              }`}
+                            >
+                              <i className={`fa-solid ${copiedPhoneId === r.id ? 'fa-check' : 'fa-copy'}`}></i>
+                            </button>
+
+                            <a
+                              href={`https://zalo.me/${cleanPhone}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              title={`Mở chat Zalo với khách (${cleanPhone})`}
+                              className="px-1.5 py-0.5 rounded border border-blue-500/40 bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 hover:text-white text-[10px] font-bold inline-flex items-center gap-1 transition"
+                            >
+                              <i className="fa-solid fa-comment-dots text-[9px]"></i>
+                              <span>Zalo</span>
+                            </a>
+                          </div>
+                        )}
 
                         <div className="mt-2 text-[11px] bg-black/20 p-2 rounded border border-slate-700/50 space-y-1">
                           <div><span className="text-gray-400">Lỗi báo: </span><span className="text-amber-100 font-medium">{r.note || 'Không có'}</span></div>
@@ -857,35 +955,39 @@ function ReceptionApp() {
                                 ? 'bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40'
                                 : 'bg-sky-600/80 hover:bg-sky-500 text-white'
                             }`}
-                            title={smsSentTime ? `Đã mở gửi SMS lúc ${smsSentTime} (Nhấn để gửi lại)` : 'Gửi tin nhắn SMS cho khách'}
+                            title={
+                              smsSentTime
+                                ? `Đã gửi SMS lúc ${smsSentTime}${r.sms_sent_by ? ` (${r.sms_sent_by})` : ''} — Nhấn để gửi lại`
+                                : 'Gửi tin nhắn SMS cho khách'
+                            }
                           >
                             <i className={`fa-solid ${smsSentTime ? 'fa-check-double text-sky-400' : 'fa-sms'}`}></i>
                             <span>{smsSentTime ? 'Đã SMS' : 'SMS'}</span>
                           </button>
 
                           <button
-							  type="button"
-							  onClick={() => handleShareTrackingLink(r)}
-							  title={
-								linkSentTime
-								  ? `Đã copy gửi khách lúc ${linkSentTime}${r.link_sent_by ? ` (${r.link_sent_by})` : ''}`
-								  : 'Copy link tra cứu hành trình gửi khách'
-							  }
-							  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border transition flex items-center gap-1 cursor-pointer ${
-								copiedTicketId === r.id || linkSentTime
-								  ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-								  : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
-							  }`}
-							>
-							  <i className={`fa-solid ${copiedTicketId === r.id || linkSentTime ? 'fa-check-double text-emerald-400' : 'fa-link'} text-[10px]`}></i>
-							  <span>
-								{copiedTicketId === r.id
-								  ? 'Đã copy!'
-								  : linkSentTime
-									? 'Đã gửi link'
-									: 'Copy link'}
-							  </span>
-							</button>
+                            type="button"
+                            onClick={() => handleShareTrackingLink(r)}
+                            title={
+                              linkSentTime
+                                ? `Đã copy gửi khách lúc ${linkSentTime}${r.link_sent_by ? ` (${r.link_sent_by})` : ''}`
+                                : 'Copy link tra cứu hành trình gửi khách'
+                            }
+                            className={`flex-[2] h-8 rounded text-[11px] font-bold border transition flex items-center justify-center gap-1 cursor-pointer ${
+                              copiedTicketId === r.id || linkSentTime
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
+                                : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                            }`}
+                          >
+                            <i className={`fa-solid ${copiedTicketId === r.id || linkSentTime ? 'fa-check-double text-emerald-400' : 'fa-link'} text-[10px]`}></i>
+                            <span>
+                              {copiedTicketId === r.id
+                                ? 'Đã copy!'
+                                : linkSentTime
+                                  ? 'Đã gửi link'
+                                  : 'Copy link'}
+                            </span>
+                          </button>
                         </div>
                       </div>
                     );

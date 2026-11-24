@@ -343,7 +343,7 @@ async def search_reception_records(
     end = start + limit - 1
     try:
         res = await asyncio.to_thread(
-            lambda: db_query.order("updated_at", desc=True).range(start, end).execute()
+            lambda: db_query.order("created_at", desc=True).range(start, end).execute()
         )
     except Exception as e:
         logger.error(f"Lỗi tra cứu: {e}", exc_info=True)

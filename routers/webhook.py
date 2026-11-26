@@ -912,14 +912,16 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 workflow_obj = {}
 
         workflow_id = _extract_wf_id(payload, job_data, workflow_obj, workflow_storage, workflow_delivery)
-
+        workflow_install = str(
+            settings.get("workflow_install_id") or settings.get("workflow_install") or "18191"
+        ).strip()
         # Nếu là quy trình Kho/Giao nhận hoặc thiếu workflow_id: gọi thêm Base API /job/get để lấy full gen_prev + custom_fields
         need_api_enrich = (
             not workflow_id
             or workflow_id in {workflow_storage, workflow_delivery}
             or not (payload.get("gen_prev") or payload.get("parent_id") or job_data.get("gen_prev"))
         )
-        if need_api_enrich and workflow_id != workflow_repair:
+        if need_api_enrich and workflow_id not in {workflow_repair, workflow_install}:
             preferred = (
                 ["storage", "delivery", "repair"]
                 if workflow_id != workflow_delivery
@@ -1048,23 +1050,30 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or normalize_phone(extracted_phone_title or "")
             or None
         )
-        workflow_install = str(
-            settings.get("workflow_install_id") or settings.get("workflow_install") or "20038"
-        ).strip()
+       
 
         # Rẽ nhánh riêng cho Quy trình Kỹ Thuật Lắp Đặt -> Không đi qua bảng repairs
+        # Rẽ nhánh riêng cho Quy trình Kỹ Thuật Lắp Đặt -> Lưu vào bảng installation_orders
         if workflow_id == workflow_install:
-            install_info = _extract_installation_payload(payload, job_data, task_name, custom_fields_data)
-            logger.info(
-                f"🛠️ [INSTALL-WEBHOOK] Job={job_id} | Stage='{stage_name}' | "
-                f"HD='{install_info['invoice_code']}' | KH='{install_info['customer_name']}' | SĐT='{install_info['phone']}'"
+            install_ref = await _process_installation_webhook(
+                payload=payload,
+                job_data=job_data,
+                job_id=job_id,
+                task_name=task_name,
+                stage_name=stage_name,
+                metatype=metatype,
+                state=state,
+                custom_fields_data=custom_fields_data,
             )
-            # TODO: Gọi hàm ghi xuống bảng bảo hành trên Supabase tại đây
+            logger.info(
+                f"🛠️ [INSTALL-WEBHOOK] Đồng bộ thành công Job={job_id} | Stage='{stage_name}' | Ref='{install_ref}'"
+            )
             return {
                 "status": "success",
-                "message": "Đã nhận dữ liệu quy trình Lắp đặt",
+                "message": "Đã đồng bộ dữ liệu quy trình Lắp đặt",
                 "workflow_id": workflow_id,
-                "data": install_info,
+                "code": install_ref,
+                "stage_name": stage_name or "Thông tin đơn",
             }
 
         # 5. Tìm phiếu đã tồn tại trong CSDL (Siết chặt liên kết để tránh cướp phiếu cũ qua SĐT)
@@ -1235,7 +1244,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 final_phone=final_phone,
                 final_address=final_address,
                 final_note=final_note,
-                final_receibaseved_note=final_received_note,
+                final_received_note=final_received_note,
                 extracted_code=extracted_code,
                 now_iso=now_iso,
                 img_groups=img_groups,

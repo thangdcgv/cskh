@@ -23,9 +23,10 @@ DEFAULT_SYSTEM_KEYS = [
     {"key": "base_warranty_token", "value": "", "description": "API Key / Token cho ứng dụng Bảo hành (Warranty)"},
     {"key": "base_recept_token", "value": "", "description": "API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)"},
     {"key": "base_table_token", "value": "", "description": "API Key / Token cho Base Table"},
-    {"key": "workflow_repair_id", "value": "20025", "description": "Workflow ID quy trình Sửa chữa trên Base"},
-    {"key": "workflow_storage_id", "value": "20036", "description": "Workflow ID quy trình Lưu kho trên Base"},
-    {"key": "workflow_delivery_id", "value": "20037", "description": "Workflow ID quy trình Giao nhận trên Base"},
+    {"key": "workflow_repair_id", "value": "18190", "description": "Workflow ID quy trình Sửa chữa trên Base"},
+    {"key": "workflow_storage_id", "value": "18720", "description": "Workflow ID quy trình Lưu kho trên Base"},
+    {"key": "workflow_delivery_id", "value": "18249", "description": "Workflow ID quy trình Giao nhận trên Base"},
+    {"key": "workflow_install_id", "value": "18191", "description": "Workflow ID quy trình Kỹ thuật lắp đặt trên Base"},
     {"key": "base_shared_secret", "value": "", "description": "Secret Token xác thực Webhook từ Base gửi về"},
     {"key": "cache_ttl_seconds", "value": "60", "description": "Thời gian lưu Cache RAM cấu hình (giây)"},
 

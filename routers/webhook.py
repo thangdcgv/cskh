@@ -1389,12 +1389,26 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         if phone_in_title:
             phone_raw = phone_in_title.group(1)
 
-    serial_number = clean_base_value(
-        payload.get("custom_so_serial")
+    # 6. Lấy Số Serial từ custom_so_seria_may & custom_so_seria_may_2 (dùng chung cho Khách Mới & Khách Quen)
+    sn1 = clean_base_value(
+        payload.get("custom_so_seria_may")
+        or custom_fields_data.get("so_seria_may")
+        or payload.get("custom_so_serial")
         or payload.get("custom_serial")
         or custom_fields_data.get("so_serial")
         or custom_fields_data.get("serial")
     )
+    sn2 = clean_base_value(
+        payload.get("custom_so_seria_may_2")
+        or custom_fields_data.get("so_seria_may_2")
+    )
+
+    serial_list = []
+    for sn in (sn1, sn2):
+        sn_upper = sn.upper()
+        if sn_upper and sn_upper not in serial_list:
+            serial_list.append(sn_upper)
+    serial_number = ", ".join(serial_list)
 
     assignee_obj = payload.get("assignee") or job_data.get("assignee") or {}
     if isinstance(assignee_obj, str) and assignee_obj.strip().startswith("{"):
@@ -1413,7 +1427,7 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         "address": address or "",
         "note": shipping_info or "",
         "model_hint": model_hint,
-        "serial_number": serial_number or "",
+        "serial_number": serial_number,
         "assignee_name": assignee_name,
     }
 
@@ -1433,13 +1447,22 @@ async def _process_installation_webhook(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     existing_res = await asyncio.to_thread(
-        lambda: supabase.table("installation_orders")
+        lambda: supabase_admin.table("installation_orders")
         .select("*")
         .eq("base_job_id", job_id)
         .limit(1)
         .execute()
     )
     existing = (existing_res.data or [None])[0]
+
+    # Nếu đơn bị lưu trữ (Archive) trên Base và chưa cấp phiếu bảo hành -> dọn khỏi bảng Kanban
+    is_archived = str(payload.get("is_archive") or job_data.get("is_archive") or "0").strip() == "1"
+    if is_archived:
+        if existing and not existing.get("warranty_record_id"):
+            await asyncio.to_thread(
+                lambda: supabase_admin.table("installation_orders").delete().eq("id", existing["id"]).execute()
+            )
+        return (existing.get("invoice_code") if existing else info["invoice_code"]) or job_id
 
     if existing:
         # Không ghi đè dữ liệu KTV đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
@@ -1461,11 +1484,12 @@ async def _process_installation_webhook(
             update_payload["address"] = info["address"]
         if not existing.get("model_hint") and info["model_hint"]:
             update_payload["model_hint"] = info["model_hint"]
-        if not existing.get("serial_number") and info["serial_number"]:
+        # Cho phép đồng bộ cập nhật/bổ sung Serial từ Base miễn là đơn chưa tạo phiếu bảo hành
+        if info["serial_number"] and not existing.get("warranty_record_id"):
             update_payload["serial_number"] = info["serial_number"]
 
         await asyncio.to_thread(
-            lambda: supabase.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
+            lambda: supabase_admin.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
         )
         return existing.get("invoice_code") or job_id
 
@@ -1487,6 +1511,6 @@ async def _process_installation_webhook(
         "updated_at": now_iso,
     }
     await asyncio.to_thread(
-        lambda: supabase.table("installation_orders").insert(insert_payload).execute()
+        lambda: supabase_admin.table("installation_orders").insert(insert_payload).execute()
     )
     return info["invoice_code"] or job_id

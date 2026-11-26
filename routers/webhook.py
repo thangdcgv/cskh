@@ -1048,29 +1048,31 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             or None
         )
 
-        # 5. Tìm phiếu đã tồn tại trong CSDL
+        # 5. Tìm phiếu đã tồn tại trong CSDL (Siết chặt liên kết để tránh cướp phiếu cũ qua SĐT)
         related_ids = collect_related_job_ids(payload, job_id, job_data)
         if scanned_source_job:
             for tok in _normalize_id_token(scanned_source_job):
                 if tok != job_id and tok not in related_ids:
                     related_ids.append(tok)
 
-        possibly_forwarded = (
-            workflow_id in {workflow_storage, workflow_delivery, ""}
-            or "[fwd]" in task_name.lower()
-            or bool(related_ids)
-            or bool(scanned_source_job)
-        )
-
         final_code_for_match = extracted_code or scanned_ticket_code
         extracted_name = parsed_info.get("customer_name", "").strip()
+
+        # Chỉ cho phép ghép phụ theo SĐT khi đơn có dấu hiệu chuyển tiếp rõ ràng
+        # (có related_ids/gen_prev, mã phiếu gốc, source_job hoặc tag [FWD])
+        has_explicit_forward_link = (
+            bool(related_ids)
+            or bool(scanned_source_job)
+            or bool(final_code_for_match)
+            or "[fwd]" in task_name.lower()
+        )
 
         existing_ticket = await find_existing_repair_ticket(
             candidate_job_ids=[job_id, *related_ids],
             code=final_code_for_match,
             phone=extracted_phone_norm,
             customer_name=extracted_name,
-            allow_phone_match=possibly_forwarded,
+            allow_phone_match=has_explicit_forward_link,
         )
 
         # Chuẩn hóa Workflow ID nếu Base gửi thiếu (KHÔNG bao giờ ép job forward mới về repair)
@@ -1156,7 +1158,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             has_existing_received=bool(old_received),
         )
 
-        # 7. Điều hướng cập nhật CSDL theo từng quy trình
+        # 7. Điều hướng cập nhật CSDL theo từng quy trình (khóa chặt nhánh repair)
         if workflow_id == workflow_storage:
             ticket_code = await _process_storage_webhook(
                 existing_ticket=existing_ticket,
@@ -1199,7 +1201,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
             )
             current_app_name = "delivery"
 
-        else:
+        elif workflow_id == workflow_repair:
             ticket_code = await _process_repair_webhook(
                 payload=payload,
                 job_data=job_data,
@@ -1214,7 +1216,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 final_phone=final_phone,
                 final_address=final_address,
                 final_note=final_note,
-                final_received_note=final_received_note,
+                final_receibaseved_note=final_received_note,
                 extracted_code=extracted_code,
                 now_iso=now_iso,
                 img_groups=img_groups,
@@ -1224,6 +1226,14 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 old_storage=old_storage,
             )
             current_app_name = "repair"
+
+        else:
+            logger.warning(f"⛔ [BLOCKED] Workflow không hợp lệ: WF='{workflow_id}' | Job='{job_id}'")
+            return {
+                "status": "ignored",
+                "message": f"Workflow '{workflow_id}' không được phép ghi dữ liệu.",
+                "code": None,
+            }
 
         # 8. Kích hoạt đối soát ngầm & phản hồi
         bg_tasks.add_task(safe_background_reconcile, current_app_name)
@@ -1239,5 +1249,12 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
     except HTTPException:
         raise
     except Exception as e:
+        if "BLOCKED_NON_REPAIR_ORIGIN" in str(e):
+            logger.warning(f"⛔ [DB-TRIGGER-BLOCKED] {str(e)}")
+            return {
+                "status": "ignored",
+                "message": "Database chặn đơn không xuất phát từ quy trình Sửa chữa.",
+                "code": None,
+            }
         logger.error(f"[Webhook Error] {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Lỗi hệ thống khi xử lý webhook")

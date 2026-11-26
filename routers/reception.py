@@ -1,1792 +1,840 @@
-{% extends "base.html" %}
-{% block title %}Lễ Tân Tiếp Nhận & Quản Lý Đơn | Center Hub{% endblock %}
+import asyncio
+import logging
+import re
+import time
+import unicodedata
+import urllib.parse
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+from uuid import UUID, uuid4
 
-{% block head %}
-{{ super() }}
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel, ConfigDict, Field
 
-<style>
-.hide-scrollbar::-webkit-scrollbar { display: none; }
-.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+from database import settings, supabase, supabase_admin
+from routers.auth import get_current_user, get_current_user_or_redirect
+from routers.permissions import can_access, can_modify_warranty_record
+from templates_config import templates
+from websocket_manager import manager
 
-.kanban-container {
-  display: flex;
-  overflow: auto;
-  gap: 1.25rem;
-  padding-bottom: 1rem;
-  height: 100%;
+logger = logging.getLogger("uvicorn.error")
+VN_TZ = timezone(timedelta(hours=7))
+TABLE = "repairs"
+MAX_CODE_RETRY = 5
+ALLOWED_STATUSES = {"received", "processing", "fixed", "returned", "cancelled"}
+
+router = APIRouter(prefix="/api/reception", tags=["Reception"])
+
+_settings_cache = {"data": {}, "expires_at": 0}
+
+
+# ==================== SCHEMAS ====================
+class ReceiveItemRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    customer_name: str = Field(..., min_length=1, max_length=200)
+    phone: str = Field(..., min_length=8, max_length=20)
+    address: Optional[str] = Field(None, max_length=500)
+    note: Optional[str] = Field(None, max_length=1000)
+    received_note: Optional[str] = Field(None, max_length=1000)
+    base_job_id: Optional[str] = Field(None, max_length=100)
+
+
+class UpdateItemRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    customer_name: Optional[str] = Field(None, min_length=1, max_length=200)
+    phone: Optional[str] = Field(None, min_length=8, max_length=20)
+    address: Optional[str] = Field(None, max_length=500)
+    note: Optional[str] = Field(None, max_length=1000)
+    received_note: Optional[str] = Field(None, max_length=1000)
+    status: Optional[str] = None
+
+
+class ReturnItemRequest(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    received_note: Optional[str] = Field(None, max_length=1000)
+    returned_note: Optional[str] = Field(None, max_length=1000)
+    returned_method: Optional[str] = Field(None, max_length=100)
+    is_fixed: Optional[bool] = None
+
+
+# ==================== HELPERS ====================
+def normalize_phone(phone: str) -> str:
+    """Chuẩn hóa SĐT về dạng 0xxxxxxxxx (chỉ số, 10 ký tự) — khớp CHECK constraint"""
+    digits = re.sub(r"\D", "", phone or "")
+    if digits.startswith("84") and len(digits) == 11:
+        return "0" + digits[2:]
+    if digits.startswith("0") and len(digits) == 10:
+        return digits
+    if len(digits) == 9 and digits[0] in "35789":
+        return "0" + digits
+    return digits[:11] if digits else ""
+
+
+def escape_postgrest(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+        .replace(",", "\\,")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
+
+
+EMPTY_NOTE_VALUES = {
+    "",
+    "chưa ghi chú",
+    "chua ghi chu",
+    "chưa ghi nhận",
+    "chua ghi nhan",
+    "bình thường",
+    "binh thuong",
+    "no value",
+    "null",
+    "none",
 }
-</style>
-{% endblock %}
 
-{% block content %}
-<div id="root" class="w-full h-full"></div>
-{% endblock %}
 
-{% block scripts %}
-{{ super() }}
-<script>
-  window.SUPABASE_URL = "{{ supabase_url | default('', true) }}";
-  window.SUPABASE_ANON_KEY = "{{ supabase_anon_key | default('', true) }}";
-  window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
-  window.CAN_DELETE_TICKET = "{{ 'true' if (user_perms and user_perms.get('can_delete')) else 'false' }}" === "true";
-  window.CURRENT_USER = {
-    id: "{{ current_user.get('id', '') if current_user else '' }}",
-    username: "{{ current_user.get('username', '') if current_user else '' }}",
-    ho_ten: "{{ current_user.get('ho_ten', '') if current_user else '' }}",
-    email: "{{ current_user.get('email', '') if current_user else '' }}",
-    role: "{{ current_user.get('role', '') if current_user else '' }}",
-    department: "{{ current_user.get('department', '') if current_user else '' }}"
-  };
-</script>
+def _to_ascii_sms(text: str) -> str:
+    """Chuyển tiếng Việt có dấu sang không dấu để SMS giữ chuẩn 160 ký tự/tin."""
+    if not text:
+        return ""
+    text = text.replace("đ", "d").replace("Đ", "D")
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
-{% raw %}
-<script type="text/babel">
-const { useState, useEffect, useRef, useCallback, useMemo } = React;
-const API_BASE = "/api/reception";
 
-const WORKFLOWS = [
-  { id: 'repair', name: 'Sửa Chữa - Bảo Hành', icon: 'fa-screwdriver-wrench' },
-  { id: 'storage', name: 'Lưu Kho Sửa Chữa', icon: 'fa-warehouse' },
-  { id: 'delivery', name: 'Giao Nhận Hàng', icon: 'fa-truck-fast' },
-  { id: 'installation', name: 'Kỹ Thuật Lắp Đặt', icon: 'fa-truck-ramp-box' },
-  { id: 'all', name: 'Tất Cả Đơn Hàng', icon: 'fa-layer-group' }
-];
-
-const getSupabaseClient = () => {
-  if (window._supabaseInstance) return window._supabaseInstance;
-  const url = window.SUPABASE_URL || '';
-  const key = window.SUPABASE_ANON_KEY || window.SUPABASE_KEY || '';
-  if (url && key && window.supabase) {
-    window._supabaseInstance = window.supabase.createClient(url, key);
-    return window._supabaseInstance;
-  }
-  return null;
-};
-
-const handleResponse = async (res) => {
-  if (res.status === 401) {
-    window.location.href = '/login';
-    throw new Error('Vui lòng đăng nhập lại');
-  }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || data.message || 'Yêu cầu thất bại');
-  return data;
-};
-
-const removeAccents = (str) => {
-  if (!str) return '';
-  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D');
-};
-
-const normalizePhoneDigits = (phone) => {
-  const digits = String(phone || '').replace(/\D/g, '');
-  if (!digits) return '';
-  if (digits.startsWith('84') && digits.length >= 11) {
-    return '0' + digits.slice(2);
-  }
-  return digits;
-};
-
-const formatDateTimeShort = (rawTime) => {
-  if (!rawTime) return '';
-  const parsed = new Date(rawTime);
-  if (Number.isNaN(parsed.getTime())) return String(rawTime);
-  return parsed.toLocaleTimeString('vi-VN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    day: '2-digit',
-    month: '2-digit',
-  });
-};
-
-const formatSmsTime = formatDateTimeShort;
-
-const EMPTY_SMS_NOTES = new Set([
-  '',
-  'chua ghi chu',
-  'chua ghi nhan',
-  'binh thuong',
-  'no value',
-  'null',
-  'none',
-]);
-
-const sendReceptionSms = (record, hotline = '', trackingDomain = '') => {
-  if (!record || !record.phone) return;
-
-  const cleanPhone = normalizePhoneDigits(record.phone);
-  if (!cleanPhone) return;
-
-  const nowStr = new Date(record.created_at || Date.now()).toLocaleDateString('vi-VN');
-  const cleanCustomerName =
-    removeAccents(record.customer_name || '').trim() || 'Khach le';
-
-  const recNote = removeAccents(record.received_note || '').trim();
-  const reqNote = removeAccents(record.note || '').trim();
-  const validNote = !EMPTY_SMS_NOTES.has(recNote.toLowerCase())
-    ? recNote
-    : !EMPTY_SMS_NOTES.has(reqNote.toLowerCase())
-      ? reqNote
-      : '';
-
-  const notePart = validNote ? `. Tinh trang: ${validNote}` : '';
-  const lhPart = hotline ? `. LH: ${String(hotline).trim()}` : '';
-
-  const smsText =
-    `May in Dai Thanh tao phieu [${record.code}] tiep nhan thiet bi KH ${cleanCustomerName} ` +
-    `luc ${nowStr}${notePart}${lhPart}`;
-
-  const encodedText = encodeURIComponent(smsText);
-  const isIOS =
-    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-  const targetLink = isIOS
-    ? `sms:${cleanPhone}&body=${encodedText}`
-    : `sms:${cleanPhone}?body=${encodedText}`;
-
-  window.location.href = targetLink;
-};
-
-function ReceptionApp() {
-  const [loading, setLoading] = useState(false);
-  const [toast, setToast] = useState(null);
-  const toastTimerRef = useRef(null);
-  const searchReqIdRef = useRef(0);
-
-  const [searchQuery, setSearchQuery] = useState('');
-  const [records, setRecords] = useState([]);
-  const [installRecords, setInstallRecords] = useState([]);
-  const [hotlinePhone, setHotlinePhone] = useState('');
-  const [trackingDomain, setTrackingDomain] = useState('https://cskh-nu.vercel.app');
-  const [activeWorkflow, setActiveWorkflow] = useState('repair');
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-
-  const [sentSmsMap, setSentSmsMap] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('reception_sent_sms') || '{}');
-    } catch {
-      return {};
-    }
-  });
-
-  const [sentLinkMap, setSentLinkMap] = useState(() => {
-    try {
-      return JSON.parse(localStorage.getItem('reception_sent_link') || '{}');
-    } catch {
-      return {};
-    }
-  });
-  const [copiedTicketId, setCopiedTicketId] = useState(null);
-  const [copiedPhoneId, setCopiedPhoneId] = useState(null);
-
-  const [editingRecord, setEditingRecord] = useState(null);
-  const [editForm, setEditForm] = useState({ customer_name: '', phone: '', address: '', note: '', received_note: '' });
-  const [isSaving, setIsSaving] = useState(false);
-
-  const [returnModalRecord, setReturnModalRecord] = useState(null);
-  const [returnForm, setReturnForm] = useState({ returned_method: 'Trực tiếp tại cửa hàng', returned_note: '' });
-  const [isSubmittingReturn, setIsSubmittingReturn] = useState(false);
-
-  const [deleteModalRecord, setDeleteModalRecord] = useState(null);
-  const [isDeleting, setIsDeleting] = useState(false);
-
-  const currentUser = window.CURRENT_USER || { role: '', username: '' };
-
-  const showToast = (message, type = 'success') => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    setToast({ message, type });
-    toastTimerRef.current = setTimeout(() => setToast(null), 5000);
-  };
-
-  const canDeleteTicket = Boolean(window.CAN_DELETE_TICKET);
-
-  const openDeleteModal = (record) => {
-    if (!canDeleteTicket) {
-      return showToast("⚠️ Bạn không có quyền xóa phiếu này!", "error");
-    }
-    setDeleteModalRecord(record);
-  };
-
-  useEffect(() => {
-    const fetchSettings = async () => {
-      try {
-        const res = await fetch('/api/settings/config');
-        if (res.ok) {
-          const config = await res.json();
-          const hotline = config?.sms_hotline || config?.hotline_repair || config?.hotline_warranty || '';
-          if (hotline) setHotlinePhone(String(hotline).trim());
-          if (config?.tracking_domain) setTrackingDomain(String(config.tracking_domain).trim());
-        }
-      } catch (err) {}
-    };
-    fetchSettings();
-  }, []);
-
-  // Copy nhanh SĐT khách hàng
-  const handleCopyPhone = async (e, record) => {
-    e.stopPropagation();
-    const cleanPhone = normalizePhoneDigits(record?.phone);
-    if (!cleanPhone) {
-      return showToast("⚠️ Phiếu này chưa có số điện thoại!", "error");
-    }
-
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(cleanPhone);
-      } else {
-        const tempInput = document.createElement('input');
-        tempInput.value = cleanPhone;
-        document.body.appendChild(tempInput);
-        tempInput.select();
-        document.execCommand('copy');
-        document.body.removeChild(tempInput);
-      }
-
-      setCopiedPhoneId(record.id);
-      showToast(`📋 Đã copy SĐT: ${cleanPhone}`, 'success');
-      setTimeout(() => {
-        setCopiedPhoneId((prev) => (prev === record.id ? null : prev));
-      }, 1500);
-    } catch {
-      showToast("⚠️ Không thể copy tự động, vui lòng copy thủ công.", "error");
-    }
-  };
-
-  // Gửi SMS có xác nhận lần đầu, cảnh báo gửi trùng & đồng bộ server
-  const handleSmsClick = async (record) => {
-    if (!record || !record.phone) {
-      return showToast("⚠️ Phiếu này chưa có số điện thoại khách hàng!", "error");
-    }
-
-    const key = String(record.id || record.code);
-    const rawPrevTime = record.sms_sent_at || sentSmsMap[key];
-    const previousSentAt = formatSmsTime(rawPrevTime);
-
-    if (previousSentAt) {
-      const senderInfo = record.sms_sent_by ? ` bởi ${record.sms_sent_by}` : '';
-      const confirmDuplicate = window.confirm(
-        `⚠️ Phiếu [${record.code}] đã gửi SMS lúc ${previousSentAt}${senderInfo}.\n\nBạn có chắc chắn muốn gửi lại tin nhắn trùng cho khách không?`
-      );
-      if (!confirmDuplicate) return;
-    } else {
-      const confirmFirstSend = window.confirm(
-        `Xác nhận gửi tin nhắn SMS cho khách ${record.customer_name || ''} (${record.phone})?\n\n` +
-        `Lưu ý: Chỉ nhấn "OK" nếu bạn thực sự thao tác gửi tin nhắn (hệ thống sẽ ghi nhận trạng thái Đã SMS cho toàn bộ thiết bị).`
-      );
-      if (!confirmFirstSend) return;
-    }
-
-    const nowIso = new Date().toISOString();
-    const timeLabel = formatSmsTime(nowIso);
-    const currentSender = currentUser.ho_ten || currentUser.username || '';
-
-    // 1. Cập nhật giao diện ngay lập tức (Optimistic UI)
-    const nextMap = { ...sentSmsMap, [key]: timeLabel };
-    setSentSmsMap(nextMap);
-    setRecords((prev) =>
-      prev.map((item) =>
-        item.id === record.id
-          ? { ...item, sms_sent_at: nowIso, sms_sent_by: currentSender }
-          : item
-      )
-    );
-    try {
-      localStorage.setItem('reception_sent_sms', JSON.stringify(nextMap));
-    } catch {}
-
-    // 2. Gửi API lưu xuống Supabase (keepalive: true giữ kết nối khi chuyển sang app Tin nhắn)
-    if (record.id) {
-      fetch(`${API_BASE}/${record.id}/sms-sent`, {
-        method: 'POST',
-        keepalive: true,
-      })
-        .then(handleResponse)
-        .catch((err) => {
-          showToast(`⚠️ Chưa lưu được trạng thái SMS lên server: ${err.message}`, 'error');
-        });
-    }
-
-    // 3. Mở ứng dụng nhắn tin trên điện thoại
-    sendReceptionSms(record, hotlinePhone, trackingDomain);
-  };
-
-  // Copy link tra cứu hành trình đơn có xác nhận, chống gửi trùng & đồng bộ toàn hệ thống
-  const handleShareTrackingLink = async (record) => {
-    const cleanCode = String(record?.code || '').trim();
-    const cleanPhone = normalizePhoneDigits(record?.phone);
-    const keyword = cleanCode || cleanPhone;
-
-    if (!keyword) {
-      return showToast("⚠️ Không có mã phiếu hoặc SĐT để tạo link tra cứu!", "error");
-    }
-
-    const key = String(record.id || record.code);
-    const rawPrevTime = record.link_sent_at || sentLinkMap[key];
-    const previousSentAt = formatSmsTime(rawPrevTime);
-
-    if (previousSentAt) {
-      const senderInfo = record.link_sent_by ? ` bởi ${record.link_sent_by}` : '';
-      const confirmDuplicate = window.confirm(
-        `⚠️ Link tra cứu phiếu [${cleanCode || keyword}] đã được copy gửi khách lúc ${previousSentAt}${senderInfo}.\n\nBạn có chắc chắn muốn copy gửi lại lần nữa không?`
-      );
-      if (!confirmDuplicate) return;
-    } else {
-      const confirmFirstCopy = window.confirm(
-        `Xác nhận copy link tra cứu hành trình để gửi cho khách ${record.customer_name || ''}?\n\n` +
-        `Lưu ý: Chỉ nhấn "OK" nếu bạn sẽ gửi link này cho khách (hệ thống sẽ đánh dấu "Đã gửi link" để các nhân viên khác nhận biết).`
-      );
-      if (!confirmFirstCopy) return;
-    }
-
-    const rawDomain = (trackingDomain || 'https://cskh-nu.vercel.app').trim();
-    const baseUrl = rawDomain.startsWith('http')
-      ? rawDomain.replace(/\/+$/, '')
-      : `https://${rawDomain.replace(/\/+$/, '')}`;
-    const shareUrl = `${baseUrl}/tracking/${encodeURIComponent(keyword)}`;
-
-    // 1. Copy vào clipboard (tách riêng lỗi clipboard)
-    let copiedOk = false;
-    try {
-      if (navigator.clipboard && window.isSecureContext) {
-        await navigator.clipboard.writeText(shareUrl);
-      } else {
-        const tempInput = document.createElement('input');
-        tempInput.value = shareUrl;
-        document.body.appendChild(tempInput);
-        tempInput.select();
-        document.execCommand('copy');
-        document.body.removeChild(tempInput);
-      }
-      copiedOk = true;
-    } catch {
-      window.prompt('Copy đường link tra cứu hành trình bên dưới:', shareUrl);
-    }
-
-    // 2. Đồng bộ xuống Supabase để các máy khác thấy ngay
-    try {
-      if (record.id) {
-        const syncRes = await fetch(`${API_BASE}/${record.id}/link-sent`, {
-          method: 'POST',
-          keepalive: true,
-        });
-        await handleResponse(syncRes);
-      }
-
-      const nowIso = new Date().toISOString();
-      const timeLabel = formatSmsTime(nowIso);
-      const currentSender = currentUser.ho_ten || currentUser.username || '';
-
-      const nextMap = { ...sentLinkMap, [key]: timeLabel };
-      setSentLinkMap(nextMap);
-      setRecords((prev) =>
-        prev.map((item) =>
-          item.id === record.id
-            ? { ...item, link_sent_at: nowIso, link_sent_by: currentSender }
-            : item
+def _get_sms_settings() -> dict:
+    now = time.time()
+    if now < _settings_cache["expires_at"]:
+        return _settings_cache["data"]
+    try:
+        res = (
+            supabase_admin.table("system_settings")
+            .select("key, value")
+            .in_("key", ["sms_hotline", "tracking_domain", "company_name"])
+            .execute()
         )
-      );
-      try {
-        localStorage.setItem('reception_sent_link', JSON.stringify(nextMap));
-      } catch {}
+        data = {item["key"]: item["value"] for item in (res.data or [])}
+    except Exception as e:
+        logger.warning(f"Không đọc được cấu hình SMS: {e}")
+        data = {}
+    data.setdefault("sms_hotline", "0938580406")
+    data.setdefault("tracking_domain", "cskh-nu.vercel.app")
+    data.setdefault("company_name", "May in Dai Thanh")
+    _settings_cache["data"] = data
+    _settings_cache["expires_at"] = now + 60
+    return data
 
-      setCopiedTicketId(record.id);
-      showToast(
-        copiedOk
-          ? `📋 Đã copy & đồng bộ gửi link phiếu [${cleanCode || keyword}]!`
-          : `✅ Đã đồng bộ gửi link phiếu [${cleanCode || keyword}]!`,
-        'success'
-      );
-      setTimeout(() => {
-        setCopiedTicketId((prev) => (prev === record.id ? null : prev));
-      }, 2000);
-    } catch (err) {
-      showToast(`⚠️ Đã copy link nhưng lỗi lưu lên server: ${err.message}`, 'error');
-    }
-  };
 
-  const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
-    const reqId = ++searchReqIdRef.current;
-    try {
-      setLoading(true);
-      if (wf === 'installation') {
-        const res = await fetch(`${API_BASE}/installations?query_str=${encodeURIComponent(queryStr || '')}`);
-        const data = await handleResponse(res);
-        if (reqId === searchReqIdRef.current && data.success) {
-          setInstallRecords(data.data || []);
-        }
-        return;
-      }
-      const params = new URLSearchParams({
-        query_str: queryStr || '',
-        workflow: wf || 'all',
-        page: 1,
-        limit: 200
-      });
-      const res = await fetch(`${API_BASE}/search?${params}`);
-      const data = await handleResponse(res);
-      if (reqId === searchReqIdRef.current && data.success) {
-        setRecords(data.data || []);
-      }
-    } catch (err) {
-      if (reqId === searchReqIdRef.current) {
-        showToast(err.message || "Lỗi kết nối!", "error");
-      }
-    } finally {
-      if (reqId === searchReqIdRef.current) {
-        setLoading(false);
-      }
-    }
-  }, [activeWorkflow]);
+def generate_sms_info(phone, customer_name, code, note, msg_type) -> Optional[dict]:
+    if not phone:
+        return None
 
-  useEffect(() => {
-    handleSearch(searchQuery, activeWorkflow);
-  }, [activeWorkflow]);
+    phone_clean = normalize_phone(phone)
+    if not phone_clean:
+        return None
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      handleSearch(searchQuery, activeWorkflow);
-    }, 350);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
+    cfg = _get_sms_settings()
+    hotline = cfg["sms_hotline"]
+    company = _to_ascii_sms(cfg["company_name"])
+    name_clean = _to_ascii_sms((customer_name or "Khach le").strip())
+    now_str = datetime.now(VN_TZ).strftime("%H:%M %d/%m/%Y")
 
-  const handleSearchRef = useRef(handleSearch);
-  useEffect(() => { handleSearchRef.current = handleSearch; }, [handleSearch]);
+    raw_note = (note or "").strip()
+    has_real_note = raw_note.lower() not in EMPTY_NOTE_VALUES
+    note_segment = f" Ghi chu: {_to_ascii_sms(raw_note)}." if has_real_note else ""
 
-  useEffect(() => {
-    const supabaseClient = getSupabaseClient();
-    if (!supabaseClient) return;
-
-    const channel = supabaseClient
-      .channel('reception-realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'repairs' }, () => {
-        if (handleSearchRef.current) handleSearchRef.current(searchQuery, activeWorkflow);
-      })
-      .on(
-    'postgres_changes',
-    { event: '*', schema: 'public', table: 'installation_orders' },
-    (payload) => {
-      const { eventType, new: newRow, old: oldRow } = payload;
-      setInstallRecords((prev) => {
-        if (eventType === 'INSERT') {
-          if (prev.some((item) => item.id === newRow.id)) return prev;
-          return [newRow, ...prev];
-        }
-        if (eventType === 'UPDATE') {
-          return prev.map((item) => (item.id === newRow.id ? { ...item, ...newRow } : item));
-        }
-        if (eventType === 'DELETE') {
-          return prev.filter((item) => item.id !== oldRow.id);
-        }
-        return prev;
-      });
-    }
-  )
-      .subscribe();
-
-    return () => { supabaseClient.removeChannel(channel); };
-  }, [searchQuery, activeWorkflow]);
-
-  const kanbanColumns = useMemo(() => {
-    if (activeWorkflow === 'repair') {
-      const repairRecords = records.filter(r => (r.current_process || 'repair').toLowerCase() === 'repair');
-      return [
-        {
-          id: 'received',
-          title: '1. Thông tin Đơn sửa',
-          colorClass: 'border-t-4 border-amber-500',
-          headerBg: 'bg-[#181208]',
-          textColor: 'text-amber-400',
-          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'received')
-        },
-        {
-          id: 'processing',
-          title: '2. Tiến hành kiểm tra',
-          colorClass: 'border-t-4 border-purple-500',
-          headerBg: 'bg-[#120a1a]',
-          textColor: 'text-purple-400',
-          items: repairRecords.filter(r => ['processing', 'repairing'].includes((r.status || '').toLowerCase()))
-        },
-        {
-          id: 'fixed',
-          title: '3. Hoàn thành sửa',
-          colorClass: 'border-t-4 border-emerald-500',
-          headerBg: 'bg-[#061711]',
-          textColor: 'text-emerald-400',
-          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'fixed')
-        },
-        {
-          id: 'failed',
-          title: '4. Thất bại / Hủy sửa',
-          colorClass: 'border-t-4 border-rose-500',
-          headerBg: 'bg-[#1c080d]',
-          textColor: 'text-rose-400',
-          items: repairRecords.filter(r => (r.status || '').toLowerCase() === 'cancelled' || r.repair_result === 'failed')
-        }
-      ];
-    }
-
-    if (activeWorkflow === 'storage') {
-      const storageRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'storage');
-      return [
-        {
-          id: 'storage_in_company',
-          title: '1. Máy Sửa Ở Cty',
-          colorClass: 'border-t-4 border-amber-500',
-          headerBg: 'bg-[#181208]',
-          textColor: 'text-amber-400',
-          items: storageRecords.filter(r => !['dispatched', 'destroyed'].includes((r.storage_status || '').toLowerCase()))
-        },
-        {
-          id: 'storage_dispatched',
-          title: '2. Đã Gửi Trả Máy',
-          colorClass: 'border-t-4 border-emerald-500',
-          headerBg: 'bg-[#061711]',
-          textColor: 'text-emerald-400',
-          items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'dispatched')
-        },
-        {
-          id: 'storage_destroyed',
-          title: '3. Tiêu hủy',
-          colorClass: 'border-t-4 border-rose-500',
-          headerBg: 'bg-[#1c080d]',
-          textColor: 'text-rose-400',
-          items: storageRecords.filter(r => (r.storage_status || '').toLowerCase() === 'destroyed')
-        }
-      ];
-    }
-
-    if (activeWorkflow === 'delivery') {
-      const deliveryRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'delivery');
-      return [
-        {
-          id: 'delivery_pending',
-          title: '1. Thông Tin Đơn',
-          colorClass: 'border-t-4 border-amber-500',
-          headerBg: 'bg-[#181208]',
-          textColor: 'text-amber-400',
-          items: deliveryRecords.filter(r => !['delivering', 'delivered', 'failed'].includes((r.delivery_status || '').toLowerCase()))
-        },
-        {
-          id: 'delivering',
-          title: '2. Xử lý đơn hàng',
-          colorClass: 'border-t-4 border-indigo-500',
-          headerBg: 'bg-[#0e0e26]',
-          textColor: 'text-indigo-400',
-          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivering')
-        },
-        {
-          id: 'delivered',
-          title: '3. Hoàn thành',
-          colorClass: 'border-t-4 border-emerald-500',
-          headerBg: 'bg-[#061711]',
-          textColor: 'text-emerald-400',
-          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'delivered')
-        },
-        {
-          id: 'delivery_failed',
-          title: '4. Thất bại',
-          colorClass: 'border-t-4 border-rose-500',
-          headerBg: 'bg-[#1c080d]',
-          textColor: 'text-rose-400',
-          items: deliveryRecords.filter(r => (r.delivery_status || '').toLowerCase() === 'failed')
-        }
-      ];
-    }
-
-    if (activeWorkflow === 'installation') {
-      const list = Array.isArray(installRecords) ? installRecords : [];
-      return [
-        {
-          id: 'install_pending',
-          title: '1. Thông tin đơn',
-          colorClass: 'border-t-4 border-amber-500',
-          headerBg: 'bg-[#181208]',
-          textColor: 'text-amber-400',
-          items: list.filter(r => !['processing', 'completed', 'failed'].includes((r.status || 'pending').toLowerCase()))
-        },
-        {
-          id: 'install_processing',
-          title: '2. Xử lý đơn',
-          colorClass: 'border-t-4 border-sky-500',
-          headerBg: 'bg-[#081524]',
-          textColor: 'text-sky-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'processing')
-        },
-        {
-          id: 'install_completed',
-          title: '3. Hoàn thành đơn',
-          colorClass: 'border-t-4 border-emerald-500',
-          headerBg: 'bg-[#061711]',
-          textColor: 'text-emerald-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'completed')
-        },
-        {
-          id: 'install_failed',
-          title: '4. Thất bại',
-          colorClass: 'border-t-4 border-rose-500',
-          headerBg: 'bg-[#1c080d]',
-          textColor: 'text-rose-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'failed')
-        }
-      ];
-    }
-
-    return [
-      {
-        id: 'all_received',
-        title: 'Đang Xử Lý',
-        colorClass: 'border-t-4 border-sky-500',
-        headerBg: 'bg-[#081524]',
-        textColor: 'text-sky-400',
-        items: records.filter(r =>
-          r.status !== 'returned' &&
-          r.status !== 'cancelled' &&
-          (r.storage_status || '').toLowerCase() !== 'destroyed' &&
-          (r.delivery_status || '').toLowerCase() !== 'failed'
+    if msg_type == "receive":
+        sms_text = (
+            f"{company} tao phieu [{code}] tiep nhan thiet bi KH {name_clean} "
+            f"luc {now_str}.{note_segment} LH: {hotline}"
         )
-      },
-      {
-        id: 'all_returned',
-        title: 'Đã Bàn Giao',
-        colorClass: 'border-t-4 border-emerald-500',
-        headerBg: 'bg-[#061711]',
-        textColor: 'text-emerald-400',
-        items: records.filter(r =>
-          r.status === 'returned' ||
-          (r.storage_status || '').toLowerCase() === 'dispatched' ||
-          (r.delivery_status || '').toLowerCase() === 'delivered'
+    else:
+        sms_text = (
+            f"{company} da hoan tra thiet bi [{code}] cho KH {name_clean} "
+            f"luc {now_str}. Cam on Quy khach! LH: {hotline}"
         )
-      }
-    ];
-  }, [records, installRecords, activeWorkflow]);
 
-  const handleDeleteConfirm = async () => {
-    if (!deleteModalRecord) return;
-    setIsDeleting(true);
-    try {
-      const res = await fetch(`${API_BASE}/${deleteModalRecord.id}`, { method: 'DELETE' });
-      await handleResponse(res);
-      showToast(`Đã xóa vĩnh viễn phiếu [${deleteModalRecord.code}]!`, 'success');
-      setDeleteModalRecord(null);
-      handleSearch(searchQuery, activeWorkflow);
-    } catch (err) {
-      showToast(err.message || "Lỗi khi xóa phiếu!", "error");
-    } finally {
-      setIsDeleting(false);
-    }
-  };
-
-  const handleReturnClick = (record) => {
-    const status = (record.status || '').toLowerCase();
-    const currentProcess = (record.current_process || 'repair').toLowerCase();
-    const storageStatus = (record.storage_status || '').toLowerCase();
-    const deliveryStatus = (record.delivery_status || '').toLowerCase();
-
-    if (storageStatus === 'destroyed') return showToast("🔥 Thiết bị đã được xác nhận tiêu hủy!", "error");
-    if (deliveryStatus === 'failed') return showToast("⚠️ Đơn giao nhận đang ở trạng thái thất bại!", "error");
-    if (currentProcess === 'delivery') return showToast("🚚 Đang thuộc Quy trình Giao nhận!", "error");
-    if (currentProcess === 'repair' && (status === 'processing' || status === 'repairing')) return showToast("⚙ Thiết bị đang sửa!", "error");
-
-    setReturnModalRecord(record);
-    setReturnForm({ returned_method: 'Trực tiếp tại cửa hàng', returned_note: '' });
-  };
-
-  const handleReturnSubmit = async (e) => {
-    e.preventDefault();
-    setIsSubmittingReturn(true);
-    try {
-      const payload = {
-        returned_method: returnForm.returned_method,
-        returned_note: returnForm.returned_note,
-        is_fixed: returnModalRecord.status === 'fixed'
-      };
-      const res = await fetch(`${API_BASE}/${returnModalRecord.id}/return`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      await handleResponse(res);
-      showToast(`✅ Đã xác nhận trả thiết bị!`, 'success');
-      setReturnModalRecord(null);
-      handleSearch(searchQuery, activeWorkflow);
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setIsSubmittingReturn(false);
-    }
-  };
-
-  const openEditModal = (record) => {
-    setEditingRecord(record);
-    setEditForm({
-      customer_name: record.customer_name || '',
-      phone: record.phone || '',
-      address: record.address || '',
-      note: record.note || '',
-      received_note: record.received_note || ''
-    });
-  };
-
-  const handleEditSubmit = async (e) => {
-    e.preventDefault();
-    setIsSaving(true);
-    try {
-      const res = await fetch(`${API_BASE}/${editingRecord.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editForm)
-      });
-      await handleResponse(res);
-      showToast(`✅ Đã cập nhật phiếu [${editingRecord.code}]!`, 'success');
-      setEditingRecord(null);
-      handleSearch(searchQuery, activeWorkflow);
-    } catch (err) {
-      showToast(err.message, "error");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-  // --- STATE & HANDLERS CHO KỸ THUẬT LẮP ĐẶT ---
-  const [installEditRecord, setInstallEditRecord] = useState(null);
-  const [installEditForm, setInstallEditForm] = useState({
-    customer_name: '', phone: '', address: '', model_hint: '', serial_number: '', note: ''
-  });
-  const [isSavingInstall, setIsSavingInstall] = useState(false);
-
-  const [warrantyCatalog, setWarrantyCatalog] = useState({ loaded: false, printers: [], policies: [] });
-  const [warrantyModalRecord, setWarrantyModalRecord] = useState(null);
-  const [isCreatingWarranty, setIsCreatingWarranty] = useState(false);
-  const [warrantyForm, setWarrantyForm] = useState({
-    customer_name: '',
-    phone_number: '',
-    purchase_date: new Date().toISOString().slice(0, 10),
-    brand_name: '',
-    category: 'In phun',
-    model_name: '',
-    serial_number: '',
-    condition: 'Mới',
-    ink_type: 'Mực Dye UV',
-    policy_id: '',
-    applied_policy_name: '',
-    warranty_months: 0,
-    head_warranty_months: 0,
-    cartridge_warranty_months: 0,
-    page_limit_body: 0,
-    page_limit_head: 0,
-    no_page_limit: false,
-    initial_counter: 0
-  });
-
-  const openInstallEditModal = (record) => {
-    setInstallEditRecord(record);
-    setInstallEditForm({
-      customer_name: record.customer_name || '',
-      phone: record.phone || '',
-      address: record.address || '',
-      model_hint: record.model_hint || '',
-      serial_number: record.serial_number || '',
-      note: record.note || ''
-    });
-  };
-
-  const handleInstallEditSubmit = async (e) => {
-    e.preventDefault();
-    if (!installEditRecord) return;
-    setIsSavingInstall(true);
-    try {
-      const res = await fetch(`${API_BASE}/installations/${installEditRecord.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(installEditForm)
-      });
-      const data = await handleResponse(res);
-      if (data.data) {
-        setInstallRecords(prev => prev.map(item => item.id === data.data.id ? data.data : item));
-      }
-      showToast(`✅ Đã chuẩn hóa đơn [${installEditRecord.invoice_code || installEditRecord.base_job_id}]!`, 'success');
-      setInstallEditRecord(null);
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setIsSavingInstall(false);
-    }
-  };
-
-  const applyPolicyToForm = (policy, baseForm) => {
-    if (!policy) {
-      return {
-        ...baseForm,
-        policy_id: '',
-        applied_policy_name: '',
-        warranty_months: 0,
-        head_warranty_months: 0,
-        cartridge_warranty_months: 0,
-        page_limit_body: 0,
-        page_limit_head: 0,
-        no_page_limit: false
-      };
-    }
+    encoded_text = urllib.parse.quote(sms_text)
     return {
-      ...baseForm,
-      policy_id: policy.id,
-      applied_policy_name: policy.policy_name || '',
-      warranty_months: Number(policy.warranty_months || 0),
-      head_warranty_months: Number(policy.head_warranty_months || 0),
-      cartridge_warranty_months: Number(policy.cartridge_warranty_months || 0),
-      page_limit_body: Number(policy.page_limit_body || 0),
-      page_limit_head: Number(policy.page_limit_head || 0),
-      no_page_limit: Boolean(policy.no_page_limit)
-    };
-  };
-
-  const openWarrantyModal = async (record) => {
-    let printers = warrantyCatalog.printers;
-    let policies = warrantyCatalog.policies;
-
-    if (!warrantyCatalog.loaded) {
-      try {
-        const res = await fetch(`${API_BASE}/installations/warranty-options`);
-        const data = await handleResponse(res);
-        printers = data.printers || [];
-        policies = data.policies || [];
-        setWarrantyCatalog({ loaded: true, printers, policies });
-      } catch (err) {
-        return showToast(`⚠️ Không tải được danh mục bảo hành: ${err.message}`, 'error');
-      }
+        "phone": phone_clean,
+        "text": sms_text,
+        "sms_link": f"sms:{phone_clean}?body={encoded_text}",
+        "sms_link_ios": f"sms:{phone_clean}&body={encoded_text}",
     }
 
-    const hint = (record.model_hint || '').trim().toUpperCase();
-    const matchedPrinter = printers.find(
-      p => (p.model_code || '').trim().toUpperCase() === hint
-    ) || printers.find(
-      p => hint && (p.model_code || '').trim().toUpperCase().includes(hint)
-    );
 
-    const initBrand = matchedPrinter?.brand_name || (printers[0]?.brand_name || 'Khác');
-    const initCat = matchedPrinter?.category || (printers[0]?.category || 'In phun');
-    const initModel = matchedPrinter?.model_code || record.model_hint || '';
-    const initCond = 'Mới';
+async def get_next_code() -> tuple[str, int]:
+    now_vn = datetime.now(VN_TZ)
+    prefix = f"NT-{now_vn.strftime('%m%d')}-"
+    today_start_utc = (
+        now_vn.replace(hour=0, minute=0, second=0, microsecond=0)
+        .astimezone(timezone.utc)
+        .isoformat()
+    )
+    query = (
+        supabase.table(TABLE)
+        .select("code")
+        .gte("created_at", today_start_utc)
+        .like("code", f"{prefix}%")
+        .order("code", desc=True)
+        .limit(1)
+    )
+    res = await asyncio.to_thread(query.execute)
+    next_num = 1
+    if res.data and res.data[0].get("code"):
+        parts = res.data[0]["code"].split("-")
+        if len(parts) >= 3:
+            try:
+                next_num = int(parts[-1]) + 1
+            except (ValueError, IndexError):
+                pass
+    return prefix, next_num
 
-    const matchedPolicy = policies.find(
-      pol => pol.brand_name === initBrand && pol.category === initCat && pol.condition === initCond
-    ) || policies.find(
-      pol => pol.category === initCat && pol.condition === initCond
-    );
 
-    const baseForm = {
-      customer_name: record.customer_name || '',
-      phone_number: record.phone || '',
-      purchase_date: new Date().toISOString().slice(0, 10),
-      brand_name: initBrand,
-      category: initCat,
-      model_name: initModel,
-      serial_number: record.serial_number || '',
-      condition: initCond,
-      ink_type: 'Mực Dye UV',
-      policy_id: '',
-      applied_policy_name: '',
-      warranty_months: 0,
-      head_warranty_months: 0,
-      cartridge_warranty_months: 0,
-      page_limit_body: 0,
-      page_limit_head: 0,
-      no_page_limit: false,
-      initial_counter: 0
-    };
+async def safe_broadcast(message: dict) -> None:
+    try:
+        await manager.broadcast(message)
+    except Exception as e:
+        logger.warning(f"WebSocket broadcast failed: {e}")
 
-    setWarrantyForm(applyPolicyToForm(matchedPolicy, baseForm));
-    setWarrantyModalRecord(record);
-  };
 
-  const handleCreateWarrantySubmit = async (e) => {
-    e.preventDefault();
-    if (!warrantyModalRecord) return;
-    setIsCreatingWarranty(true);
-    try {
-      const res = await fetch(`${API_BASE}/installations/${warrantyModalRecord.id}/create-warranty`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(warrantyForm)
-      });
-      const data = await handleResponse(res);
-      setInstallRecords(prev =>
-        prev.map(item =>
-          item.id === warrantyModalRecord.id
-            ? {
-                ...item,
-                customer_name: warrantyForm.customer_name,
-                phone: warrantyForm.phone_number,
-                model_hint: warrantyForm.model_name,
-                serial_number: warrantyForm.serial_number.toUpperCase(),
-                warranty_record_id: data.warranty?.id || 'created'
-              }
-            : item
+# ==================== TRANG GIAO DIỆN ====================
+@router.get("/page", response_class=HTMLResponse)
+async def reception_page(request: Request, user: dict = Depends(get_current_user_or_redirect)):
+    allowed = await asyncio.to_thread(can_access, "reception", user)
+    if not allowed:
+        return HTMLResponse(
+            "⛔ Bạn không có quyền truy cập trang Lễ tân tiếp nhận!",
+            status_code=status.HTTP_403_FORBIDDEN,
         )
-      );
-      showToast(`🎉 Đã tạo phiếu bảo hành Serial [${warrantyForm.serial_number.toUpperCase()}]!`, 'success');
-      setWarrantyModalRecord(null);
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setIsCreatingWarranty(false);
+    return templates.TemplateResponse(
+        request=request,
+        name="reception.html",
+        context={
+            "current_user": user,
+            "session": request.session,
+            "supabase_url": getattr(settings, "SUPABASE_URL", ""),
+            "supabase_anon_key": getattr(
+                settings, "SUPABASE_ANON_KEY", getattr(settings, "SUPABASE_KEY", "")
+            ),
+        },
+    )
+
+
+
+# ==================== 1. TIẾP NHẬN MÁY ====================
+@router.post("/receive")
+async def create_reception_record(
+    data: ReceiveItemRequest,
+    user: dict = Depends(get_current_user),
+):
+    phone_clean = normalize_phone(data.phone)
+    if not phone_clean:
+        raise HTTPException(status_code=400, detail="Số điện thoại không hợp lệ")
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+    creator_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+    record = None
+    final_code = None
+
+    for attempt in range(MAX_CODE_RETRY):
+        prefix, next_num = await get_next_code()
+        next_num += attempt
+        final_code = f"{prefix}{next_num:03d}"
+
+        base_job_id = data.base_job_id or f"MANUAL-{final_code}-{uuid4().hex[:6]}"
+
+        payload = {
+            "code": final_code,
+            "base_job_id": base_job_id,
+            "customer_name": data.customer_name,
+            "phone": phone_clean,
+            "address": data.address,
+            "note": data.note or "Chưa ghi nhận",
+            "received_note": data.received_note,
+            "status": "received",
+            "current_process": "repair",
+            "updated_at": now_utc,
+        }
+        try:
+            insert_res = await asyncio.to_thread(
+                supabase.table(TABLE).insert(payload).execute
+            )
+            if insert_res.data:
+                record = insert_res.data[0]
+                break
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "duplicate" in err_msg and "base_job_id" in err_msg:
+                raise HTTPException(status_code=400, detail="Mã công việc (base_job_id) đã tồn tại")
+            if "duplicate" in err_msg and attempt < MAX_CODE_RETRY - 1:
+                await asyncio.sleep(0.05 * (attempt + 1))
+                continue
+            logger.error(f"Lỗi insert phiếu tiếp nhận: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Không thể lưu phiếu, vui lòng thử lại")
+
+    if not record:
+        raise HTTPException(status_code=500, detail="Không thể tạo mã phiếu, vui lòng thử lại")
+
+    await safe_broadcast({"type": "reception_new", "record": record})
+    sms_note = data.received_note or data.note
+    sms_info = generate_sms_info(phone_clean, data.customer_name, final_code, sms_note, "receive")
+    return {"success": True, "message": "Đã tạo phiếu tiếp nhận!", "data": record, "sms_info": sms_info}
+
+
+# ==================== 2. TRA CỨU & LỌC ====================
+@router.get("/search")
+async def search_reception_records(
+    query_str: Optional[str] = Query(None),
+    status: Optional[str] = Query("all"),
+    workflow: Optional[str] = Query("all"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    q = (query_str or "").strip()
+    db_query = supabase.table(TABLE).select("*", count="exact")
+
+    if workflow and workflow.strip().lower() in {"repair", "storage", "delivery"}:
+        db_query = db_query.eq("current_process", workflow.strip().lower())
+
+    if q:
+        q_esc = escape_postgrest(q)
+        db_query = db_query.or_(
+            f"phone.ilike.%{q_esc}%,customer_name.ilike.%{q_esc}%,code.ilike.%{q_esc}%"
+        )
+
+    if status and status.strip().lower() != "all":
+        st = status.strip().lower()
+        if st == "received":
+            db_query = db_query.eq("status", "received").eq("current_process", "repair")
+        elif st in ("processing", "repairing"):
+            db_query = db_query.in_("status", ["processing", "repairing"]).eq("current_process", "repair")
+        elif st == "fixed":
+            db_query = db_query.eq("status", "fixed").eq("current_process", "repair")
+        elif st == "storage":
+            db_query = (
+                db_query.eq("current_process", "storage")
+                .neq("status", "cancelled")
+                .or_("storage_status.is.null,storage_status.neq.dispatched")
+            )
+        elif st == "delivery":
+            db_query = (
+                db_query.eq("current_process", "delivery")
+                .neq("status", "cancelled")
+                .or_("delivery_status.is.null,delivery_status.neq.delivered")
+            )
+        elif st == "returned":
+            db_query = db_query.or_("status.eq.returned,storage_status.eq.dispatched,delivery_status.eq.delivered")
+        elif st == "cancelled":
+            db_query = db_query.eq("status", "cancelled")
+        else:
+            db_query = db_query.eq("status", st)
+
+    start = (page - 1) * limit
+    end = start + limit - 1
+    try:
+        res = await asyncio.to_thread(
+            lambda: db_query.order("created_at", desc=True).range(start, end).execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi tra cứu: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Lỗi tra cứu dữ liệu")
+
+    total = res.count if res.count is not None else len(res.data or [])
+    total_pages = (total + limit - 1) // limit if total > 0 else 1
+    return {
+        "success": True,
+        "data": res.data or [],
+        "pagination": {"page": page, "limit": limit, "total": total, "total_pages": total_pages},
     }
-  };
-  return (
-    <div className="w-full flex flex-col h-[calc(100vh-140px)] max-w-full">
-      {toast && (
-        <div className={`fixed top-16 right-4 z-50 p-4 rounded-xl shadow-2xl border flex items-center gap-3 ${
-          toast.type === 'error'
-            ? 'bg-rose-950 border-rose-500 text-rose-100'
-            : 'bg-emerald-950 border-emerald-500 text-emerald-100'
-        }`}>
-          <span className="text-sm font-semibold">{toast.message}</span>
-        </div>
-      )}
 
-      {/* THANH TÌM KIẾM, TOGGLE MENU & TAB MOBILE */}
-      <div className="mb-4 shrink-0 space-y-3">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="hidden md:flex w-10 h-10 shrink-0 items-center justify-center bg-[#0f1424] border border-slate-700 rounded-lg hover:bg-sky-600/20 hover:text-sky-400 hover:border-sky-500/50 text-slate-400 transition-all shadow-sm"
-            title={isSidebarOpen ? "Thu gọn Menu" : "Mở rộng Menu"}
-          >
-            <i className={`fa-solid ${isSidebarOpen ? 'fa-outdent' : 'fa-indent'}`}></i>
-          </button>
 
-          <div className="relative w-full max-w-md">
-            <i className={`fa-solid ${loading ? 'fa-spinner animate-spin text-sky-400' : 'fa-magnifying-glass text-gray-400'} absolute left-3.5 top-2.5 text-sm`}></i>
-            <input
-              type="text"
-              placeholder="Tìm SĐT, tên khách, mã phiếu..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-[#0a0f1d]/70 border border-slate-700 rounded-lg text-sm text-white focus:border-sky-400 outline-none"
-            />
-          </div>
-        </div>
+# ==================== 3. CHI TIẾT PHIẾU ====================
+@router.get("/{record_id}")
+async def get_reception_record(record_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-        <div className="md:hidden flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
-          {WORKFLOWS.map(wf => (
-            <button
-              key={wf.id}
-              onClick={() => setActiveWorkflow(wf.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap flex items-center gap-1.5 border transition-all ${
-                activeWorkflow === wf.id ? 'bg-sky-600 border-sky-400 text-white shadow-md' : 'bg-[#0f1424] border-slate-800 text-gray-400 hover:text-white'
-              }`}
-            >
-              <i className={`fa-solid ${wf.icon}`}></i> <span>{wf.name}</span>
-            </button>
-          ))}
-        </div>
-      </div>
+    try:
+        res = await asyncio.to_thread(
+            supabase.table(TABLE).select("*").eq("id", record_id).limit(1).execute
+        )
+    except Exception as e:
+        logger.error(f"Lỗi lấy chi tiết phiếu: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Lỗi hệ thống")
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
+    return {"success": True, "data": res.data[0]}
 
-      {/* BỐ CỤC CHÍNH (SIDEBAR + KANBAN) */}
-      <div className="flex-1 flex overflow-hidden">
 
-        {/* MENU TRÁI */}
-        <div className={`hidden md:flex flex-col bg-[#0f1424] rounded-xl border-slate-800 shrink-0 shadow-xl overflow-hidden transition-all duration-300 ease-in-out ${
-          isSidebarOpen ? 'w-56 p-3 mr-4 border opacity-100' : 'w-0 p-0 mr-0 border-0 opacity-0'
-        }`}>
-          <div className="w-[12.5rem] flex flex-col">
-            <div className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-3 px-2 flex items-center justify-between">
-              <span>Danh Sách Quy Trình</span>
-              <i className="fa-solid fa-sitemap text-sky-400"></i>
-            </div>
-            <div className="space-y-1.5">
-              {WORKFLOWS.map(wf => {
-                const isActive = activeWorkflow === wf.id;
-                return (
-                  <button
-                    key={wf.id}
-                    onClick={() => setActiveWorkflow(wf.id)}
-                    className={`w-full p-2.5 rounded-lg text-xs font-bold flex items-center justify-between transition-all border ${
-                      isActive ? 'bg-sky-600/20 border-sky-500/50 text-sky-300 shadow-inner' : 'border-transparent text-gray-400 hover:bg-slate-800/60 hover:text-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <i className={`fa-solid ${wf.icon} text-sm ${isActive ? 'text-sky-400' : 'text-gray-500'}`}></i> <span>{wf.name}</span>
-                    </div>
-                    {isActive && <i className="fa-solid fa-chevron-right text-[10px]"></i>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+# ==================== 4. CẬP NHẬT PHIẾU ====================
+@router.put("/{record_id}")
+async def update_reception_record(
+    record_id: str,
+    data: UpdateItemRequest,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-        {/* BẢNG KANBAN CUỘN ĐỒNG BỘ */}
-        <div className="kanban-container hide-scrollbar flex-1 items-start">
-          {kanbanColumns.map(col => (
-            <div key={col.id} className={`kanban-col min-w-[280px] sm:min-w-[320px] flex-1 shrink-0 flex flex-col bg-[#0f1424] rounded-xl border border-slate-800 shadow-lg overflow-hidden ${col.colorClass}`}>
+    now_utc = datetime.now(timezone.utc).isoformat()
+    update_payload = {"updated_at": now_utc}
+    if data.customer_name is not None:
+        update_payload["customer_name"] = data.customer_name
+    if data.phone is not None:
+        phone_clean = normalize_phone(data.phone)
+        if not phone_clean:
+            raise HTTPException(status_code=400, detail="Số điện thoại không hợp lệ")
+        update_payload["phone"] = phone_clean
+    if data.address is not None:
+        update_payload["address"] = data.address
+    if data.note is not None:
+        update_payload["note"] = data.note
+    if data.received_note is not None:
+        update_payload["received_note"] = data.received_note
+    if data.status is not None:
+        st_val = str(data.status).strip().lower()
+        if st_val == "repairing":
+            st_val = "processing"
 
-              <div className={`p-3 border-b border-slate-800 sticky top-0 z-10 flex justify-between items-center ${col.headerBg}`}>
-                <h3 className={`font-bold text-xs sm:text-sm ${col.textColor}`}>{col.title}</h3>
-                <span className="bg-black/40 text-gray-300 px-2 py-0.5 rounded-full text-[10px] font-black border border-slate-700">
-                  {col.items.length}
-                </span>
-              </div>
+        if st_val == "returned":
+            raise HTTPException(
+                status_code=400,
+                detail="Không được phép chuyển trạng thái 'returned' qua API Cập nhật. Vui lòng sử dụng API Trả Máy riêng.",
+            )
 
-              <div className="p-2.5 space-y-3">
-                {col.items.length === 0 ? (
-                  <div className="text-center py-10 opacity-30">
-                    <i className="fa-solid fa-inbox text-2xl mb-1.5"></i>
-                    <p className="text-xs">Chưa có nhiệm vụ</p>
-                  </div>
-                ) : (
-                  col.items.map(r => {
-                    if (activeWorkflow === 'installation') {
-                      const cleanPhone = normalizePhoneDigits(r.phone);
-                      const isCompleted = (r.status || '').toLowerCase() === 'completed';
-                      const hasWarranty = Boolean(r.warranty_record_id);
+        if st_val not in ALLOWED_STATUSES:
+            raise HTTPException(status_code=400, detail=f"Trạng thái không hợp lệ: {st_val}")
+        update_payload["status"] = st_val
 
-                      return (
-                        <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative">
-                          <div className="flex justify-between items-start mb-2">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="text-[10px] bg-slate-800 text-amber-300 px-2 py-0.5 rounded border border-slate-600 font-mono font-bold">
-                                {r.invoice_code || `#${r.base_job_id}`}
-                              </span>
-                              <span className="text-[9px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-500/30 font-semibold">
-                                🛠️ Lắp Đặt ({r.customer_type || 'Khách Mới'})
-                              </span>
-                              {hasWarranty && (
-                                <span className="text-[9px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/40 font-bold">
-                                  ✅ Đã cấp BH
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-gray-400 font-mono">
-                              {r.created_at ? new Date(r.created_at).toLocaleDateString('vi-VN') : '—'}
-                            </span>
-                          </div>
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE).update(update_payload).eq("id", record_id).execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi cập nhật phiếu: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể cập nhật thông tin phiếu")
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
 
-                          <h4 className="font-bold text-sm text-white">{r.customer_name}</h4>
+    updated_record = res.data[0]
+    await safe_broadcast({"type": "reception_updated", "record": updated_record})
+    return {"success": True, "message": "Đã cập nhật thông tin phiếu!", "data": updated_record}
 
-                          {cleanPhone && (
-                            <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                              <a
-                                href={`tel:${cleanPhone}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="inline-flex items-center gap-1 text-xs font-mono font-semibold text-sky-300 hover:underline"
-                              >
-                                <i className="fa-solid fa-phone text-[10px] text-sky-400"></i>
-                                <span>{r.phone}</span>
-                              </a>
-                              <button
-                                type="button"
-                                onClick={(e) => handleCopyPhone(e, r)}
-                                className={`px-1.5 py-0.5 rounded border text-[10px] transition ${
-                                  copiedPhoneId === r.id
-                                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                                    : 'bg-slate-800/90 text-slate-300 border-slate-600/80 hover:bg-slate-700'
-                                }`}
-                              >
-                                <i className={`fa-solid ${copiedPhoneId === r.id ? 'fa-check' : 'fa-copy'}`}></i>
-                              </button>
-                              <a
-                                href={`https://zalo.me/${cleanPhone}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="px-1.5 py-0.5 rounded border border-blue-500/40 bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 text-[10px] font-bold inline-flex items-center gap-1"
-                              >
-                                <i className="fa-solid fa-comment-dots text-[9px]"></i>
-                                <span>Zalo</span>
-                              </a>
-                            </div>
-                          )}
 
-                          <div className="mt-2 text-[11px] bg-black/20 p-2 rounded border border-slate-700/50 space-y-1">
-                            <div className="text-slate-300 font-medium">{r.task_name}</div>
-                            <div className="flex flex-wrap gap-x-3 gap-y-0.5">
-                              <span>
-                                <span className="text-gray-400">Model: </span>
-                                <span className="text-sky-300 font-semibold">{r.model_hint || 'Chưa xác định'}</span>
-                              </span>
-                              <span>
-                                <span className="text-gray-400">Serial: </span>
-                                <span className={`font-mono font-bold ${r.serial_number ? 'text-emerald-300' : 'text-rose-400'}`}>
-                                  {r.serial_number || 'Chưa nhập'}
-                                </span>
-                              </span>
-                            </div>
-                            {r.address && (
-                              <div>
-                                <span className="text-gray-400">Địa chỉ: </span>
-                                <span className="text-slate-200">{r.address}</span>
-                              </div>
-                            )}
-                            {r.assignee_name && (
-                              <div>
-                                <span className="text-gray-400">KTV phụ trách: </span>
-                                <span className="text-amber-200">{r.assignee_name}</span>
-                              </div>
-                            )}
-                          </div>
+# ==================== 5. TRẢ MÁY ====================
+@router.post("/{record_id}/return")
+@router.post("/return/{record_id}")
+async def return_item_to_customer(
+    record_id: str,
+    data: ReturnItemRequest = Body(default_factory=ReturnItemRequest),
+    user: dict = Depends(get_current_user),
+):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-                          <div className="mt-3 flex gap-1.5 pt-2.5 border-t border-slate-700/50">
-                            <button
-                              type="button"
-                              onClick={() => openInstallEditModal(r)}
-                              className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-100 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1"
-                            >
-                              <i className="fa-solid fa-pen-to-square text-sky-400"></i>
-                              <span>Chuẩn hóa</span>
-                            </button>
+    try:
+        existing = await asyncio.to_thread(
+            supabase.table(TABLE).select("*").eq("id", record_id).limit(1).execute
+        )
+    except Exception as e:
+        logger.error(f"Lỗi truy vấn phiếu: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Lỗi hệ thống")
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
 
-                            {isCompleted && (
-                              hasWarranty ? (
-                                <button
-                                  type="button"
-                                  disabled
-                                  className="flex-[1.4] h-8 bg-emerald-950/60 border border-emerald-500/40 text-emerald-400 rounded text-[11px] font-bold flex items-center justify-center gap-1 cursor-default"
-                                >
-                                  <i className="fa-solid fa-shield-check"></i>
-                                  <span>Đã tạo phiếu BH</span>
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => openWarrantyModal(r)}
-                                  className="flex-[1.4] h-8 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
-                                >
-                                  <i className="fa-solid fa-file-shield"></i>
-                                  <span>Tạo phiếu BH</span>
-                                </button>
-                              )
-                            )}
-                          </div>
-                        </div>
-                      );
-                    }
-                    const status = (r.status || '').toLowerCase();
-                    const process = (r.current_process || 'repair').toLowerCase();
-                    const storageStatus = (r.storage_status || '').toLowerCase();
-                    const deliveryStatus = (r.delivery_status || '').toLowerCase();
+    record = existing.data[0]
+    current_status = str(record.get("status") or "").lower()
+    current_process = str(record.get("current_process") or "repair").lower()
+    storage_status = str(record.get("storage_status") or "").lower()
+    delivery_status = str(record.get("delivery_status") or "").lower()
 
-                    const isDestroyed = storageStatus === 'destroyed';
-                    const isDeliveryFailed = process === 'delivery' && deliveryStatus === 'failed';
-                    const isReturned = !isDestroyed && !isDeliveryFailed && (status === 'returned' || storageStatus === 'dispatched' || deliveryStatus === 'delivered');
-                    const isDelivery = process === 'delivery' || (deliveryStatus && !['delivered', 'failed'].includes(deliveryStatus));
-                    const isProcessing = process === 'repair' && (status === 'processing' || status === 'repairing');
+    if storage_status == "destroyed":
+        raise HTTPException(status_code=400, detail="Thiết bị đã được xác nhận tiêu hủy tại kho, không thể trả khách.")
+    if delivery_status == "failed":
+        raise HTTPException(status_code=400, detail="Đơn giao nhận đang ở trạng thái thất bại.")
+    if current_process == "delivery":
+        raise HTTPException(status_code=400, detail="Đơn đang thuộc Quy trình Giao nhận! Bàn giao do Shipper thực hiện.")
+    if current_process == "repair" and current_status in {"processing", "repairing"}:
+        raise HTTPException(status_code=400, detail="Thiết bị đang sửa chữa! Cần hoàn thành trước khi trả máy.")
+    if current_status == "returned" or storage_status == "dispatched":
+        raise HTTPException(status_code=400, detail="Phiếu này đã được xác nhận trả trước đó.")
 
-                    const canDelete = canDeleteTicket;
-                    const smsSentTime = formatSmsTime(r.sms_sent_at || sentSmsMap[String(r.id || r.code)]);
-					const linkSentTime = formatSmsTime(r.link_sent_at || sentLinkMap[String(r.id || r.code)]);
-                    const isCopied = copiedTicketId === r.id;
-                    const cleanPhone = normalizePhoneDigits(r.phone);
+    now_utc = datetime.now(timezone.utc).isoformat()
+    payload = {"status": "returned", "returned_date": now_utc, "updated_at": now_utc}
 
-                    return (
-                      <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative group">
+    if current_process == "storage":
+        payload["storage_status"] = "dispatched"
+    if data.returned_note:
+        payload["returned_note"] = data.returned_note
+    if data.returned_method:
+        payload["returned_method"] = data.returned_method
+    if data.received_note:
+        payload["received_note"] = data.received_note
+    if data.is_fixed is not None:
+        payload["is_fixed"] = data.is_fixed
+        payload["repair_result"] = "fixed" if data.is_fixed else "failed"
 
-                        {/* CỤM ICON TRẢ KHÁCH + XÓA Ở GÓC PHẢI THẺ */}
-                        <div className="absolute top-2.5 right-2.5 flex items-center gap-1 z-10">
-                          {isDestroyed ? (
-                            <span
-                              className="w-6 h-6 rounded bg-rose-950/70 text-rose-400 border border-rose-500/30 flex items-center justify-center text-[10px]"
-                              title="Đã tiêu hủy"
-                            >
-                              <i className="fa-solid fa-ban"></i>
-                            </span>
-                          ) : isDeliveryFailed ? (
-                            <span
-                              className="w-6 h-6 rounded bg-rose-950/70 text-rose-400 border border-rose-500/30 flex items-center justify-center text-[10px]"
-                              title="Giao thất bại"
-                            >
-                              <i className="fa-solid fa-circle-xmark"></i>
-                            </span>
-                          ) : isReturned ? (
-                            <span
-                              className="w-6 h-6 rounded bg-emerald-900/50 text-emerald-400 border border-emerald-500/30 flex items-center justify-center text-[10px]"
-                              title="Đã trả khách"
-                            >
-                              <i className="fa-solid fa-circle-check"></i>
-                            </span>
-                          ) : isDelivery ? (
-                            <button
-                              disabled
-                              className="w-6 h-6 rounded bg-slate-800/60 text-indigo-400 border border-slate-700/50 flex items-center justify-center text-[10px] cursor-not-allowed opacity-70"
-                              title="Đang thuộc quy trình Giao nhận"
-                            >
-                              <i className="fa-solid fa-truck-fast"></i>
-                            </button>
-                          ) : isProcessing ? (
-                            <button
-                              disabled
-                              className="w-6 h-6 rounded bg-slate-800/60 text-slate-500 border border-slate-700/50 flex items-center justify-center text-[10px] cursor-not-allowed opacity-60"
-                              title="Đang sửa chữa (Khóa trả)"
-                            >
-                              <i className="fa-solid fa-lock"></i>
-                            </button>
-                          ) : (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleReturnClick(r); }}
-                              className="w-6 h-6 rounded bg-amber-600 hover:bg-amber-500 text-white flex items-center justify-center text-[11px] shadow transition-all"
-                              title="Xác nhận trả khách"
-                            >
-                              <i className="fa-solid fa-handshake"></i>
-                            </button>
-                          )}
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE).update(payload).eq("id", record_id).execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi trả máy: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể cập nhật trạng thái trả máy")
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
 
-                          {canDelete && (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); openDeleteModal(r); }}
-                              className="w-6 h-6 rounded bg-rose-950/70 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-800/60 flex items-center justify-center transition-all opacity-80 hover:opacity-100"
-                              title="Xóa phiếu này"
-                            >
-                              <i className="fa-solid fa-trash-can text-[10px]"></i>
-                            </button>
-                          )}
-                        </div>
+    updated = res.data[0]
+    await safe_broadcast({"type": "reception_returned", "record": updated})
+    sms_info = generate_sms_info(
+        updated.get("phone"),
+        updated.get("customer_name"),
+        updated.get("code"),
+        data.returned_note,
+        "return",
+    )
+    return {"success": True, "message": "Đã ghi nhận trả máy!", "data": updated, "sms_info": sms_info}
 
-                        <div className="flex justify-between items-start mb-2 pr-14">
-                          <div className="flex flex-col gap-1">
-                            <span className="text-[10px] w-fit bg-slate-800 text-slate-300 px-2 py-0.5 rounded border border-slate-600 font-monospace font-bold">
-                              {r.code}
-                            </span>
 
-                            {process === 'delivery' ? (
-                              <span className="text-[9px] w-fit bg-indigo-500/20 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-500/30 font-semibold">🚚 Q.Trình Giao Nhận</span>
-                            ) : process === 'storage' ? (
-                              <span className="text-[9px] w-fit bg-amber-500/20 text-amber-300 px-1.5 py-0.5 rounded border border-amber-500/30 font-semibold">📦 Lưu Kho Sửa Chữa</span>
-                            ) : (
-                              <span className="text-[9px] w-fit bg-sky-500/20 text-sky-300 px-1.5 py-0.5 rounded border border-sky-500/30 font-semibold">⚙ Q.Trình Sửa Chữa</span>
-                            )}
-                          </div>
-                          <span className="text-[10px] text-gray-400 font-monospace">{r.created_at ? new Date(r.created_at).toLocaleDateString('vi-VN') : '—'}</span>
-                        </div>
+# ==================== 6. XÓA VĨNH VIỄN PHIẾU (Hard Delete) ====================
+@router.delete("/{ticket_id}")
+async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(ticket_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-                        <h4 className="font-bold text-sm text-white">{r.customer_name}</h4>
+    allowed = await asyncio.to_thread(can_access, "reception", user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền xóa phiếu theo phân quyền hệ thống.",
+        )
 
-                        {/* SỐ ĐIỆN THOẠI + COPY SĐT + MỞ CHAT ZALO */}
-                        {cleanPhone && (
-                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                            <a
-                              href={`tel:${cleanPhone}`}
-                              onClick={(e) => e.stopPropagation()}
-                              title="Nhấn để gọi điện cho khách hàng"
-                              className="inline-flex items-center gap-1 text-xs font-mono font-semibold text-sky-300 hover:text-sky-200 hover:underline"
-                            >
-                              <i className="fa-solid fa-phone text-[10px] text-sky-400"></i>
-                              <span>{r.phone}</span>
-                            </a>
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE).delete().eq("id", ticket_id).execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi khi xóa phiếu: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Lỗi hệ thống khi xóa phiếu")
 
-                            <button
-                              type="button"
-                              onClick={(e) => handleCopyPhone(e, r)}
-                              title="Copy số điện thoại"
-                              className={`px-1.5 py-0.5 rounded border text-[10px] transition cursor-pointer ${
-                                copiedPhoneId === r.id
-                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                                  : 'bg-slate-800/90 text-slate-300 border-slate-600/80 hover:bg-slate-700 hover:text-white'
-                              }`}
-                            >
-                              <i className={`fa-solid ${copiedPhoneId === r.id ? 'fa-check' : 'fa-copy'}`}></i>
-                            </button>
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu cần xóa")
 
-                            <a
-                              href={`https://zalo.me/${cleanPhone}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              onClick={(e) => e.stopPropagation()}
-                              title={`Mở chat Zalo với khách (${cleanPhone})`}
-                              className="px-1.5 py-0.5 rounded border border-blue-500/40 bg-blue-500/15 hover:bg-blue-500/30 text-blue-300 hover:text-white text-[10px] font-bold inline-flex items-center gap-1 transition"
-                            >
-                              <i className="fa-solid fa-comment-dots text-[9px]"></i>
-                              <span>Zalo</span>
-                            </a>
-                          </div>
-                        )}
-
-                        <div className="mt-2 text-[11px] bg-black/20 p-2 rounded border border-slate-700/50 space-y-1">
-                          <div><span className="text-gray-400">Lỗi báo: </span><span className="text-amber-100 font-medium">{r.note || 'Không có'}</span></div>
-                          {r.received_note && <div><span className="text-gray-400">Nhận máy: </span><span className="text-slate-300">{r.received_note}</span></div>}
-                          {r.address && (
-                            <div>
-                              <span className="text-gray-400">{process === 'delivery' ? 'Chành xe / ĐC: ' : 'Thông tin: '}</span>
-                              <span className="text-sky-300">{r.address}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* THANH HÀNH ĐỘNG: SỬA + SMS CHỐNG GỬI TRÙNG + CHIA SẺ LINK */}
-                        <div className="mt-3 flex gap-1.5 pt-3 border-t border-slate-700/50">
-                          <button
-                            onClick={() => openEditModal(r)}
-                            className="flex-1 h-8 bg-slate-700 hover:bg-slate-600 text-slate-200 rounded text-[11px] font-bold transition-all"
-                            title="Sửa thông tin"
-                          >
-                            <i className="fa-solid fa-pen"></i>
-                          </button>
-
-                          <button
-                            onClick={() => handleSmsClick(r)}
-                            className={`flex-[2] h-8 rounded text-[11px] font-bold transition-all flex items-center justify-center gap-1 ${
-                              smsSentTime
-                                ? 'bg-sky-950/80 hover:bg-sky-900 text-sky-300 border border-sky-500/40'
-                                : 'bg-sky-600/80 hover:bg-sky-500 text-white'
-                            }`}
-                            title={
-                              smsSentTime
-                                ? `Đã gửi SMS lúc ${smsSentTime}${r.sms_sent_by ? ` (${r.sms_sent_by})` : ''} — Nhấn để gửi lại`
-                                : 'Gửi tin nhắn SMS cho khách'
-                            }
-                          >
-                            <i className={`fa-solid ${smsSentTime ? 'fa-check-double text-sky-400' : 'fa-sms'}`}></i>
-                            <span>{smsSentTime ? 'Đã SMS' : 'SMS'}</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => handleShareTrackingLink(r)}
-                            title={
-                              linkSentTime
-                                ? `Đã copy gửi khách lúc ${linkSentTime}${r.link_sent_by ? ` (${r.link_sent_by})` : ''}`
-                                : 'Copy link tra cứu hành trình gửi khách'
-                            }
-                            className={`flex-[2] h-8 rounded text-[11px] font-bold border transition flex items-center justify-center gap-1 cursor-pointer ${
-                              copiedTicketId === r.id || linkSentTime
-                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/25'
-                                : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
-                            }`}
-                          >
-                            <i className={`fa-solid ${copiedTicketId === r.id || linkSentTime ? 'fa-check-double text-emerald-400' : 'fa-link'} text-[10px]`}></i>
-                            <span>
-                              {copiedTicketId === r.id
-                                ? 'Đã copy!'
-                                : linkSentTime
-                                  ? 'Đã gửi link'
-                                  : 'Copy link'}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* MODAL CẢNH BÁO XÓA CẨN THẬN */}
-      {deleteModalRecord && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0e1424] max-w-sm w-full p-5 border border-rose-500/50 rounded-xl shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 text-lg shrink-0">
-                <i className="fa-solid fa-triangle-exclamation"></i>
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-white">Xác Nhận Xóa Phiếu</h3>
-                <p className="text-xs text-rose-400 font-medium mt-0.5">Hành động này không thể hoàn tác!</p>
-              </div>
-            </div>
-
-            <div className="bg-black/40 p-3 rounded-lg border border-slate-800 text-xs space-y-1.5">
-              <div className="flex justify-between"><span className="text-gray-400">Mã phiếu:</span><span className="text-amber-400 font-mono font-bold">{deleteModalRecord.code}</span></div>
-              <div className="flex justify-between"><span className="text-gray-400">Khách hàng:</span><span className="text-white font-bold">{deleteModalRecord.customer_name}</span></div>
-              {deleteModalRecord.phone && <div className="flex justify-between"><span className="text-gray-400">SĐT:</span><span className="text-slate-300 font-mono">{deleteModalRecord.phone}</span></div>}
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setDeleteModalRecord(null)}
-                disabled={isDeleting}
-                className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-300 transition-all"
-              >
-                Hủy Bỏ
-              </button>
-              <button
-                type="button"
-                onClick={handleDeleteConfirm}
-                disabled={isDeleting}
-                className="flex-[1.5] py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5"
-              >
-                {isDeleting ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-trash-can"></i>}
-                <span>{isDeleting ? "Đang xóa..." : "Xóa Vĩnh Viễn"}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL TRẢ MÁY */}
-      {returnModalRecord && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0e1424] max-w-sm w-full p-5 border border-emerald-500/40 rounded-xl shadow-2xl">
-            <h3 className="text-sm font-bold text-emerald-400 mb-3">
-              <i className="fa-solid fa-handshake mr-1"></i> Xác Nhận Trả Máy
-            </h3>
-            <form onSubmit={handleReturnSubmit} className="space-y-3">
-              <select value={returnForm.returned_method} onChange={(e) => setReturnForm({...returnForm, returned_method: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white">
-                <option value="Trực tiếp tại cửa hàng">🏪 Trực tiếp tại cửa hàng</option>
-                <option value="Gửi Chành xe / Bưu điện">🚚 Gửi Chành xe / Bưu điện / CPN</option>
-                <option value="Giao hàng tận nơi">🛵 GN của công ty đi giao</option>
-              </select>
-              <textarea placeholder="Ghi chú trả máy (nếu có)" value={returnForm.returned_note} onChange={(e) => setReturnForm({...returnForm, returned_note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white h-20"></textarea>
-              <div className="flex gap-2">
-                <button type="button" onClick={() => setReturnModalRecord(null)} className="flex-1 py-2 bg-slate-700 rounded text-xs font-bold text-white">Hủy</button>
-                <button type="submit" disabled={isSubmittingReturn} className="flex-[2] py-2 bg-emerald-600 rounded text-xs font-bold text-white">Xác Nhận</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL SỬA PHIẾU */}
-      {editingRecord && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0e1424] max-w-md w-full p-5 border border-slate-700 rounded-xl space-y-3">
-            <h3 className="text-sm font-bold text-sky-400"><i className="fa-solid fa-pen"></i> Sửa Phiếu [{editingRecord.code}]</h3>
-            <form onSubmit={handleEditSubmit} className="space-y-3">
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Tên khách hàng</label>
-                <input placeholder="Họ tên" value={editForm.customer_name} onChange={e=>setEditForm({...editForm, customer_name: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Số điện thoại</label>
-                <input placeholder="SĐT" value={editForm.phone} onChange={e=>setEditForm({...editForm, phone: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Địa chỉ / Thông tin chành xe</label>
-                <input placeholder="Địa chỉ hoặc thông tin chành xe" value={editForm.address} onChange={e=>setEditForm({...editForm, address: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Lỗi / Nội dung yêu cầu</label>
-                <input placeholder="Lỗi báo" value={editForm.note} onChange={e=>setEditForm({...editForm, note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Ghi chú nhận máy / tình trạng kèm theo</label>
-                <input placeholder="Ghi chú nhận máy" value={editForm.received_note} onChange={e=>setEditForm({...editForm, received_note: e.target.value})} className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none" />
-              </div>
-              <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => setEditingRecord(null)} className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 rounded text-xs font-bold text-white">Hủy</button>
-                <button type="submit" disabled={isSaving} className="flex-[2] py-2 bg-sky-600 hover:bg-sky-500 rounded text-xs font-bold text-white">{isSaving ? "Đang lưu..." : "Lưu Lại"}</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-      {/* MODAL CHUẨN HÓA ĐƠN LẮP ĐẶT */}
-      {installEditRecord && (
-        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
-          <div className="bg-[#0e1424] max-w-md w-full p-5 border border-sky-500/40 rounded-xl space-y-3 shadow-2xl">
-            <h3 className="text-sm font-bold text-sky-400">
-              <i className="fa-solid fa-pen-to-square mr-1"></i>
-              Chuẩn Hóa Đơn Lắp Đặt [{installEditRecord.invoice_code || installEditRecord.base_job_id}]
-            </h3>
-            <form onSubmit={handleInstallEditSubmit} className="space-y-2.5">
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Tên khách hàng *</label>
-                <input
-                  required
-                  value={installEditForm.customer_name}
-                  onChange={e => setInstallEditForm({ ...installEditForm, customer_name: e.target.value })}
-                  className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Số điện thoại</label>
-                  <input
-                    value={installEditForm.phone}
-                    onChange={e => setInstallEditForm({ ...installEditForm, phone: e.target.value })}
-                    className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white font-mono focus:border-sky-500 outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Model máy (gợi ý)</label>
-                  <input
-                    placeholder="VD: L18050"
-                    value={installEditForm.model_hint}
-                    onChange={e => setInstallEditForm({ ...installEditForm, model_hint: e.target.value })}
-                    className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white uppercase focus:border-sky-500 outline-none"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Số Serial máy (bắt buộc để tạo BH)</label>
-                <input
-                  placeholder="Nhập chính xác số Serial trên thân máy"
-                  value={installEditForm.serial_number}
-                  onChange={e => setInstallEditForm({ ...installEditForm, serial_number: e.target.value })}
-                  className="w-full p-2 bg-slate-900 border border-emerald-500/40 rounded text-sm text-emerald-300 font-mono uppercase focus:border-emerald-400 outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Địa chỉ khách hàng</label>
-                <input
-                  value={installEditForm.address}
-                  onChange={e => setInstallEditForm({ ...installEditForm, address: e.target.value })}
-                  className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] text-gray-400 mb-1">Ghi chú lắp đặt / chành xe</label>
-                <input
-                  value={installEditForm.note}
-                  onChange={e => setInstallEditForm({ ...installEditForm, note: e.target.value })}
-                  className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-sm text-white focus:border-sky-500 outline-none"
-                />
-              </div>
-              <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setInstallEditRecord(null)} className="flex-1 py-2 bg-slate-700 hover:bg-slate-600 rounded text-xs font-bold text-white">
-                  Hủy
-                </button>
-                <button type="submit" disabled={isSavingInstall} className="flex-[2] py-2 bg-sky-600 hover:bg-sky-500 rounded text-xs font-bold text-white">
-                  {isSavingInstall ? 'Đang lưu...' : 'Lưu Thông Tin Chuẩn'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL TẠO PHIẾU BẢO HÀNH TỰ ĐỘNG */}
-      {warrantyModalRecord && (() => {
-        const filteredPolicies = warrantyCatalog.policies.filter(p =>
-          (!warrantyForm.brand_name || p.brand_name === warrantyForm.brand_name || p.brand_name === 'Khác') &&
-          (!warrantyForm.category || p.category === warrantyForm.category) &&
-          (!warrantyForm.condition || p.condition === warrantyForm.condition)
-        );
-        const displayPolicies = filteredPolicies.length > 0 ? filteredPolicies : warrantyCatalog.policies;
-
-        return (
-          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 overflow-y-auto">
-            <div className="bg-[#0e1424] max-w-lg w-full p-5 border border-emerald-500/50 rounded-xl space-y-3 shadow-2xl my-auto">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                <h3 className="text-sm font-bold text-emerald-400">
-                  <i className="fa-solid fa-file-shield mr-1.5"></i>
-                  Tạo Phiếu Bảo Hành [{warrantyModalRecord.invoice_code || warrantyModalRecord.base_job_id}]
-                </h3>
-                <button type="button" onClick={() => setWarrantyModalRecord(null)} className="text-gray-400 hover:text-white">
-                  <i className="fa-solid fa-xmark"></i>
-                </button>
-              </div>
-
-              <form onSubmit={handleCreateWarrantySubmit} className="space-y-2.5 text-xs">
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Tên khách hàng *</label>
-                    <input
-                      required
-                      value={warrantyForm.customer_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, customer_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Số điện thoại *</label>
-                    <input
-                      required
-                      value={warrantyForm.phone_number}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, phone_number: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                </div>
-
-                {/* Chọn dòng máy từ list_printer */}
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Chọn nhanh dòng máy từ danh mục (list_printer)</label>
-                  <select
-                    value={warrantyCatalog.printers.find(p => p.model_code === warrantyForm.model_name && p.brand_name === warrantyForm.brand_name)?.id || ''}
-                    onChange={e => {
-                      const selected = warrantyCatalog.printers.find(p => String(p.id) === e.target.value);
-                      if (selected) {
-                        const autoPol = warrantyCatalog.policies.find(
-                          pol => pol.brand_name === selected.brand_name && pol.category === selected.category && pol.condition === warrantyForm.condition
-                        );
-                        const nextBase = {
-                          ...warrantyForm,
-                          brand_name: selected.brand_name,
-                          category: selected.category,
-                          model_name: selected.model_code
-                        };
-                        setWarrantyForm(applyPolicyToForm(autoPol, nextBase));
-                      }
-                    }}
-                    className="w-full p-2 bg-slate-900 border border-sky-500/40 rounded text-sky-200"
-                  >
-                    <option value="">-- Chọn máy từ danh sách hoặc nhập tay bên dưới --</option>
-                    {warrantyCatalog.printers.map(p => (
-                      <option key={p.id} value={p.id}>
-                        {p.brand_name} - {p.model_code} ({p.category})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Hãng *</label>
-                    <input
-                      required
-                      value={warrantyForm.brand_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, brand_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Phân loại *</label>
-                    <input
-                      required
-                      value={warrantyForm.category}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, category: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Model máy *</label>
-                    <input
-                      required
-                      value={warrantyForm.model_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, model_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-semibold"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Số Serial (duy nhất) *</label>
-                    <input
-                      required
-                      placeholder="VD: X8A9123456"
-                      value={warrantyForm.serial_number}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, serial_number: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-emerald-500/50 rounded text-emerald-300 font-mono uppercase font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Ngày mua / kích hoạt</label>
-                    <input
-                      type="date"
-                      value={warrantyForm.purchase_date}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, purchase_date: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Tình trạng máy</label>
-                    <select
-                      value={warrantyForm.condition}
-                      onChange={e => {
-                        const cond = e.target.value;
-                        const autoPol = warrantyCatalog.policies.find(
-                          pol => pol.brand_name === warrantyForm.brand_name && pol.category === warrantyForm.category && pol.condition === cond
-                        );
-                        setWarrantyForm(applyPolicyToForm(autoPol, { ...warrantyForm, condition: cond }));
-                      }}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    >
-                      <option value="Mới">Mới</option>
-                      <option value="Máy mới">Máy mới</option>
-                      <option value="Đã qua sử dụng">Đã qua sử dụng</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Loại mực sử dụng</label>
-                    <input
-                      value={warrantyForm.ink_type}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, ink_type: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                </div>
-
-                {/* Chọn chính sách bảo hành từ warranty_policy */}
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Chính sách bảo hành (warranty_policy)</label>
-                  <select
-                    value={warrantyForm.policy_id}
-                    onChange={e => {
-                      const pol = warrantyCatalog.policies.find(p => p.id === e.target.value);
-                      setWarrantyForm(applyPolicyToForm(pol, warrantyForm));
-                    }}
-                    className="w-full p-2 bg-slate-900 border border-amber-500/40 rounded text-amber-200"
-                  >
-                    <option value="">-- Chọn chính sách bảo hành --</option>
-                    {displayPolicies.map(pol => (
-                      <option key={pol.id} value={pol.id}>
-                        {pol.policy_name || `${pol.brand_name} - ${pol.category} (${pol.condition})`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-3 gap-2 bg-black/30 p-2.5 rounded border border-slate-800">
-                  <div>
-                    <label className="block text-[10px] text-gray-400">BH Thân máy (tháng)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.warranty_months}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, warranty_months: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-gray-400">BH Đầu phun (tháng)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.head_warranty_months}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, head_warranty_months: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-gray-400">Counter ban đầu</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.initial_counter}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, initial_counter: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setWarrantyModalRecord(null)}
-                    className="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold text-white"
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isCreatingWarranty}
-                    className="flex-[2] py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg font-bold text-white shadow-lg"
-                  >
-                    {isCreatingWarranty ? 'Đang phát hành...' : 'Xác Nhận Tạo Phiếu Bảo Hành'}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        );
-      })()}
-    </div>
+    deleted_record = res.data[0]
+    await safe_broadcast({"type": "reception_deleted", "record": deleted_record})
+    return {
+        "success": True,
+        "status": "success",
+        "message": f"Đã xóa vĩnh viễn phiếu {deleted_record.get('code', ticket_id)}",
+        "data": deleted_record,
+    }
     
-  );
-}
+  # ==================== 7. XỬ LÝ VẤN ĐỀ SMS ĐÃ GỬI - LINK ĐÃ GỬI ====================
+@router.post("/{record_id}/sms-sent")
+async def mark_reception_sms_sent(record_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<ReceptionApp />);
-</script>
-{% endraw %}
-{% endblock %}
+    now_utc = datetime.now(timezone.utc).isoformat()
+    sender_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE)
+            .update({
+                "sms_sent_at": now_utc,
+                "sms_sent_by": sender_name,
+            })
+            .eq("id", record_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi lưu trạng thái đã gửi SMS: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể lưu trạng thái gửi SMS")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
+
+    updated_record = res.data[0]
+    await safe_broadcast({"type": "reception_updated", "record": updated_record})
+    return {"success": True, "data": updated_record}
+
+
+# ==== Link đã gửi ====
+@router.post("/{record_id}/link-sent")
+async def mark_reception_link_sent(record_id: str, user: dict = Depends(get_current_user)):
+    try:
+        UUID(record_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
+
+    now_utc = datetime.now(timezone.utc).isoformat()
+    sender_name = (
+        user.get("ho_ten")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+
+    try:
+        res = await asyncio.to_thread(
+            lambda: supabase.table(TABLE)
+            .update({
+                "link_sent_at": now_utc,
+                "link_sent_by": sender_name,
+            })
+            .eq("id", record_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.error(f"Lỗi lưu trạng thái đã gửi link: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Không thể lưu trạng thái gửi link")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy phiếu")
+
+    updated_record = res.data[0]
+    await safe_broadcast({"type": "reception_updated", "record": updated_record})
+    return {"success": True, "data": updated_record}
+#---ĐOẠN XỬ LÝ DÀNH CHO QUY TRÌNH LẮP ĐẶT------- #
+class InstallationNormalizePayload(BaseModel):
+    customer_name: str
+    phone: Optional[str] = ""
+    address: Optional[str] = ""
+    model_hint: Optional[str] = ""
+    serial_number: Optional[str] = ""
+    note: Optional[str] = ""
+
+
+class CreateWarrantyFromInstallPayload(BaseModel):
+    customer_name: str
+    phone_number: str
+    purchase_date: Optional[str] = None
+    brand_name: str
+    category: str
+    model_name: str
+    serial_number: str
+    condition: str = "Mới"
+    ink_type: str = "Mực Dye UV"
+    policy_id: Optional[str] = None
+    applied_policy_name: Optional[str] = ""
+    warranty_months: int = 0
+    head_warranty_months: int = 0
+    cartridge_warranty_months: int = 0
+    page_limit_body: int = 0
+    page_limit_head: int = 0
+    no_page_limit: bool = False
+    initial_counter: int = 0
+
+
+@router.get("/installations")
+async def list_installation_orders(
+    query_str: str = "",
+    current_user: dict = Depends(get_current_user),
+):
+    q = (query_str or "").strip()
+
+    def _run():
+        req = supabase.table("installation_orders").select("*").order("created_at", desc=True).limit(200)
+        if q:
+            safe_q = q.replace(",", " ").replace("(", " ").replace(")", " ")
+            req = req.or_(
+                f"customer_name.ilike.%{safe_q}%,phone.ilike.%{safe_q}%,invoice_code.ilike.%{safe_q}%,serial_number.ilike.%{safe_q}%,model_hint.ilike.%{safe_q}%"
+            )
+        return req.execute()
+
+    res = await asyncio.to_thread(_run)
+    return {"success": True, "data": res.data or []}
+
+
+@router.put("/installations/{install_id}")
+async def update_installation_order(
+    install_id: str,
+    body: InstallationNormalizePayload,
+    current_user: dict = Depends(get_current_user),
+):
+    clean_name = (body.customer_name or "").strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Tên khách hàng không được để trống")
+
+    clean_phone = re.sub(r"\D", "", body.phone or "")
+    if clean_phone.startswith("84") and len(clean_phone) >= 11:
+        clean_phone = "0" + clean_phone[2:]
+
+    update_data = {
+        "customer_name": clean_name,
+        "phone": clean_phone or None,
+        "address": (body.address or "").strip() or None,
+        "model_hint": (body.model_hint or "").strip().upper() or None,
+        "serial_number": (body.serial_number or "").strip().upper() or None,
+        "note": (body.note or "").strip() or None,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    res = await asyncio.to_thread(
+        lambda: supabase.table("installation_orders").update(update_data).eq("id", install_id).execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn lắp đặt")
+    return {"success": True, "data": res.data[0]}
+
+
+@router.get("/installations/warranty-options")
+async def get_warranty_catalog_options(current_user: dict = Depends(get_current_user)):
+    printers_res, policies_res = await asyncio.gather(
+        asyncio.to_thread(
+            lambda: supabase.table("list_printer")
+            .select("id, brand_name, model_code, category")
+            .order("brand_name")
+            .order("model_code")
+            .execute()
+        ),
+        asyncio.to_thread(
+            lambda: supabase.table("warranty_policy")
+            .select(
+                "id, policy_name, brand_name, category, condition, warranty_months, "
+                "head_warranty_months, cartridge_warranty_months, page_limit_body, "
+                "page_limit_head, no_page_limit, meter_limit_body, meter_limit_head, no_meter_limit"
+            )
+            .eq("is_active", True)
+            .order("policy_name")
+            .execute()
+        ),
+    )
+    return {
+        "success": True,
+        "printers": printers_res.data or [],
+        "policies": policies_res.data or [],
+    }
+
+
+@router.post("/installations/{install_id}/create-warranty")
+async def create_warranty_from_installation(
+    install_id: str,
+    body: CreateWarrantyFromInstallPayload,
+    current_user: dict = Depends(get_current_user),
+):
+    # 1. Kiểm tra đơn lắp đặt tồn tại và đã ở trạng thái Hoàn thành
+    order_res = await asyncio.to_thread(
+        lambda: supabase.table("installation_orders").select("*").eq("id", install_id).limit(1).execute()
+    )
+    order = (order_res.data or [None])[0]
+    if not order:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn lắp đặt")
+    if order.get("status") != "completed":
+        raise HTTPException(status_code=400, detail="Chỉ được tạo phiếu bảo hành khi đơn đã ở cột Hoàn thành!")
+    if order.get("warranty_record_id"):
+        raise HTTPException(status_code=400, detail="Đơn lắp đặt này đã được tạo phiếu bảo hành trước đó!")
+
+    clean_serial = (body.serial_number or "").strip().upper()
+    clean_name = (body.customer_name or "").strip()
+    clean_phone = re.sub(r"\D", "", body.phone_number or "")
+    if clean_phone.startswith("84") and len(clean_phone) >= 11:
+        clean_phone = "0" + clean_phone[2:]
+
+    if not clean_name or not clean_phone or not clean_serial or not (body.model_name or "").strip():
+        raise HTTPException(status_code=400, detail="Vui lòng nhập đủ: Tên khách hàng, SĐT, Dòng máy và Số Serial!")
+
+    if body.condition not in {"Máy mới", "Mới", "Đã qua sử dụng"}:
+        raise HTTPException(status_code=400, detail="Tình trạng máy không hợp lệ (chỉ nhận: Mới, Máy mới, Đã qua sử dụng)")
+
+    # 2. Kiểm tra trùng Serial trên bảng warranty_records
+    dup_res = await asyncio.to_thread(
+        lambda: supabase.table("warranty_records")
+        .select("id, customer_name, model_name")
+        .eq("serial_number", clean_serial)
+        .limit(1)
+        .execute()
+    )
+    if dup_res.data:
+        dup = dup_res.data[0]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Số Serial [{clean_serial}] đã tồn tại trên hệ thống (KH: {dup.get('customer_name')} - {dup.get('model_name')})!",
+        )
+
+    staff_name = (
+        current_user.get("ho_ten")
+        or current_user.get("name")
+        or current_user.get("username")
+        or "KTV Lắp Đặt"
+    )
+    purchase_date_str = (body.purchase_date or "").strip() or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    warranty_payload = {
+        "customer_name": clean_name,
+        "phone_number": clean_phone,
+        "purchase_date": purchase_date_str,
+        "brand_name": (body.brand_name or "Khác").strip(),
+        "category": (body.category or "In phun").strip(),
+        "model_name": body.model_name.strip(),
+        "serial_number": clean_serial,
+        "condition": body.condition,
+        "ink_type": (body.ink_type or "Mực Dye UV").strip(),
+        "policy_id": body.policy_id or None,
+        "applied_policy_name": (body.applied_policy_name or "").strip() or None,
+        "warranty_months": int(body.warranty_months or 0),
+        "head_warranty_months": int(body.head_warranty_months or 0),
+        "cartridge_warranty_months": int(body.cartridge_warranty_months or 0),
+        "page_limit_body": int(body.page_limit_body or 0),
+        "page_limit_head": int(body.page_limit_head or 0),
+        "no_page_limit": bool(body.no_page_limit),
+        "initial_counter": int(body.initial_counter or 0),
+        "current_counter": int(body.initial_counter or 0),
+        "staff_name": staff_name,
+    }
+
+    created_res = await asyncio.to_thread(
+        lambda: supabase.table("warranty_records").insert(warranty_payload).execute()
+    )
+    if not created_res.data:
+        raise HTTPException(status_code=500, detail="Không thể lưu phiếu bảo hành vào cơ sở dữ liệu")
+
+    new_warranty = created_res.data[0]
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # 3. Cập nhật liên kết & thông tin đã chuẩn hóa ngược lại đơn lắp đặt
+    await asyncio.to_thread(
+        lambda: supabase.table("installation_orders")
+        .update(
+            {
+                "customer_name": clean_name,
+                "phone": clean_phone,
+                "model_hint": body.model_name.strip(),
+                "serial_number": clean_serial,
+                "warranty_record_id": new_warranty["id"],
+                "warranty_created_at": now_iso,
+                "warranty_created_by": staff_name,
+                "updated_at": now_iso,
+            }
+        )
+        .eq("id", install_id)
+        .execute()
+    )
+
+    return {"success": True, "warranty": new_warranty}

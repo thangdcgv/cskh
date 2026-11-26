@@ -757,31 +757,6 @@ function ReceptionApp() {
     customer_name: '', phone: '', address: '', model_hint: '', serial_number: '', note: ''
   });
   const [isSavingInstall, setIsSavingInstall] = useState(false);
-
-  const [warrantyCatalog, setWarrantyCatalog] = useState({ loaded: false, printers: [], policies: [] });
-  const [warrantyModalRecord, setWarrantyModalRecord] = useState(null);
-  const [isCreatingWarranty, setIsCreatingWarranty] = useState(false);
-  const [warrantyForm, setWarrantyForm] = useState({
-    customer_name: '',
-    phone_number: '',
-    purchase_date: new Date().toISOString().slice(0, 10),
-    brand_name: '',
-    category: 'In phun',
-    model_name: '',
-    serial_number: '',
-    condition: 'Mới',
-    ink_type: 'Mực Dye UV',
-    policy_id: '',
-    applied_policy_name: '',
-    warranty_months: 0,
-    head_warranty_months: 0,
-    cartridge_warranty_months: 0,
-    page_limit_body: 0,
-    page_limit_head: 0,
-    no_page_limit: false,
-    initial_counter: 0
-  });
-
   const openInstallEditModal = (record) => {
     setInstallEditRecord(record);
     setInstallEditForm({
@@ -806,7 +781,7 @@ function ReceptionApp() {
       });
       const data = await handleResponse(res);
       if (data.data) {
-        setInstallRecords(prev => prev.map(item => item.id === data.data.id ? data.data : item));
+        setInstallRecords((prev) => prev.map((item) => (item.id === data.data.id ? data.data : item)));
       }
       showToast(`✅ Đã chuẩn hóa đơn [${installEditRecord.invoice_code || installEditRecord.base_job_id}]!`, 'success');
       setInstallEditRecord(null);
@@ -816,32 +791,100 @@ function ReceptionApp() {
       setIsSavingInstall(false);
     }
   };
+  const INK_TYPE_OPTIONS = [
+    'DYE UV', 'MỰC CHÍNH HÃNG', 'CHUYỂN NHIỆT', 'IN PHIM', 'PREMIUM DYE',
+    'MỰC PET', 'DYE INKTEK', 'PIGMENT UV', 'PIGMENT ART', 'PIGMENT CANON',
+    'MỰC LASER', 'KHÔNG MỰC', 'THIẾT BỊ ĐIỆN'
+  ];
+  const CATEGORY_OPTIONS = ['In phun', 'In Laser', 'In kim', 'Cắt bế', 'Scan', 'Thiết bị điện', 'Thiết bị khác'];
 
-  const applyPolicyToForm = (policy, baseForm) => {
-    if (!policy) {
-      return {
-        ...baseForm,
-        policy_id: '',
-        applied_policy_name: '',
-        warranty_months: 0,
-        head_warranty_months: 0,
-        cartridge_warranty_months: 0,
-        page_limit_body: 0,
-        page_limit_head: 0,
-        no_page_limit: false
-      };
+  const [warrantyCatalog, setWarrantyCatalog] = useState({ loaded: false, printers: [], policies: [] });
+  const [warrantyModalRecord, setWarrantyModalRecord] = useState(null);
+  const [isCreatingWarranty, setIsCreatingWarranty] = useState(false);
+  const [warrantyHeader, setWarrantyHeader] = useState({
+    customer_name: '',
+    phone_number: '',
+    purchase_date: new Date().toLocaleDateString('en-CA')
+  });
+  const [warrantyDevices, setWarrantyDevices] = useState([]);
+
+  const normKey = (str) =>
+    removeAccents(String(str || '')).toLowerCase().replace(/[^a-z0-9]/g, '').trim();
+
+  const buildDeviceItem = (serial = '', modelHint = '', printers = []) => {
+    let brand_name = '';
+    let model_name = modelHint || '';
+    let category = 'In phun';
+
+    if (modelHint) {
+      const hintNorm = normKey(modelHint);
+      const found = printers.find((p) => {
+        const fullNorm = normKey(`${p.brand_name || ''} ${p.model_code || ''}`);
+        const codeNorm = normKey(p.model_code || '');
+        return fullNorm === hintNorm || codeNorm === hintNorm || fullNorm.includes(hintNorm);
+      });
+      if (found) {
+        brand_name = String(found.brand_name || '').toUpperCase();
+        model_name = found.model_code || '';
+        category = found.category || 'In phun';
+      } else {
+        const parts = modelHint.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          brand_name = parts[0].toUpperCase();
+          model_name = parts.slice(1).join(' ');
+        }
+      }
     }
+
     return {
-      ...baseForm,
-      policy_id: policy.id,
-      applied_policy_name: policy.policy_name || '',
-      warranty_months: Number(policy.warranty_months || 0),
-      head_warranty_months: Number(policy.head_warranty_months || 0),
-      cartridge_warranty_months: Number(policy.cartridge_warranty_months || 0),
-      page_limit_body: Number(policy.page_limit_body || 0),
-      page_limit_head: Number(policy.page_limit_head || 0),
-      no_page_limit: Boolean(policy.no_page_limit)
+      uid: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      serial_number: serial,
+      model_search: `${brand_name} ${model_name}`.trim(),
+      brand_name,
+      model_name,
+      category,
+      condition: 'Máy mới',
+      new_head: false,
+      ink_type: '',
+      policy_id: '',
+      initial_counter: 0
     };
+  };
+
+  const getFilteredPoliciesForDevice = (dev, policiesList) => {
+    const brandNorm = normKey(dev.brand_name);
+    const catNorm = normKey(dev.category);
+    const condNorm = normKey(dev.condition).replace(/^may/, '');
+
+    return (policiesList || []).filter((p) => {
+      const pb = normKey(p.brand_name);
+      const pc = normKey(p.category);
+      const pcond = normKey(p.condition).replace(/^may/, '');
+
+      const okBrand =
+        !pb ||
+        !brandNorm ||
+        pb === brandNorm ||
+        ['tatca', 'all', 'khac', 'apdungchung', 'chung'].includes(pb) ||
+        pb.includes(brandNorm) ||
+        brandNorm.includes(pb);
+      const okCat = !pc || pc === catNorm || ['tatca', 'all'].includes(pc);
+      const okCond = !pcond || pcond === condNorm || ['tatca', 'all', 'khongphanbiet'].includes(pcond);
+      return okBrand && okCat && okCond;
+    });
+  };
+
+  const getPolicyCounterMeta = (policy) => {
+    if (!policy) return { enabled: false, unit: '-' };
+    const hasMeter =
+      policy.no_meter_limit !== true &&
+      (Number(policy.meter_limit_body || 0) > 0 || Number(policy.meter_limit_head || 0) > 0);
+    const hasPage =
+      policy.no_page_limit !== true &&
+      (Number(policy.page_limit_body || 0) > 0 || Number(policy.page_limit_head || 0) > 0);
+    if (hasMeter) return { enabled: true, unit: 'm' };
+    if (hasPage) return { enabled: true, unit: '#' };
+    return { enabled: false, unit: '-' };
   };
 
   const openWarrantyModal = async (record) => {
@@ -860,47 +903,63 @@ function ReceptionApp() {
       }
     }
 
-    const hint = (record.model_hint || '').trim().toUpperCase();
-    const matchedPrinter = printers.find(
-      p => (p.model_code || '').trim().toUpperCase() === hint
-    ) || printers.find(
-      p => hint && (p.model_code || '').trim().toUpperCase().includes(hint)
-    );
+    const serials = String(record.serial_number || '')
+      .split(',')
+      .map((s) => s.trim().toUpperCase())
+      .filter(Boolean);
 
-    const initBrand = matchedPrinter?.brand_name || (printers[0]?.brand_name || 'Khác');
-    const initCat = matchedPrinter?.category || (printers[0]?.category || 'In phun');
-    const initModel = matchedPrinter?.model_code || record.model_hint || '';
-    const initCond = 'Mới';
+    const initialDevices =
+      serials.length > 0
+        ? serials.map((sn) => buildDeviceItem(sn, record.model_hint || '', printers))
+        : [buildDeviceItem('', record.model_hint || '', printers)];
 
-    const matchedPolicy = policies.find(
-      pol => pol.brand_name === initBrand && pol.category === initCat && pol.condition === initCond
-    ) || policies.find(
-      pol => pol.category === initCat && pol.condition === initCond
-    );
-
-    const baseForm = {
+    setWarrantyHeader({
       customer_name: record.customer_name || '',
       phone_number: record.phone || '',
-      purchase_date: new Date().toISOString().slice(0, 10),
-      brand_name: initBrand,
-      category: initCat,
-      model_name: initModel,
-      serial_number: record.serial_number || '',
-      condition: initCond,
-      ink_type: 'Mực Dye UV',
-      policy_id: '',
-      applied_policy_name: '',
-      warranty_months: 0,
-      head_warranty_months: 0,
-      cartridge_warranty_months: 0,
-      page_limit_body: 0,
-      page_limit_head: 0,
-      no_page_limit: false,
-      initial_counter: 0
-    };
-
-    setWarrantyForm(applyPolicyToForm(matchedPolicy, baseForm));
+      purchase_date: new Date().toLocaleDateString('en-CA')
+    });
+    setWarrantyDevices(initialDevices);
     setWarrantyModalRecord(record);
+  };
+
+  const updateWarrantyDevice = (uid, patch) => {
+    setWarrantyDevices((prev) =>
+      prev.map((dev) => {
+        if (dev.uid !== uid) return dev;
+        const updated = { ...dev, ...patch };
+        if (updated.condition !== 'Đã qua sử dụng') {
+          updated.new_head = false;
+        }
+        const matched = getFilteredPoliciesForDevice(updated, warrantyCatalog.policies);
+        if (updated.policy_id && !matched.some((p) => String(p.id) === String(updated.policy_id))) {
+          updated.policy_id = '';
+          updated.initial_counter = 0;
+        }
+        return updated;
+      })
+    );
+  };
+
+  const handleDeviceModelSearch = (uid, rawVal) => {
+    const clean = normKey(rawVal);
+    const matched = warrantyCatalog.printers.find(
+      (p) => normKey(`${p.brand_name || ''} ${p.model_code || ''}`) === clean
+    );
+    if (matched) {
+      updateWarrantyDevice(uid, {
+        model_search: rawVal,
+        brand_name: String(matched.brand_name || '').toUpperCase(),
+        model_name: matched.model_code || '',
+        category: matched.category || 'In phun'
+      });
+    } else {
+      const parts = rawVal.trim().split(/\s+/);
+      updateWarrantyDevice(uid, {
+        model_search: rawVal,
+        brand_name: (parts[0] || '').toUpperCase(),
+        model_name: parts.slice(1).join(' ') || parts[0] || ''
+      });
+    }
   };
 
   const handleCreateWarrantySubmit = async (e) => {
@@ -908,27 +967,45 @@ function ReceptionApp() {
     if (!warrantyModalRecord) return;
     setIsCreatingWarranty(true);
     try {
-      const res = await fetch(`${API_BASE}/installations/${warrantyModalRecord.id}/create-warranty`, {
+      const payload = {
+        customer_name: warrantyHeader.customer_name.trim(),
+        phone_number: warrantyHeader.phone_number.trim(),
+        purchase_date: warrantyHeader.purchase_date,
+        items: warrantyDevices.map((d) => ({
+          serial_number: d.serial_number.trim().toUpperCase(),
+          brand_name: d.brand_name.trim().toUpperCase(),
+          model_name: d.model_name.trim(),
+          category: d.category,
+          condition: d.condition,
+          new_head: Boolean(d.new_head),
+          ink_type: d.ink_type,
+          policy_id: d.policy_id,
+          initial_counter: Number(d.initial_counter || 0)
+        }))
+      };
+
+      const res = await fetch(`${API_BASE}/installations/${warrantyModalRecord.id}/create-warranties`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(warrantyForm)
+        body: JSON.stringify(payload)
       });
       const data = await handleResponse(res);
-      setInstallRecords(prev =>
-        prev.map(item =>
+      const allSns = payload.items.map((x) => x.serial_number).join(', ');
+
+      setInstallRecords((prev) =>
+        prev.map((item) =>
           item.id === warrantyModalRecord.id
             ? {
                 ...item,
-                customer_name: warrantyForm.customer_name,
-                phone: warrantyForm.phone_number,
-                model_hint: warrantyForm.model_name,
-                serial_number: warrantyForm.serial_number.toUpperCase(),
-                warranty_record_id: data.warranty?.id || 'created'
+                customer_name: payload.customer_name,
+                phone: payload.phone_number,
+                serial_number: allSns,
+                warranty_record_id: data.records?.[0]?.id || 'created'
               }
             : item
         )
       );
-      showToast(`🎉 Đã tạo phiếu bảo hành Serial [${warrantyForm.serial_number.toUpperCase()}]!`, 'success');
+      showToast(`🎉 ${data.message || 'Đã tạo phiếu bảo hành thành công!'}`, 'success');
       setWarrantyModalRecord(null);
     } catch (err) {
       showToast(err.message, 'error');
@@ -1550,238 +1627,285 @@ function ReceptionApp() {
         </div>
       )}
 
-      {/* MODAL TẠO PHIẾU BẢO HÀNH TỰ ĐỘNG */}
-      {warrantyModalRecord && (() => {
-        const filteredPolicies = warrantyCatalog.policies.filter(p =>
-          (!warrantyForm.brand_name || p.brand_name === warrantyForm.brand_name || p.brand_name === 'Khác') &&
-          (!warrantyForm.category || p.category === warrantyForm.category) &&
-          (!warrantyForm.condition || p.condition === warrantyForm.condition)
-        );
-        const displayPolicies = filteredPolicies.length > 0 ? filteredPolicies : warrantyCatalog.policies;
-
-        return (
-          <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 overflow-y-auto">
-            <div className="bg-[#0e1424] max-w-lg w-full p-5 border border-emerald-500/50 rounded-xl space-y-3 shadow-2xl my-auto">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-                <h3 className="text-sm font-bold text-emerald-400">
-                  <i className="fa-solid fa-file-shield mr-1.5"></i>
-                  Tạo Phiếu Bảo Hành [{warrantyModalRecord.invoice_code || warrantyModalRecord.base_job_id}]
+      {/* MODAL TẠO PHIẾU BẢO HÀNH TỪ ĐƠN KỸ THUẬT LẮP ĐẶT */}
+      {warrantyModalRecord && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-3">
+          <form
+            onSubmit={handleCreateWarrantySubmit}
+            className="bg-white border-2 border-slate-800 rounded-xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl text-slate-900"
+          >
+            {/* Header */}
+            <div className="px-4 py-3 border-b border-slate-300 flex items-center justify-between bg-slate-100 rounded-t-xl">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Cấp Phiếu Bảo Hành (KTLĐ)
                 </h3>
-                <button type="button" onClick={() => setWarrantyModalRecord(null)} className="text-gray-400 hover:text-white">
-                  <i className="fa-solid fa-xmark"></i>
+                <p className="text-xs text-slate-600 font-mono mt-0.5">
+                  {warrantyModalRecord.invoice_code || `#${warrantyModalRecord.base_job_id}`} • {warrantyModalRecord.task_name}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setWarrantyModalRecord(null)}
+                className="px-2.5 py-1 border border-slate-400 rounded text-xs font-bold text-slate-700 hover:bg-slate-200"
+              >
+                Đóng
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-4 overflow-y-auto space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-slate-50 border border-slate-300 rounded-lg">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Tên khách hàng *</label>
+                  <input
+                    type="text"
+                    required
+                    value={warrantyHeader.customer_name}
+                    onChange={(e) => setWarrantyHeader({ ...warrantyHeader, customer_name: e.target.value })}
+                    className="w-full h-9 px-2.5 bg-white border border-slate-400 rounded font-semibold text-slate-900 focus:border-blue-600 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Số điện thoại *</label>
+                  <input
+                    type="text"
+                    required
+                    value={warrantyHeader.phone_number}
+                    onChange={(e) => setWarrantyHeader({ ...warrantyHeader, phone_number: e.target.value })}
+                    className="w-full h-9 px-2.5 bg-white border border-slate-400 rounded font-mono font-semibold text-slate-900 focus:border-blue-600 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Ngày kích hoạt BH *</label>
+                  <input
+                    type="date"
+                    required
+                    value={warrantyHeader.purchase_date}
+                    onChange={(e) => setWarrantyHeader({ ...warrantyHeader, purchase_date: e.target.value })}
+                    className="w-full h-9 px-2.5 bg-white border border-slate-400 rounded font-mono text-slate-900 focus:border-blue-600 outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="font-bold uppercase text-slate-700">
+                  Danh sách thiết bị bảo hành ({warrantyDevices.length} máy)
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setWarrantyDevices((prev) => [
+                      ...prev,
+                      buildDeviceItem('', warrantyModalRecord.model_hint || '', warrantyCatalog.printers)
+                    ])
+                  }
+                  className="px-2.5 py-1 bg-slate-800 text-white rounded font-semibold hover:bg-slate-700"
+                >
+                  + Thêm máy
                 </button>
               </div>
 
-              <form onSubmit={handleCreateWarrantySubmit} className="space-y-2.5 text-xs">
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Tên khách hàng *</label>
-                    <input
-                      required
-                      value={warrantyForm.customer_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, customer_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Số điện thoại *</label>
-                    <input
-                      required
-                      value={warrantyForm.phone_number}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, phone_number: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                </div>
+              <datalist id="iwPrinterDatalist">
+                {warrantyCatalog.printers.map((p, i) => {
+                  const full = `${String(p.brand_name || '').toUpperCase()} ${p.model_code || ''}`.trim();
+                  return <option key={i} value={full} />;
+                })}
+              </datalist>
 
-                {/* Chọn dòng máy từ list_printer */}
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Chọn nhanh dòng máy từ danh mục (list_printer)</label>
-                  <select
-                    value={warrantyCatalog.printers.find(p => p.model_code === warrantyForm.model_name && p.brand_name === warrantyForm.brand_name)?.id || ''}
-                    onChange={e => {
-                      const selected = warrantyCatalog.printers.find(p => String(p.id) === e.target.value);
-                      if (selected) {
-                        const autoPol = warrantyCatalog.policies.find(
-                          pol => pol.brand_name === selected.brand_name && pol.category === selected.category && pol.condition === warrantyForm.condition
-                        );
-                        const nextBase = {
-                          ...warrantyForm,
-                          brand_name: selected.brand_name,
-                          category: selected.category,
-                          model_name: selected.model_code
-                        };
-                        setWarrantyForm(applyPolicyToForm(autoPol, nextBase));
-                      }
-                    }}
-                    className="w-full p-2 bg-slate-900 border border-sky-500/40 rounded text-sky-200"
-                  >
-                    <option value="">-- Chọn máy từ danh sách hoặc nhập tay bên dưới --</option>
-                    {warrantyCatalog.printers.map(p => (
-                      <option key={p.id} value={p.id}>
-                        {p.brand_name} - {p.model_code} ({p.category})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="space-y-3">
+                {warrantyDevices.map((dev, idx) => {
+                  const matchedPolicies = getFilteredPoliciesForDevice(dev, warrantyCatalog.policies);
+                  const selectedPolicy = matchedPolicies.find((p) => String(p.id) === String(dev.policy_id));
+                  const counterMeta = getPolicyCounterMeta(selectedPolicy);
+                  const isUsedMachine = dev.condition === 'Đã qua sử dụng';
 
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Hãng *</label>
-                    <input
-                      required
-                      value={warrantyForm.brand_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, brand_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Phân loại *</label>
-                    <input
-                      required
-                      value={warrantyForm.category}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, category: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Model máy *</label>
-                    <input
-                      required
-                      value={warrantyForm.model_name}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, model_name: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white font-semibold"
-                    />
-                  </div>
-                </div>
+                  return (
+                    <div key={dev.uid} className="p-3 border-2 border-slate-300 rounded-lg bg-white space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                        <span className="font-bold text-slate-800">Thiết bị #{idx + 1}</span>
+                        {warrantyDevices.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setWarrantyDevices((prev) => prev.filter((x) => x.uid !== dev.uid))}
+                            className="text-rose-600 font-bold hover:underline"
+                          >
+                            Xóa máy
+                          </button>
+                        )}
+                      </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Số Serial (duy nhất) *</label>
-                    <input
-                      required
-                      placeholder="VD: X8A9123456"
-                      value={warrantyForm.serial_number}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, serial_number: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-emerald-500/50 rounded text-emerald-300 font-mono uppercase font-bold"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Ngày mua / kích hoạt</label>
-                    <input
-                      type="date"
-                      value={warrantyForm.purchase_date}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, purchase_date: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                        <div className="sm:col-span-5">
+                          <label className="block font-bold text-slate-700 mb-1">Số Serial (S/N) *</label>
+                          <input
+                            type="text"
+                            required
+                            value={dev.serial_number}
+                            placeholder="Nhập S/N *"
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { serial_number: e.target.value.toUpperCase() })}
+                            className="w-full h-9 px-2.5 border border-slate-400 rounded font-mono font-bold uppercase text-slate-900"
+                          />
+                        </div>
 
-                <div className="grid grid-cols-2 gap-2.5">
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Tình trạng máy</label>
-                    <select
-                      value={warrantyForm.condition}
-                      onChange={e => {
-                        const cond = e.target.value;
-                        const autoPol = warrantyCatalog.policies.find(
-                          pol => pol.brand_name === warrantyForm.brand_name && pol.category === warrantyForm.category && pol.condition === cond
-                        );
-                        setWarrantyForm(applyPolicyToForm(autoPol, { ...warrantyForm, condition: cond }));
-                      }}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    >
-                      <option value="Mới">Mới</option>
-                      <option value="Máy mới">Máy mới</option>
-                      <option value="Đã qua sử dụng">Đã qua sử dụng</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-gray-400 mb-1">Loại mực sử dụng</label>
-                    <input
-                      value={warrantyForm.ink_type}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, ink_type: e.target.value })}
-                      className="w-full p-2 bg-slate-900 border border-slate-700 rounded text-white"
-                    />
-                  </div>
-                </div>
+                        <div className="sm:col-span-7">
+                          <label className="block font-bold text-slate-700 mb-1">Tìm / Nhập Model máy *</label>
+                          <input
+                            type="text"
+                            list="iwPrinterDatalist"
+                            value={dev.model_search}
+                            placeholder="VD: EPSON L18050..."
+                            onChange={(e) => handleDeviceModelSearch(dev.uid, e.target.value)}
+                            className="w-full h-9 px-2.5 border border-slate-400 rounded font-semibold text-slate-900"
+                          />
+                        </div>
 
-                {/* Chọn chính sách bảo hành từ warranty_policy */}
-                <div>
-                  <label className="block text-[11px] text-gray-400 mb-1">Chính sách bảo hành (warranty_policy)</label>
-                  <select
-                    value={warrantyForm.policy_id}
-                    onChange={e => {
-                      const pol = warrantyCatalog.policies.find(p => p.id === e.target.value);
-                      setWarrantyForm(applyPolicyToForm(pol, warrantyForm));
-                    }}
-                    className="w-full p-2 bg-slate-900 border border-amber-500/40 rounded text-amber-200"
-                  >
-                    <option value="">-- Chọn chính sách bảo hành --</option>
-                    {displayPolicies.map(pol => (
-                      <option key={pol.id} value={pol.id}>
-                        {pol.policy_name || `${pol.brand_name} - ${pol.category} (${pol.condition})`}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                        <div className="sm:col-span-3">
+                          <label className="block font-bold text-slate-700 mb-1">Hãng *</label>
+                          <input
+                            type="text"
+                            required
+                            value={dev.brand_name}
+                            placeholder="EPSON"
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { brand_name: e.target.value.toUpperCase() })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-bold uppercase text-slate-900"
+                          />
+                        </div>
 
-                <div className="grid grid-cols-3 gap-2 bg-black/30 p-2.5 rounded border border-slate-800">
-                  <div>
-                    <label className="block text-[10px] text-gray-400">BH Thân máy (tháng)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.warranty_months}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, warranty_months: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-gray-400">BH Đầu phun (tháng)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.head_warranty_months}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, head_warranty_months: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-gray-400">Counter ban đầu</label>
-                    <input
-                      type="number"
-                      min="0"
-                      value={warrantyForm.initial_counter}
-                      onChange={e => setWarrantyForm({ ...warrantyForm, initial_counter: Number(e.target.value) })}
-                      className="w-full mt-1 p-1.5 bg-slate-900 border border-slate-700 rounded text-white font-mono"
-                    />
-                  </div>
-                </div>
+                        <div className="sm:col-span-5">
+                          <label className="block font-bold text-slate-700 mb-1">Model chuẩn *</label>
+                          <input
+                            type="text"
+                            required
+                            value={dev.model_name}
+                            placeholder="L18050"
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { model_name: e.target.value })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
+                          />
+                        </div>
 
-                <div className="flex gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setWarrantyModalRecord(null)}
-                    className="flex-1 py-2.5 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold text-white"
-                  >
-                    Hủy
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isCreatingWarranty}
-                    className="flex-[2] py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-lg font-bold text-white shadow-lg"
-                  >
-                    {isCreatingWarranty ? 'Đang phát hành...' : 'Xác Nhận Tạo Phiếu Bảo Hành'}
-                  </button>
-                </div>
-              </form>
+                        <div className="sm:col-span-4">
+                          <label className="block font-bold text-slate-700 mb-1">Danh mục *</label>
+                          <select
+                            value={dev.category}
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { category: e.target.value })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
+                          >
+                            {CATEGORY_OPTIONS.map((c) => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block font-bold text-slate-700 mb-1">Tình trạng *</label>
+                          <select
+                            value={dev.condition}
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { condition: e.target.value })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
+                          >
+                            <option value="Máy mới">Máy mới</option>
+                            <option value="Đã qua sử dụng">Đã qua sử dụng</option>
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-4 flex items-end">
+                          <label
+                            className={`w-full h-9 px-2.5 border border-slate-300 rounded flex items-center gap-2 select-none ${
+                              isUsedMachine ? 'bg-white cursor-pointer' : 'bg-slate-100 opacity-50 cursor-not-allowed'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              disabled={!isUsedMachine}
+                              checked={Boolean(dev.new_head)}
+                              onChange={(e) => updateWarrantyDevice(dev.uid, { new_head: e.target.checked })}
+                              className="w-4 h-4"
+                            />
+                            <span className="font-semibold text-slate-800">Đầu phun mới</span>
+                          </label>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block font-bold text-slate-700 mb-1">Loại mực *</label>
+                          <select
+                            required
+                            value={dev.ink_type}
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { ink_type: e.target.value })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
+                          >
+                            <option value="">-- Chọn loại mực * --</option>
+                            {INK_TYPE_OPTIONS.map((ink) => (
+                              <option key={ink} value={ink}>{ink}</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-8">
+                          <label className="block font-bold text-slate-700 mb-1">Gói bảo hành áp dụng *</label>
+                          <select
+                            required
+                            value={dev.policy_id}
+                            onChange={(e) => updateWarrantyDevice(dev.uid, { policy_id: e.target.value, initial_counter: 0 })}
+                            className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
+                          >
+                            <option value="">-- Chọn gói bảo hành ({matchedPolicies.length}) --</option>
+                            {matchedPolicies.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.policy_name} ({p.warranty_months || 0}T - {p.head_warranty_months || 0}T)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="sm:col-span-4">
+                          <label className="block font-bold text-slate-700 mb-1">Counter ban đầu</label>
+                          <div
+                            className={`flex items-center h-9 border border-slate-400 rounded px-2 ${
+                              counterMeta.enabled ? 'bg-white' : 'bg-slate-100'
+                            }`}
+                          >
+                            <span className="font-mono font-bold text-slate-500 mr-1">{counterMeta.unit}</span>
+                            <input
+                              type="number"
+                              min="0"
+                              disabled={!counterMeta.enabled}
+                              value={dev.initial_counter}
+                              onChange={(e) =>
+                                updateWarrantyDevice(dev.uid, { initial_counter: parseInt(e.target.value || '0', 10) || 0 })
+                              }
+                              className="w-full bg-transparent text-right font-mono font-bold text-slate-900 outline-none"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-        );
-      })()}
+
+            {/* Footer */}
+            <div className="px-4 py-3 border-t border-slate-300 bg-slate-100 rounded-b-xl flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setWarrantyModalRecord(null)}
+                className="px-4 py-2 bg-white border border-slate-400 rounded-lg text-xs font-bold text-slate-700 hover:bg-slate-200"
+              >
+                Hủy
+              </button>
+              <button
+                type="submit"
+                disabled={isCreatingWarranty}
+                className="px-4 py-2 bg-slate-900 text-white rounded-lg text-xs font-bold hover:bg-slate-800 disabled:opacity-50"
+              >
+                {isCreatingWarranty ? 'Đang tạo phiếu...' : 'Lưu & Cấp Phiếu Bảo Hành'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
-    
   );
 }
 

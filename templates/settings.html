@@ -244,7 +244,7 @@ tr:hover td {
     <h2 class="section-title">
       <i class="fa-solid fa-diagram-project text-purple-400"></i> Mã Quy Trình Base.vn (Workflow IDs)
     </h2>
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
       <div>
         <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Sửa Chữa</label>
         <input type="text" id="workflow_repair_id" placeholder="VD: 20025" class="form-input font-monospace">
@@ -259,6 +259,11 @@ tr:hover td {
         <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Giao Nhận</label>
         <input type="text" id="workflow_delivery_id" placeholder="VD: 20037" class="form-input font-monospace">
         <p class="hint-text">Quy trình giao hàng / trả máy khách</p>
+      </div>
+      <div>
+        <label class="block text-xs font-bold uppercase text-slate-300 mb-1.5">ID Quy Trình Lắp Đặt (KTLĐ)</label>
+        <input type="text" id="workflow_install_id" placeholder="VD: 20038" class="form-input font-monospace">
+        <p class="hint-text">Quy trình kỹ thuật lắp đặt & cấp bảo hành</p>
       </div>
     </div>
   </div>
@@ -609,6 +614,7 @@ const CONFIG_FIELDS = [
   { id: 'workflow_repair_id', key: 'workflow_repair_id', desc: 'ID quy trình Sửa chữa trên Base.vn' },
   { id: 'workflow_storage_id', key: 'workflow_storage_id', desc: 'ID quy trình Lưu kho trên Base.vn' },
   { id: 'workflow_delivery_id', key: 'workflow_delivery_id', desc: 'ID quy trình Giao nhận trên Base.vn' },
+  { id: 'workflow_install_id', key: 'workflow_install_id', desc: 'ID quy trình Kỹ thuật lắp đặt trên Base.vn' },
   { id: 'base_repair_token', key: 'base_repair_token', desc: 'API Key / Token cho ứng dụng Sửa chữa (Repair)' },
   { id: 'base_warranty_token', key: 'base_warranty_token', desc: 'API Key / Token cho ứng dụng Bảo hành (Warranty)' },
   { id: 'base_recept_token', key: 'base_recept_token', desc: 'API Key / Token cho ứng dụng Nhận - Trả (Recept&Return)' },

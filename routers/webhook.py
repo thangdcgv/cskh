@@ -8,6 +8,7 @@ import time
 import unicodedata
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
+from postgrest.exceptions import APIError
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
@@ -1442,14 +1443,40 @@ async def _process_installation_webhook(
     state: str,
     custom_fields_data: dict,
 ):
+    clean_job_id = str(job_id or "").strip()
     info = _extract_installation_data(payload, job_data, task_name, custom_fields_data)
     mapped_status = _map_installation_stage_status(stage_name, metatype, state)
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    def _build_update_payload(existing_row: dict) -> dict:
+        # Không ghi đè dữ liệu KTV/Lễ tân đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
+        update_data = {
+            "status": mapped_status,
+            "base_stage_name": stage_name or existing_row.get("base_stage_name"),
+            "task_name": task_name or existing_row.get("task_name"),
+            "updated_at": now_iso,
+        }
+        if info["assignee_name"]:
+            update_data["assignee_name"] = info["assignee_name"]
+        if not existing_row.get("invoice_code") and info["invoice_code"]:
+            update_data["invoice_code"] = info["invoice_code"]
+        if (not existing_row.get("customer_name") or existing_row.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
+            update_data["customer_name"] = info["customer_name"]
+        if not existing_row.get("phone") and info["phone"]:
+            update_data["phone"] = info["phone"]
+        if not existing_row.get("address") and info["address"]:
+            update_data["address"] = info["address"]
+        if not existing_row.get("model_hint") and info["model_hint"]:
+            update_data["model_hint"] = info["model_hint"]
+        # Cho phép đồng bộ cập nhật/bổ sung Serial từ Base miễn là đơn chưa tạo phiếu bảo hành
+        if info["serial_number"] and not existing_row.get("warranty_record_id"):
+            update_data["serial_number"] = info["serial_number"]
+        return update_data
+
     existing_res = await asyncio.to_thread(
         lambda: supabase.table("installation_orders")
         .select("*")
-        .eq("base_job_id", job_id)
+        .eq("base_job_id", clean_job_id)
         .limit(1)
         .execute()
     )
@@ -1462,39 +1489,17 @@ async def _process_installation_webhook(
             await asyncio.to_thread(
                 lambda: supabase.table("installation_orders").delete().eq("id", existing["id"]).execute()
             )
-        return (existing.get("invoice_code") if existing else info["invoice_code"]) or job_id
+        return (existing.get("invoice_code") if existing else info["invoice_code"]) or clean_job_id
 
     if existing:
-        # Không ghi đè dữ liệu KTV đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
-        update_payload = {
-            "status": mapped_status,
-            "base_stage_name": stage_name or existing.get("base_stage_name"),
-            "task_name": task_name or existing.get("task_name"),
-            "updated_at": now_iso,
-        }
-        if info["assignee_name"]:
-            update_payload["assignee_name"] = info["assignee_name"]
-        if not existing.get("invoice_code") and info["invoice_code"]:
-            update_payload["invoice_code"] = info["invoice_code"]
-        if (not existing.get("customer_name") or existing.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
-            update_payload["customer_name"] = info["customer_name"]
-        if not existing.get("phone") and info["phone"]:
-            update_payload["phone"] = info["phone"]
-        if not existing.get("address") and info["address"]:
-            update_payload["address"] = info["address"]
-        if not existing.get("model_hint") and info["model_hint"]:
-            update_payload["model_hint"] = info["model_hint"]
-        # Cho phép đồng bộ cập nhật/bổ sung Serial từ Base miễn là đơn chưa tạo phiếu bảo hành
-        if info["serial_number"] and not existing.get("warranty_record_id"):
-            update_payload["serial_number"] = info["serial_number"]
-
+        update_payload = _build_update_payload(existing)
         await asyncio.to_thread(
             lambda: supabase.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
         )
-        return existing.get("invoice_code") or job_id
+        return existing.get("invoice_code") or info["invoice_code"] or clean_job_id
 
     insert_payload = {
-        "base_job_id": job_id,
+        "base_job_id": clean_job_id,
         "invoice_code": info["invoice_code"] or None,
         "task_name": info["task_name"],
         "customer_type": info["customer_type"],
@@ -1510,7 +1515,30 @@ async def _process_installation_webhook(
         "created_at": now_iso,
         "updated_at": now_iso,
     }
-    await asyncio.to_thread(
-        lambda: supabase.table("installation_orders").insert(insert_payload).execute()
-    )
-    return info["invoice_code"] or job_id
+
+    try:
+        await asyncio.to_thread(
+            lambda: supabase.table("installation_orders").insert(insert_payload).execute()
+        )
+    except Exception as exc:
+        # Bắt race-condition khi Base.vn bắn 2 webhook cùng mili-giây gây trùng unique key (23505)
+        err_code = getattr(exc, "code", None)
+        err_msg = str(exc)
+        if err_code == "23505" or "23505" in err_msg or "installation_orders_base_job_id_key" in err_msg:
+            retry_res = await asyncio.to_thread(
+                lambda: supabase.table("installation_orders")
+                .select("*")
+                .eq("base_job_id", clean_job_id)
+                .limit(1)
+                .execute()
+            )
+            retry_existing = (retry_res.data or [None])[0]
+            if retry_existing:
+                update_payload = _build_update_payload(retry_existing)
+                await asyncio.to_thread(
+                    lambda: supabase.table("installation_orders").update(update_payload).eq("id", retry_existing["id"]).execute()
+                )
+                return retry_existing.get("invoice_code") or info["invoice_code"] or clean_job_id
+        raise
+
+    return info["invoice_code"] or clean_job_id

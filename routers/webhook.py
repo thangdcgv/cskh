@@ -1278,13 +1278,46 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         logger.error(f"[Webhook Error] {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Lỗi hệ thống khi xử lý webhook")
 
-    #--- XỬ LÝ DÀNH CHO QUY TRÌNH LẮP ĐẶT --- #
-    def _extract_installation_payload(payload: dict, job_data: dict, task_name: str, custom_fields_data: dict) -> dict:
-    # 1. Tách Mã hóa đơn (VD: HD0001333) từ tiêu đề đơn
-    invoice_match = re.search(r"\b(HD\d+)\b", task_name, flags=re.IGNORECASE)
-    invoice_code = invoice_match.group(1).upper() if invoice_match else ""
+  # --- XỬ LÝ DÀNH CHO QUY TRÌNH LẮP ĐẶT --- #
+def _map_installation_stage_status(stage_name: str, metatype: str = "", state: str = "") -> str:
 
-    # 2. Lấy thông tin từ các trường nhập tay (Khách Mới)
+    nfd = unicodedata.normalize("NFD", str(stage_name or ""))
+    st = (
+        "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+        .replace("đ", "d")
+        .replace("Đ", "D")
+        .lower()
+        .strip()
+    )
+    mt = (metatype or "").lower().strip()
+    stt = (state or "").lower().strip()
+
+    if mt == "failed" or stt == "failed" or any(k in st for k in ["that bai", "huy"]):
+        return "failed"
+    if mt == "done" or stt == "done" or any(k in st for k in ["hoan thanh", "da lap", "xong"]):
+        return "completed"
+    if any(k in st for k in ["dang xu ly", "xu ly don", "dang lap", "trien khai"]):
+        return "processing"
+    return "pending"
+
+
+def _extract_installation_data(payload: dict, job_data: dict, task_name: str, custom_fields_data: dict) -> dict:
+    # 1. Tách Mã hóa đơn (VD: HD038906) và Model gợi ý ngay sau mã HD (VD: L18050, MF 463DW, AC 450)
+    invoice_code = ""
+    model_hint = ""
+    hd_match = re.search(
+        r"\b(HD\d+)\b\s*([A-Z0-9][A-Z0-9\-]*(?:\s+\d+[A-Z0-9]*)?)?",
+        task_name,
+        flags=re.IGNORECASE,
+    )
+    if hd_match:
+        invoice_code = (hd_match.group(1) or "").upper()
+        raw_model = (hd_match.group(2) or "").strip()
+        # Loại bỏ các từ khóa giao nhận không phải tên model
+        if raw_model and raw_model.upper() not in {"GHLD", "GHLĐ", "XE", "NHA", "GUI", "GỬI", "MUA", "DOI", "ĐỢI"}:
+            model_hint = raw_model.upper()
+
+    # 2. Lấy thông tin từ trường nhập tay (Khách Mới)
     customer_name = clean_base_value(
         payload.get("custom_ten_khach_hang") or custom_fields_data.get("ten_khach_hang")
     )
@@ -1303,7 +1336,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         or custom_fields_data.get("phan_loai_khach_hang")
     )
 
-    # 3. Nếu là Khách Quen (các trường trên rỗng) -> Bóc từ table_custom_khach_hang
+    # 3. Khách Quen -> Ưu tiên đọc JSON table_custom_khach_hang
     table_kh = payload.get("table_custom_khach_hang") or job_data.get("table_custom_khach_hang")
     if isinstance(table_kh, str) and table_kh.strip().startswith("{"):
         try:
@@ -1316,7 +1349,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         phone_raw = phone_raw or clean_base_value(table_kh.get("1_2"))
         address = address or clean_base_value(table_kh.get("1_3"))
 
-    # 4. Fallback: Tách từ chuỗi keyword dạng "... | Tên KH | SĐT | Địa chỉ | ..."
+    # 4. Fallback: Tách từ chuỗi keyword ngăn cách bằng dấu "|"
     if not (customer_name and phone_raw and address):
         kw_raw = str(payload.get("keyword") or job_data.get("keyword") or "")
         if "|" in kw_raw:
@@ -1336,13 +1369,17 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                             address = next_val
                     break
 
-    # 5. Fallback cuối cho tên khách quen từ "Trần Hữu Tài (#199051)"
+    # 5. Fallback tên khách quen từ "Trần Hữu Tài (#199051)" hoặc SĐT trên tiêu đề
     if not customer_name:
         ref_kh = clean_base_value(payload.get("custom_khach_hang") or custom_fields_data.get("khach_hang"))
         if ref_kh:
             customer_name = re.sub(r"\s*\(#\d+\)\s*$", "", ref_kh).strip()
 
-    # 6. Lấy Số Serial nếu KTV đã nhập ở các giai đoạn sau
+    if not phone_raw:
+        phone_in_title = re.search(r"(0\d{2,3}[\s\.\-]?\d{3}[\s\.\-]?\d{3,4})", task_name)
+        if phone_in_title:
+            phone_raw = phone_in_title.group(1)
+
     serial_number = clean_base_value(
         payload.get("custom_so_serial")
         or payload.get("custom_serial")
@@ -1350,204 +1387,97 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
         or custom_fields_data.get("serial")
     )
 
-    final_address = " - ".join(p for p in (address, shipping_info) if p)
+    assignee_obj = payload.get("assignee") or job_data.get("assignee") or {}
+    if isinstance(assignee_obj, str) and assignee_obj.strip().startswith("{"):
+        try:
+            assignee_obj = json.loads(assignee_obj)
+        except Exception:
+            assignee_obj = {}
+    assignee_name = assignee_obj.get("name", "") if isinstance(assignee_obj, dict) else ""
 
     return {
         "invoice_code": invoice_code,
         "task_name": task_name,
-        "customer_type": customer_type or "Khách mới",
+        "customer_type": customer_type or "Khách Mới",
         "customer_name": customer_name or "Khách lẻ",
         "phone": normalize_phone(phone_raw) or phone_raw or "",
-        "address": final_address,
-        "serial_number": serial_number,
+        "address": address or "",
+        "note": shipping_info or "",
+        "model_hint": model_hint,
+        "serial_number": serial_number or "",
+        "assignee_name": assignee_name,
     }
-    def _map_installation_stage_status(stage_name: str, metatype: str = "", state: str = "") -> str:
-        st = remove_accents_py(stage_name or "").lower().strip()
-        mt = (metatype or "").lower().strip()
-        stt = (state or "").lower().strip()
-
-        if mt == "failed" or stt == "failed" or any(k in st for k in ["that bai", "huy"]):
-            return "failed"
-        if mt == "done" or stt == "done" or any(k in st for k in ["hoan thanh", "da lap", "xong"]):
-            return "completed"
-        if any(k in st for k in ["dang xu ly", "xu ly don", "dang lap", "trien khai"]):
-            return "processing"
-        return "pending"
 
 
-    def _extract_installation_data(payload: dict, job_data: dict, task_name: str, custom_fields_data: dict) -> dict:
-        # 1. Tách Mã hóa đơn (VD: HD038906) và Model gợi ý ngay sau mã HD (VD: L18050, MF 463DW, AC 450)
-        invoice_code = ""
-        model_hint = ""
-        hd_match = re.search(r"\b(HD\d+)\b\s*([A-Z0-9][A-Z0-9\-]*(?:\s+\d+[A-Z0-9]*)?)?", task_name, flags=re.IGNORECASE)
-        if hd_match:
-            invoice_code = (hd_match.group(1) or "").upper()
-            raw_model = (hd_match.group(2) or "").strip()
-            # Loại bỏ các từ khóa giao nhận không phải tên model
-            if raw_model and raw_model.upper() not in {"GHLD", "GHLĐ", "XE", "NHA", "GUI", "GỬI", "MUA", "DOI", "ĐỢI"}:
-                model_hint = raw_model.upper()
+async def _process_installation_webhook(
+    payload: dict,
+    job_data: dict,
+    job_id: str,
+    task_name: str,
+    stage_name: str,
+    metatype: str,
+    state: str,
+    custom_fields_data: dict,
+):
+    info = _extract_installation_data(payload, job_data, task_name, custom_fields_data)
+    mapped_status = _map_installation_stage_status(stage_name, metatype, state)
+    now_iso = datetime.now(timezone.utc).isoformat()
 
-        # 2. Lấy thông tin từ trường nhập tay (Khách Mới)
-        customer_name = clean_base_value(
-            payload.get("custom_ten_khach_hang") or custom_fields_data.get("ten_khach_hang")
-        )
-        phone_raw = clean_base_value(
-            payload.get("custom_dien_thoai") or custom_fields_data.get("dien_thoai")
-        )
-        address = clean_base_value(
-            payload.get("custom_dia_chi") or custom_fields_data.get("dia_chi")
-        )
-        shipping_info = clean_base_value(
-            payload.get("custom_thong_tin_chanh_xechuyen_phat")
-            or custom_fields_data.get("thong_tin_chanh_xechuyen_phat")
-        )
-        customer_type = clean_base_value(
-            payload.get("custom_phan_loai_khach_hang")
-            or custom_fields_data.get("phan_loai_khach_hang")
-        )
+    existing_res = await asyncio.to_thread(
+        lambda: supabase.table("installation_orders")
+        .select("*")
+        .eq("base_job_id", job_id)
+        .limit(1)
+        .execute()
+    )
+    existing = (existing_res.data or [None])[0]
 
-        # 3. Khách Quen -> Ưu tiên đọc JSON table_custom_khach_hang
-        table_kh = payload.get("table_custom_khach_hang") or job_data.get("table_custom_khach_hang")
-        if isinstance(table_kh, str) and table_kh.strip().startswith("{"):
-            try:
-                table_kh = json.loads(table_kh)
-            except Exception:
-                table_kh = {}
-
-        if isinstance(table_kh, dict) and table_kh:
-            customer_name = customer_name or clean_base_value(table_kh.get("1_1"))
-            phone_raw = phone_raw or clean_base_value(table_kh.get("1_2"))
-            address = address or clean_base_value(table_kh.get("1_3"))
-
-        # 4. Fallback: Tách từ chuỗi keyword ngăn cách bằng dấu "|"
-        if not (customer_name and phone_raw and address):
-            kw_raw = str(payload.get("keyword") or job_data.get("keyword") or "")
-            if "|" in kw_raw:
-                parts = [p.strip() for p in kw_raw.split("|")]
-                for idx, part in enumerate(parts):
-                    digits = re.sub(r"\D", "", part)
-                    if len(digits) in (10, 11) and digits.startswith(("0", "84")):
-                        if not phone_raw:
-                            phone_raw = part
-                        if not customer_name and idx >= 1:
-                            prev_val = parts[idx - 1].split("&middot;")[-1].strip()
-                            if prev_val and not prev_val.startswith("{"):
-                                customer_name = prev_val
-                        if not address and idx + 1 < len(parts):
-                            next_val = parts[idx + 1].strip()
-                            if next_val and not next_val.startswith("{"):
-                                address = next_val
-                        break
-
-        # 5. Fallback tên khách quen từ "Trần Hữu Tài (#199051)" hoặc SĐT trên tiêu đề
-        if not customer_name:
-            ref_kh = clean_base_value(payload.get("custom_khach_hang") or custom_fields_data.get("khach_hang"))
-            if ref_kh:
-                customer_name = re.sub(r"\s*\(#\d+\)\s*$", "", ref_kh).strip()
-
-        if not phone_raw:
-            phone_in_title = re.search(r"(0\d{2,3}[\s\.\-]?\d{3}[\s\.\-]?\d{3,4})", task_name)
-            if phone_in_title:
-                phone_raw = phone_in_title.group(1)
-
-        serial_number = clean_base_value(
-            payload.get("custom_so_serial")
-            or payload.get("custom_serial")
-            or custom_fields_data.get("so_serial")
-            or custom_fields_data.get("serial")
-        )
-
-        assignee_obj = payload.get("assignee") or job_data.get("assignee") or {}
-        if isinstance(assignee_obj, str) and assignee_obj.strip().startswith("{"):
-            try:
-                assignee_obj = json.loads(assignee_obj)
-            except Exception:
-                assignee_obj = {}
-        assignee_name = assignee_obj.get("name", "") if isinstance(assignee_obj, dict) else ""
-
-        return {
-            "invoice_code": invoice_code,
-            "task_name": task_name,
-            "customer_type": customer_type or "Khách Mới",
-            "customer_name": customer_name or "Khách lẻ",
-            "phone": normalize_phone(phone_raw) or phone_raw or "",
-            "address": address or "",
-            "note": shipping_info or "",
-            "model_hint": model_hint,
-            "serial_number": serial_number or "",
-            "assignee_name": assignee_name,
-        }
-
-
-    async def _process_installation_webhook(
-        payload: dict,
-        job_data: dict,
-        job_id: str,
-        task_name: str,
-        stage_name: str,
-        metatype: str,
-        state: str,
-        custom_fields_data: dict,
-    ):
-        info = _extract_installation_data(payload, job_data, task_name, custom_fields_data)
-        mapped_status = _map_installation_stage_status(stage_name, metatype, state)
-        now_iso = datetime.now(timezone.utc).isoformat()
-
-        existing_res = await asyncio.to_thread(
-            lambda: supabase.table("installation_orders")
-            .select("*")
-            .eq("base_job_id", job_id)
-            .limit(1)
-            .execute()
-        )
-        existing = (existing_res.data or [None])[0]
-
-        if existing:
-            # Không ghi đè dữ liệu KTV đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
-            update_payload = {
-                "status": mapped_status,
-                "base_stage_name": stage_name or existing.get("base_stage_name"),
-                "task_name": task_name or existing.get("task_name"),
-                "updated_at": now_iso,
-            }
-            if info["assignee_name"]:
-                update_payload["assignee_name"] = info["assignee_name"]
-            if not existing.get("invoice_code") and info["invoice_code"]:
-                update_payload["invoice_code"] = info["invoice_code"]
-            if (not existing.get("customer_name") or existing.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
-                update_payload["customer_name"] = info["customer_name"]
-            if not existing.get("phone") and info["phone"]:
-                update_payload["phone"] = info["phone"]
-            if not existing.get("address") and info["address"]:
-                update_payload["address"] = info["address"]
-            if not existing.get("model_hint") and info["model_hint"]:
-                update_payload["model_hint"] = info["model_hint"]
-            if not existing.get("serial_number") and info["serial_number"]:
-                update_payload["serial_number"] = info["serial_number"]
-
-            await asyncio.to_thread(
-                lambda: supabase.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
-            )
-            return existing.get("invoice_code") or job_id
-
-        insert_payload = {
-            "base_job_id": job_id,
-            "invoice_code": info["invoice_code"] or None,
-            "task_name": info["task_name"],
-            "customer_type": info["customer_type"],
-            "customer_name": info["customer_name"],
-            "phone": info["phone"] or None,
-            "address": info["address"] or None,
-            "model_hint": info["model_hint"] or None,
-            "serial_number": info["serial_number"] or None,
-            "note": info["note"] or None,
+    if existing:
+        # Không ghi đè dữ liệu KTV đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
+        update_payload = {
             "status": mapped_status,
-            "base_stage_name": stage_name or "Thông tin đơn",
-            "assignee_name": info["assignee_name"] or None,
-            "created_at": now_iso,
+            "base_stage_name": stage_name or existing.get("base_stage_name"),
+            "task_name": task_name or existing.get("task_name"),
             "updated_at": now_iso,
         }
+        if info["assignee_name"]:
+            update_payload["assignee_name"] = info["assignee_name"]
+        if not existing.get("invoice_code") and info["invoice_code"]:
+            update_payload["invoice_code"] = info["invoice_code"]
+        if (not existing.get("customer_name") or existing.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
+            update_payload["customer_name"] = info["customer_name"]
+        if not existing.get("phone") and info["phone"]:
+            update_payload["phone"] = info["phone"]
+        if not existing.get("address") and info["address"]:
+            update_payload["address"] = info["address"]
+        if not existing.get("model_hint") and info["model_hint"]:
+            update_payload["model_hint"] = info["model_hint"]
+        if not existing.get("serial_number") and info["serial_number"]:
+            update_payload["serial_number"] = info["serial_number"]
+
         await asyncio.to_thread(
-            lambda: supabase.table("installation_orders").insert(insert_payload).execute()
+            lambda: supabase.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
         )
-        return info["invoice_code"] or job_id
+        return existing.get("invoice_code") or job_id
+
+    insert_payload = {
+        "base_job_id": job_id,
+        "invoice_code": info["invoice_code"] or None,
+        "task_name": info["task_name"],
+        "customer_type": info["customer_type"],
+        "customer_name": info["customer_name"],
+        "phone": info["phone"] or None,
+        "address": info["address"] or None,
+        "model_hint": info["model_hint"] or None,
+        "serial_number": info["serial_number"] or None,
+        "note": info["note"] or None,
+        "status": mapped_status,
+        "base_stage_name": stage_name or "Thông tin đơn",
+        "assignee_name": info["assignee_name"] or None,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await asyncio.to_thread(
+        lambda: supabase.table("installation_orders").insert(insert_payload).execute()
+    )
+    return info["invoice_code"] or job_id

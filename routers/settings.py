@@ -5,7 +5,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from database import supabase
+from database import supabase_admin as supabase
 from routers.auth import get_current_user
 from routers.permissions import can_access
 

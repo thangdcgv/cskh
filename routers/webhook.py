@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
-from database import supabase
+from database import supabase_admin as supabase
 from services.base_client import base_client
 from utils import (
     clean_base_content,

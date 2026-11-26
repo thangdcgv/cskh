@@ -1447,7 +1447,7 @@ async def _process_installation_webhook(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     existing_res = await asyncio.to_thread(
-        lambda: supabase_admin.table("installation_orders")
+        lambda: supabase.table("installation_orders")
         .select("*")
         .eq("base_job_id", job_id)
         .limit(1)
@@ -1460,7 +1460,7 @@ async def _process_installation_webhook(
     if is_archived:
         if existing and not existing.get("warranty_record_id"):
             await asyncio.to_thread(
-                lambda: supabase_admin.table("installation_orders").delete().eq("id", existing["id"]).execute()
+                lambda: supabase.table("installation_orders").delete().eq("id", existing["id"]).execute()
             )
         return (existing.get("invoice_code") if existing else info["invoice_code"]) or job_id
 
@@ -1489,7 +1489,7 @@ async def _process_installation_webhook(
             update_payload["serial_number"] = info["serial_number"]
 
         await asyncio.to_thread(
-            lambda: supabase_admin.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
+            lambda: supabase.table("installation_orders").update(update_payload).eq("id", existing["id"]).execute()
         )
         return existing.get("invoice_code") or job_id
 
@@ -1511,6 +1511,6 @@ async def _process_installation_webhook(
         "updated_at": now_iso,
     }
     await asyncio.to_thread(
-        lambda: supabase_admin.table("installation_orders").insert(insert_payload).execute()
+        lambda: supabase.table("installation_orders").insert(insert_payload).execute()
     )
     return info["invoice_code"] or job_id

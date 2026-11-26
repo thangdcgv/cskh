@@ -838,3 +838,250 @@ async def create_warranty_from_installation(
     )
 
     return {"success": True, "warranty": new_warranty}
+
+# =========================================================
+# QUY TRÌNH KỸ THUẬT LẮP ĐẶT (KTLĐ) -> CẤP PHIẾU BẢO HÀNH
+# =========================================================
+
+def _normalize_warranty_phone(phone: Any) -> str:
+    digits = re.sub(r"\D", "", str(phone or ""))
+    if digits.startswith("84") and len(digits) == 11:
+        digits = "0" + digits[2:]
+    elif digits and not digits.startswith("0") and len(digits) in (9, 10):
+        digits = "0" + digits
+    return digits
+
+
+def _validate_warranty_condition(cond: Any) -> str:
+    val = str(cond or "").strip().lower()
+    if any(k in val for k in ("qua sử dụng", "cũ", "used")):
+        return "Đã qua sử dụng"
+    return "Máy mới"
+
+
+@router.get("/api/installation/warranty-options")
+async def get_installation_warranty_options(request: Request):
+    """Lấy danh sách chính sách bảo hành active và danh mục máy in từ App Trung Tâm."""
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+
+    def _fetch():
+        policies_res = (
+            supabase_admin.table("warranty_policy")
+            .select(
+                "id, policy_name, category, brand_name, condition, "
+                "warranty_months, head_warranty_months, cartridge_warranty_months, "
+                "page_limit_body, page_limit_head, no_page_limit, "
+                "meter_limit_body, meter_limit_head, no_meter_limit, is_active"
+            )
+            .eq("is_active", True)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        policies = policies_res.data or []
+
+        # Lấy danh mục máy in (thử printer_models -> fallback printers -> fallback từ warranty_records)
+        printers = []
+        for tbl in ("printer_models", "printers"):
+            try:
+                p_res = supabase_admin.table(tbl).select("brand_name, model_code, category").execute()
+                if p_res.data:
+                    printers = p_res.data
+                    break
+            except Exception:
+                continue
+
+        if not printers:
+            rec_res = (
+                supabase_admin.table("warranty_records")
+                .select("brand_name, model_name, category")
+                .limit(500)
+                .execute()
+            )
+            seen = set()
+            for r in (rec_res.data or []):
+                b = str(r.get("brand_name") or "").strip().upper()
+                m = re.sub(r"\s*-\s*Đầu phun mới\s*$", "", str(r.get("model_name") or "").strip(), flags=re.I)
+                c = str(r.get("category") or "In phun").strip()
+                key = f"{b}|{m}".lower()
+                if b and m and key not in seen:
+                    seen.add(key)
+                    printers.append({"brand_name": b, "model_code": m, "category": c})
+
+        return {"policies": policies, "printers": printers}
+
+    data = await asyncio.to_thread(_fetch)
+    return {"status": "success", **data}
+
+
+@router.post("/api/installation/{order_id}/create-warranties")
+async def create_installation_warranties(order_id: str, request: Request):
+    """
+    Tạo 1 hoặc nhiều phiếu bảo hành vào bảng warranty_records từ đơn Kỹ Thuật Lắp Đặt,
+    tuân thủ đúng schema & logic snapshot của App Trung Tâm.
+    """
+    user = get_current_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Chưa đăng nhập")
+
+    body = await request.json()
+    customer_name = str(body.get("customer_name") or "").strip().title()
+    phone_number = _normalize_warranty_phone(body.get("phone_number"))
+    purchase_date = str(body.get("purchase_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    items = body.get("items") or []
+
+    if not customer_name:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Vui lòng nhập tên khách hàng!"})
+    if not phone_number or not phone_number.isdigit() or not (9 <= len(phone_number) <= 11):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Số điện thoại phải gồm 9 - 11 chữ số!"})
+    if not items:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Chưa có thiết bị nào để tạo phiếu bảo hành!"})
+
+    # Kiểm tra trùng S/N ngay trong danh sách gửi lên
+    input_sns = [str(it.get("serial_number") or "").strip().upper() for it in items]
+    if any(not sn for sn in input_sns):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Số Serial (S/N) không được để trống!"})
+    if len(input_sns) != len(set(input_sns)):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Có số Serial bị trùng lặp trong cùng đơn!"})
+
+    staff_display = (
+        user.get("ho_ten")
+        or user.get("display_name")
+        or user.get("full_name")
+        or user.get("username")
+        or "Kỹ thuật"
+    )
+
+    def _execute():
+        order_res = (
+            supabase_admin.table("installation_orders")
+            .select("*")
+            .eq("id", order_id)
+            .limit(1)
+            .execute()
+        )
+        if not order_res.data:
+            return {"error": (404, "Không tìm thấy đơn lắp đặt!")}
+        order = order_res.data[0]
+
+        # Kiểm tra trùng S/N trên bảng warranty_records
+        exist_sn_res = (
+            supabase_admin.table("warranty_records")
+            .select("serial_number")
+            .in_("serial_number", input_sns)
+            .execute()
+        )
+        if exist_sn_res.data:
+            dup_list = [r["serial_number"] for r in exist_sn_res.data]
+            return {"error": (400, f"Số Serial đã tồn tại trên hệ thống bảo hành: {', '.join(dup_list)}")}
+
+        # Nạp danh sách chính sách bảo hành active để snapshot
+        pol_res = (
+            supabase_admin.table("warranty_policy")
+            .select("*")
+            .eq("is_active", True)
+            .execute()
+        )
+        policy_map = {str(p["id"]): p for p in (pol_res.data or []) if p.get("id")}
+
+        now_dt = datetime.now()
+        now_str = now_dt.strftime("%H:%M %d/%m/%Y")
+        invoice_ref = f" | ĐH: {order.get('invoice_code')}" if order.get("invoice_code") else ""
+
+        records_to_insert = []
+        for idx, it in enumerate(items, start=1):
+            sn = str(it.get("serial_number") or "").strip().upper()
+            brand = str(it.get("brand_name") or "").strip().upper()
+            model = str(it.get("model_name") or "").strip()
+            category = str(it.get("category") or "In phun").strip()
+            condition = _validate_warranty_condition(it.get("condition"))
+            ink_type = str(it.get("ink_type") or "").strip()
+            policy_id = str(it.get("policy_id") or "").strip()
+
+            if not brand or not model:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng nhập đầy đủ Hãng và Model!")}
+            if not ink_type:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng chọn Loại mực!")}
+            if not policy_id or policy_id not in policy_map:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng chọn Gói bảo hành hợp lệ!")}
+
+            if condition == "Đã qua sử dụng" and it.get("new_head") and "đầu phun mới" not in model.lower():
+                model = f"{model} - Đầu phun mới"
+            elif condition == "Máy mới":
+                model = re.sub(r"\s*-\s*Đầu phun mới\s*$", "", model, flags=re.I).strip()
+
+            try:
+                init_counter = max(0, int(it.get("initial_counter") or 0))
+            except (ValueError, TypeError):
+                init_counter = 0
+
+            p_info = policy_map[policy_id]
+            p_name = p_info.get("policy_name", "N/A")
+
+            # Snapshot đúng quy tắc của warranty.py ở App Trung Tâm
+            w_months = int(p_info.get("warranty_months") or 0)
+            h_months = int(p_info.get("head_warranty_months") or 0) if category != "In Laser" else 0
+            c_months = int(p_info.get("cartridge_warranty_months") or 0) if category == "In Laser" else 0
+            p_body = int(p_info.get("page_limit_body") or 0)
+            p_head = int(p_info.get("page_limit_head") or 0)
+            is_no_limit = bool(p_info.get("no_page_limit", False))
+
+            log_entry = (
+                f"• [{now_str}] {staff_display}: KHỞI TẠO (Gói: {p_name}) | "
+                f"Máy: {brand} {model} ({ink_type}) | S/N: {sn}{invoice_ref}"
+            )
+
+            records_to_insert.append({
+                "policy_id": policy_id,
+                "customer_name": customer_name,
+                "phone_number": phone_number,
+                "purchase_date": purchase_date,
+                "category": category,
+                "condition": condition,
+                "brand_name": brand,
+                "model_name": model,
+                "ink_type": ink_type,
+                "serial_number": sn,
+                "warranty_months": w_months,
+                "head_warranty_months": h_months,
+                "cartridge_warranty_months": c_months,
+                "initial_counter": init_counter,
+                "current_counter": init_counter,
+                "page_limit_body": p_body,
+                "page_limit_head": p_head,
+                "no_page_limit": is_no_limit,
+                "staff_name": staff_display,
+                "edit_log": log_entry,
+                "pages_updated_at": now_dt.isoformat(),
+            })
+
+        ins_res = supabase_admin.table("warranty_records").insert(records_to_insert).execute()
+        created_rows = ins_res.data or []
+        if not created_rows:
+            return {"error": (500, "Không thể ghi phiếu bảo hành vào Supabase!")}
+
+        first_id = created_rows[0].get("id")
+        all_sns_str = ", ".join(r["serial_number"] for r in created_rows)
+
+        # Cập nhật đơn lắp đặt: gắn ID phiếu bảo hành & lưu danh sách S/N đã xuất
+        supabase_admin.table("installation_orders").update({
+            "customer_name": customer_name,
+            "phone": phone_number,
+            "serial_number": all_sns_str,
+            "warranty_record_id": first_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", order_id).execute()
+
+        return {"created": created_rows}
+
+    result = await asyncio.to_thread(_execute)
+    if "error" in result:
+        code, msg = result["error"]
+        return JSONResponse(status_code=code, content={"status": "error", "message": msg})
+
+    return {
+        "status": "success",
+        "message": f"Đã tạo thành công {len(result['created'])} phiếu bảo hành!",
+        "records": result["created"],
+    }

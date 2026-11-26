@@ -791,12 +791,17 @@ function ReceptionApp() {
       setIsSavingInstall(false);
     }
   };
-  const INK_TYPE_OPTIONS = [
+  const INK_PRINTER_OPTIONS = [
     'DYE UV', 'MỰC CHÍNH HÃNG', 'CHUYỂN NHIỆT', 'IN PHIM', 'PREMIUM DYE',
     'MỰC PET', 'DYE INKTEK', 'PIGMENT UV', 'PIGMENT ART', 'PIGMENT CANON',
-    'MỰC LASER', 'KHÔNG MỰC', 'THIẾT BỊ ĐIỆN'
+    'MỰC LASER'
   ];
-  const CATEGORY_OPTIONS = ['In phun', 'In Laser', 'In kim', 'Cắt bế', 'Scan', 'Thiết bị điện', 'Thiết bị khác'];
+  const INK_OTHER_DEVICE_OPTIONS = [
+    'KHÔNG MỰC', 'THIẾT BỊ ĐIỆN', 'THIẾT BỊ KHÁC'
+  ];
+  const FALLBACK_CATEGORY_OPTIONS = [
+    'In phun', 'In Laser', 'In kim', 'Cắt bế', 'Scan', 'Thiết bị điện', 'Thiết bị khác'
+  ];
 
   const [warrantyCatalog, setWarrantyCatalog] = useState({ loaded: false, printers: [], policies: [] });
   const [warrantyModalRecord, setWarrantyModalRecord] = useState(null);
@@ -808,35 +813,149 @@ function ReceptionApp() {
   });
   const [warrantyDevices, setWarrantyDevices] = useState([]);
 
-  const normKey = (str) =>
+  const normBrandKey = (str) =>
     removeAccents(String(str || '')).toLowerCase().replace(/[^a-z0-9]/g, '').trim();
 
-  const buildDeviceItem = (serial = '', modelHint = '', printers = []) => {
+  const normCategoryKey = (str) =>
+    removeAccents(String(str || ''))
+      .toLowerCase()
+      .replace(/^may\s*/i, '')
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+
+  const normConditionKey = (str) =>
+    removeAccents(String(str || ''))
+      .toLowerCase()
+      .replace(/^may\s*/i, '')
+      .replace(/[^a-z0-9]/g, '')
+      .trim();
+
+  // Lấy danh sách Hãng & Phân loại thực tế từ catalog (printers + warranty_policies)
+  const { availableBrands, availableCategories } = useMemo(() => {
+    const brandMap = new Map();
+    const catMap = new Map();
+    const ignoreBrands = new Set(['', 'tatca', 'all', 'chung', 'apdungchung', 'khac']);
+
+    (warrantyCatalog.policies || []).forEach((p) => {
+      const b = String(p.brand_name || '').trim().toUpperCase();
+      const bKey = normBrandKey(b);
+      if (b && !ignoreBrands.has(bKey) && !brandMap.has(bKey)) brandMap.set(bKey, b);
+
+      const c = String(p.category || '').trim();
+      const cKey = normCategoryKey(c);
+      if (c && cKey && !['tatca', 'all', 'chung'].includes(cKey) && !catMap.has(cKey)) {
+        catMap.set(cKey, c);
+      }
+    });
+
+    (warrantyCatalog.printers || []).forEach((p) => {
+      const b = String(p.brand_name || '').trim().toUpperCase();
+      const bKey = normBrandKey(b);
+      if (b && !ignoreBrands.has(bKey) && !brandMap.has(bKey)) brandMap.set(bKey, b);
+
+      const c = String(p.category || '').trim();
+      const cKey = normCategoryKey(c);
+      if (c && cKey && !catMap.has(cKey)) catMap.set(cKey, c);
+    });
+
+    FALLBACK_CATEGORY_OPTIONS.forEach((c) => {
+      const cKey = normCategoryKey(c);
+      if (!catMap.has(cKey)) catMap.set(cKey, c);
+    });
+
+    const brands = Array.from(brandMap.values()).sort();
+    brands.push('KHÁC');
+
+    return {
+      availableBrands: brands,
+      availableCategories: Array.from(catMap.values())
+    };
+  }, [warrantyCatalog]);
+
+  const resolveCategoryLabel = (targetCat, printers = warrantyCatalog.printers, policies = warrantyCatalog.policies) => {
+    const targetKey = normCategoryKey(targetCat);
+    const allCats = [
+      ...(policies || []).map((p) => p.category),
+      ...(printers || []).map((p) => p.category),
+      ...FALLBACK_CATEGORY_OPTIONS
+    ].filter(Boolean);
+    const matched = allCats.find((c) => normCategoryKey(c) === targetKey);
+    return matched || targetCat;
+  };
+
+  const inferCategoryAndInkFromText = (text, printers = [], policies = []) => {
+    const norm = removeAccents(String(text || '')).toLowerCase();
+    if (norm.includes('cat be') || norm.includes('may cat') || norm.includes('plotter')) {
+      return { category: resolveCategoryLabel('Cắt bế', printers, policies), ink_type: 'KHÔNG MỰC' };
+    }
+    if (norm.includes('scan')) {
+      return { category: resolveCategoryLabel('Scan', printers, policies), ink_type: 'KHÔNG MỰC' };
+    }
+    if (norm.includes('ep nhiet') || norm.includes('can mang') || norm.includes('may say') || norm.includes('on ap') || norm.includes('thiet bi dien')) {
+      return { category: resolveCategoryLabel('Thiết bị điện', printers, policies), ink_type: 'THIẾT BỊ ĐIỆN' };
+    }
+    if (norm.includes('laser')) {
+      return { category: resolveCategoryLabel('In Laser', printers, policies), ink_type: 'MỰC LASER' };
+    }
+    return { category: resolveCategoryLabel('In phun', printers, policies), ink_type: '' };
+  };
+
+  const buildDeviceItem = (serial = '', modelHint = '', printers = [], policies = []) => {
     let brand_name = '';
-    let model_name = modelHint || '';
-    let category = 'In phun';
+    let model_name = '';
+    const inferred = inferCategoryAndInkFromText(modelHint, printers, policies);
+    let category = inferred.category;
+    let ink_type = inferred.ink_type;
 
     if (modelHint) {
-      const hintNorm = normKey(modelHint);
-      const found = printers.find((p) => {
-        const fullNorm = normKey(`${p.brand_name || ''} ${p.model_code || ''}`);
-        const codeNorm = normKey(p.model_code || '');
-        return fullNorm === hintNorm || codeNorm === hintNorm || fullNorm.includes(hintNorm);
+      const hintNorm = normBrandKey(modelHint);
+
+      // 1. Dò trong danh mục máy in (ưu tiên khớp dài nhất trước)
+      const sortedPrinters = [...printers].sort(
+        (a, b) => normBrandKey(b.model_code).length - normBrandKey(a.model_code).length
+      );
+      const found = sortedPrinters.find((p) => {
+        const fullNorm = normBrandKey(`${p.brand_name || ''} ${p.model_code || ''}`);
+        const codeNorm = normBrandKey(p.model_code || '');
+        return (
+          fullNorm === hintNorm ||
+          codeNorm === hintNorm ||
+          (hintNorm.length >= 3 && fullNorm.includes(hintNorm)) ||
+          (codeNorm.length >= 3 && hintNorm.includes(codeNorm))
+        );
       });
+
       if (found) {
         brand_name = String(found.brand_name || '').toUpperCase();
         model_name = found.model_code || '';
-        category = found.category || 'In phun';
+        if (found.category) {
+          category = resolveCategoryLabel(found.category, printers, policies);
+        }
       } else {
-        const parts = modelHint.trim().split(/\s+/);
-        if (parts.length >= 2) {
-          brand_name = parts[0].toUpperCase();
-          model_name = parts.slice(1).join(' ');
+        // 2. Dò tên Hãng có trong danh mục nếu model chưa có trong bảng printers
+        const knownBrands = Array.from(
+          new Set(
+            [...printers, ...policies]
+              .map((x) => String(x.brand_name || '').trim().toUpperCase())
+              .filter((b) => b && !['TẤT CẢ', 'ALL', 'CHUNG', 'KHÁC'].includes(b))
+          )
+        ).sort((a, b) => b.length - a.length);
+
+        const matchedBrand = knownBrands.find((b) => hintNorm.includes(normBrandKey(b)));
+        const cleanedHint = modelHint
+          .replace(/^(máy\s+in\s+phun|máy\s+in\s+laser|máy\s+in|máy\s+cắt\s+bế|máy\s+cắt|máy\s+scan|máy)\s+/i, '')
+          .trim();
+
+        if (matchedBrand) {
+          brand_name = matchedBrand;
+          model_name = cleanedHint.replace(new RegExp(matchedBrand, 'i'), '').trim() || cleanedHint;
+        } else {
+          model_name = cleanedHint;
         }
       }
     }
 
-    return {
+    const baseDev = {
       uid: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       serial_number: serial,
       model_search: `${brand_name} ${model_name}`.trim(),
@@ -845,33 +964,69 @@ function ReceptionApp() {
       category,
       condition: 'Máy mới',
       new_head: false,
-      ink_type: '',
+      ink_type,
       policy_id: '',
       initial_counter: 0
     };
+
+    const matchedPolicies = getFilteredPoliciesForDevice(baseDev, policies);
+    if (matchedPolicies.length === 1) {
+      baseDev.policy_id = String(matchedPolicies[0].id);
+    }
+
+    return baseDev;
   };
 
+  // Nguyên tắc lọc gói BH: Lọc theo Hãng (brand) + Phân loại (category) (+ Tình trạng nếu gói có quy định)
   const getFilteredPoliciesForDevice = (dev, policiesList) => {
-    const brandNorm = normKey(dev.brand_name);
-    const catNorm = normKey(dev.category);
-    const condNorm = normKey(dev.condition).replace(/^may/, '');
+    const devBrand = normBrandKey(dev.brand_name);
+    const devCat = normCategoryKey(dev.category);
+    const devCond = normConditionKey(dev.condition);
 
-    return (policiesList || []).filter((p) => {
-      const pb = normKey(p.brand_name);
-      const pc = normKey(p.category);
-      const pcond = normKey(p.condition).replace(/^may/, '');
+    const universalBrands = new Set(['', 'tatca', 'all', 'chung', 'apdungchung']);
+    const otherBrands = new Set(['khac', 'hangkhac', 'other']);
+    const universalCats = new Set(['', 'tatca', 'all', 'chung', 'apdungchung']);
+    const universalConds = new Set(['', 'tatca', 'all', 'chung', 'khongphanbiet']);
 
-      const okBrand =
-        !pb ||
-        !brandNorm ||
-        pb === brandNorm ||
-        ['tatca', 'all', 'khac', 'apdungchung', 'chung'].includes(pb) ||
-        pb.includes(brandNorm) ||
-        brandNorm.includes(pb);
-      const okCat = !pc || pc === catNorm || ['tatca', 'all'].includes(pc);
-      const okCond = !pcond || pcond === condNorm || ['tatca', 'all', 'khongphanbiet'].includes(pcond);
-      return okBrand && okCat && okCond;
+    // Lọc trước theo Phân loại + Tình trạng
+    const byCatAndCond = (policiesList || []).filter((p) => {
+      const polCat = normCategoryKey(p.category);
+      const polCond = normConditionKey(p.condition);
+
+      const okCat =
+        !devCat ||
+        universalCats.has(polCat) ||
+        polCat === devCat ||
+        (polCat.length >= 3 && devCat.length >= 3 && (polCat.includes(devCat) || devCat.includes(polCat)));
+
+      const okCond = !devCond || universalConds.has(polCond) || polCond === devCond;
+      return okCat && okCond;
     });
+
+    if (!devBrand) {
+      return byCatAndCond;
+    }
+
+    // Kiểm tra xem hãng này có gói riêng không
+    const directMatches = byCatAndCond.filter((p) => {
+      const polBrand = normBrandKey(p.brand_name);
+      if (universalBrands.has(polBrand) || otherBrands.has(polBrand)) return false;
+      return (
+        polBrand === devBrand ||
+        (polBrand.length >= 2 && devBrand.length >= 2 && (polBrand.includes(devBrand) || devBrand.includes(polBrand)))
+      );
+    });
+
+    const universalMatches = byCatAndCond.filter((p) => universalBrands.has(normBrandKey(p.brand_name)));
+    const otherMatches = byCatAndCond.filter((p) => otherBrands.has(normBrandKey(p.brand_name)));
+
+    // Nếu chọn "KHÁC" hoặc hãng chưa có gói riêng -> lấy gói "KHÁC" + gói "TẤT CẢ"
+    if (otherBrands.has(devBrand) || directMatches.length === 0) {
+      return [...otherMatches, ...universalMatches];
+    }
+
+    // Hãng có gói riêng -> ưu tiên gói của Hãng đó + gói dùng chung "TẤT CẢ"
+    return [...directMatches, ...universalMatches];
   };
 
   const getPolicyCounterMeta = (policy) => {
@@ -910,8 +1065,8 @@ function ReceptionApp() {
 
     const initialDevices =
       serials.length > 0
-        ? serials.map((sn) => buildDeviceItem(sn, record.model_hint || '', printers))
-        : [buildDeviceItem('', record.model_hint || '', printers)];
+        ? serials.map((sn) => buildDeviceItem(sn, record.model_hint || '', printers, policies))
+        : [buildDeviceItem('', record.model_hint || '', printers, policies)];
 
     setWarrantyHeader({
       customer_name: record.customer_name || '',
@@ -927,38 +1082,86 @@ function ReceptionApp() {
       prev.map((dev) => {
         if (dev.uid !== uid) return dev;
         const updated = { ...dev, ...patch };
+
+        // Đồng bộ thông minh giữa Phân loại <-> Loại mực
+        if (patch.category !== undefined) {
+          const catKey = normCategoryKey(patch.category);
+          if (catKey === 'catbe' || catKey === 'scan') {
+            if (!updated.ink_type || INK_PRINTER_OPTIONS.includes(updated.ink_type)) {
+              updated.ink_type = 'KHÔNG MỰC';
+            }
+          } else if (catKey === 'thietbidien') {
+            updated.ink_type = 'THIẾT BỊ ĐIỆN';
+          } else if (catKey === 'thietbikhac') {
+            updated.ink_type = 'THIẾT BỊ KHÁC';
+          } else if (catKey === 'inlaser') {
+            if (!updated.ink_type || INK_OTHER_DEVICE_OPTIONS.includes(updated.ink_type)) {
+              updated.ink_type = 'MỰC LASER';
+            }
+          }
+        }
+
+        if (patch.ink_type !== undefined) {
+          const curCatKey = normCategoryKey(updated.category);
+          if (patch.ink_type === 'THIẾT BỊ ĐIỆN') {
+            updated.category = resolveCategoryLabel('Thiết bị điện');
+          } else if (patch.ink_type === 'THIẾT BỊ KHÁC') {
+            updated.category = resolveCategoryLabel('Thiết bị khác');
+          } else if (patch.ink_type === 'MỰC LASER' && curCatKey === 'inphun') {
+            updated.category = resolveCategoryLabel('In Laser');
+          }
+        }
+
         if (updated.condition !== 'Đã qua sử dụng') {
           updated.new_head = false;
         }
+
+        // Lọc lại gói bảo hành theo Hãng + Phân loại mới
         const matched = getFilteredPoliciesForDevice(updated, warrantyCatalog.policies);
         if (updated.policy_id && !matched.some((p) => String(p.id) === String(updated.policy_id))) {
-          updated.policy_id = '';
+          updated.policy_id = matched.length === 1 ? String(matched[0].id) : '';
           updated.initial_counter = 0;
+        } else if (!updated.policy_id && matched.length === 1) {
+          updated.policy_id = String(matched[0].id);
         }
+
         return updated;
       })
     );
   };
 
   const handleDeviceModelSearch = (uid, rawVal) => {
-    const clean = normKey(rawVal);
+    const clean = normBrandKey(rawVal);
     const matched = warrantyCatalog.printers.find(
-      (p) => normKey(`${p.brand_name || ''} ${p.model_code || ''}`) === clean
+      (p) => normBrandKey(`${p.brand_name || ''} ${p.model_code || ''}`) === clean
     );
     if (matched) {
       updateWarrantyDevice(uid, {
         model_search: rawVal,
         brand_name: String(matched.brand_name || '').toUpperCase(),
         model_name: matched.model_code || '',
-        category: matched.category || 'In phun'
+        category: resolveCategoryLabel(matched.category || 'In phun')
       });
     } else {
-      const parts = rawVal.trim().split(/\s+/);
-      updateWarrantyDevice(uid, {
-        model_search: rawVal,
-        brand_name: (parts[0] || '').toUpperCase(),
-        model_name: parts.slice(1).join(' ') || parts[0] || ''
-      });
+      const inferred = inferCategoryAndInkFromText(rawVal);
+      const matchedBrand = availableBrands.find(
+        (b) => b !== 'KHÁC' && clean.startsWith(normBrandKey(b))
+      );
+      if (matchedBrand) {
+        const restModel = rawVal.trim().slice(matchedBrand.length).trim();
+        updateWarrantyDevice(uid, {
+          model_search: rawVal,
+          brand_name: matchedBrand,
+          model_name: restModel || rawVal.trim(),
+          ...(inferred.ink_type ? { category: inferred.category, ink_type: inferred.ink_type } : {})
+        });
+      } else {
+        updateWarrantyDevice(uid, {
+          model_search: rawVal,
+          model_name: rawVal.trim(),
+          ...(inferred.ink_type ? { category: inferred.category, ink_type: inferred.ink_type } : {})
+        });
+      }
     }
   };
 
@@ -1713,6 +1916,12 @@ function ReceptionApp() {
                 })}
               </datalist>
 
+              <datalist id="iwBrandDatalist">
+                {availableBrands.map((b, i) => (
+                  <option key={i} value={b} />
+                ))}
+              </datalist>
+
               <div className="space-y-3">
                 {warrantyDevices.map((dev, idx) => {
                   const matchedPolicies = getFilteredPoliciesForDevice(dev, warrantyCatalog.policies);
@@ -1761,12 +1970,13 @@ function ReceptionApp() {
                         </div>
 
                         <div className="sm:col-span-3">
-                          <label className="block font-bold text-slate-700 mb-1">Hãng *</label>
+                          <label className="block font-bold text-slate-700 mb-1">Hãng (Brand) *</label>
                           <input
                             type="text"
+                            list="iwBrandDatalist"
                             required
                             value={dev.brand_name}
-                            placeholder="EPSON"
+                            placeholder="EPSON / KHÁC"
                             onChange={(e) => updateWarrantyDevice(dev.uid, { brand_name: e.target.value.toUpperCase() })}
                             className="w-full h-9 px-2 border border-slate-400 rounded font-bold uppercase text-slate-900"
                           />
@@ -1785,13 +1995,13 @@ function ReceptionApp() {
                         </div>
 
                         <div className="sm:col-span-4">
-                          <label className="block font-bold text-slate-700 mb-1">Danh mục *</label>
+                          <label className="block font-bold text-slate-700 mb-1">Phân loại *</label>
                           <select
                             value={dev.category}
                             onChange={(e) => updateWarrantyDevice(dev.uid, { category: e.target.value })}
                             className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
                           >
-                            {CATEGORY_OPTIONS.map((c) => (
+                            {availableCategories.map((c) => (
                               <option key={c} value={c}>{c}</option>
                             ))}
                           </select>
@@ -1827,29 +2037,42 @@ function ReceptionApp() {
                         </div>
 
                         <div className="sm:col-span-4">
-                          <label className="block font-bold text-slate-700 mb-1">Loại mực *</label>
+                          <label className="block font-bold text-slate-700 mb-1">Loại mực / Thiết bị *</label>
                           <select
                             required
                             value={dev.ink_type}
                             onChange={(e) => updateWarrantyDevice(dev.uid, { ink_type: e.target.value })}
                             className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
                           >
-                            <option value="">-- Chọn loại mực * --</option>
-                            {INK_TYPE_OPTIONS.map((ink) => (
-                              <option key={ink} value={ink}>{ink}</option>
-                            ))}
+                            <option value="">-- Chọn loại mực / TB * --</option>
+                            <optgroup label="Mực in (Máy in phun / Laser)">
+                              {INK_PRINTER_OPTIONS.map((ink) => (
+                                <option key={ink} value={ink}>{ink}</option>
+                              ))}
+                            </optgroup>
+                            <optgroup label="Không mực / Thiết bị ngoài máy in">
+                              {INK_OTHER_DEVICE_OPTIONS.map((opt) => (
+                                <option key={opt} value={opt}>{opt}</option>
+                              ))}
+                            </optgroup>
                           </select>
                         </div>
 
                         <div className="sm:col-span-8">
-                          <label className="block font-bold text-slate-700 mb-1">Gói bảo hành áp dụng *</label>
+                          <label className="block font-bold text-slate-700 mb-1">
+                            Gói bảo hành áp dụng * ({dev.brand_name || 'Chưa chọn hãng'} • {dev.category})
+                          </label>
                           <select
                             required
                             value={dev.policy_id}
                             onChange={(e) => updateWarrantyDevice(dev.uid, { policy_id: e.target.value, initial_counter: 0 })}
                             className="w-full h-9 px-2 border border-slate-400 rounded font-semibold text-slate-900"
                           >
-                            <option value="">-- Chọn gói bảo hành ({matchedPolicies.length}) --</option>
+                            <option value="">
+                              {matchedPolicies.length > 0
+                                ? `-- Chọn gói bảo hành (${matchedPolicies.length} gói phù hợp) --`
+                                : '-- Không có gói khớp Hãng & Phân loại này --'}
+                            </option>
                             {matchedPolicies.map((p) => (
                               <option key={p.id} value={p.id}>
                                 {p.policy_name} ({p.warranty_months || 0}T - {p.head_warranty_months || 0}T)

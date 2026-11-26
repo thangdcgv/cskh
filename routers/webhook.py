@@ -1216,7 +1216,7 @@ async def receive_base_webhook(request: Request, bg_tasks: BackgroundTasks):
                 final_phone=final_phone,
                 final_address=final_address,
                 final_note=final_note,
-                final_receibaseved_note=final_received_note,
+                final_received_note=final_received_note,
                 extracted_code=extracted_code,
                 now_iso=now_iso,
                 img_groups=img_groups,

@@ -1840,23 +1840,23 @@ function ReceptionApp() {
         >
           <form
             onSubmit={handleCreateWarrantySubmit}
-            className="bg-[#0e1424] border border-slate-700 rounded-xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl text-slate-100 overflow-hidden"
+            className="bg-[#0e1424] border border-sky-500/40 rounded-xl w-full max-w-2xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden"
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-slate-800 bg-[#0a0f1d] flex items-center justify-between">
+            <div className="px-4 py-3 border-b border-slate-700 flex items-center justify-between">
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-sky-400 flex items-center gap-2">
                   <i className="fa-solid fa-file-shield"></i>
-                  <span>Cấp Phiếu Bảo Hành (KTLĐ)</span>
+                  <span>Tạo Phiếu Bảo Hành (KTLĐ)</span>
                 </h3>
-                <p className="text-xs text-slate-400 font-mono mt-0.5">
+                <p className="text-xs text-gray-400 font-mono mt-0.5">
                   {warrantyModalRecord.invoice_code || `#${warrantyModalRecord.base_job_id}`} • {warrantyModalRecord.task_name}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setWarrantyModalRecord(null)}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-bold text-slate-300 transition"
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-lg text-xs font-bold text-white transition"
               >
                 Đóng
               </button>
@@ -1865,9 +1865,9 @@ function ReceptionApp() {
             {/* Body */}
             <div className="p-4 overflow-y-auto space-y-4 text-xs">
               {/* Khối thông tin khách hàng */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-[#131b2e] border border-slate-700/80 rounded-lg">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-slate-800/40 border border-slate-700 rounded-lg">
                 <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Tên khách hàng *</label>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">Tên khách hàng *</label>
                   <input
                     type="text"
                     required
@@ -1877,7 +1877,7 @@ function ReceptionApp() {
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Số điện thoại *</label>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">Số điện thoại *</label>
                   <input
                     type="text"
                     required
@@ -1887,7 +1887,7 @@ function ReceptionApp() {
                   />
                 </div>
                 <div>
-                  <label className="block font-semibold text-slate-300 mb-1">Ngày kích hoạt BH *</label>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">Ngày kích hoạt BH *</label>
                   <input
                     type="date"
                     required
@@ -1900,7 +1900,7 @@ function ReceptionApp() {
 
               {/* Thanh tiêu đề danh sách máy */}
               <div className="flex items-center justify-between">
-                <span className="font-bold uppercase tracking-wide text-slate-300">
+                <span className="font-bold uppercase tracking-wide text-gray-400">
                   Danh sách thiết bị bảo hành ({warrantyDevices.length} máy)
                 </span>
                 <button
@@ -1911,7 +1911,7 @@ function ReceptionApp() {
                       buildDeviceItem('', warrantyModalRecord.model_hint || '', warrantyCatalog.printers, warrantyCatalog.policies),
                     ])
                   }
-                  className="px-3 py-1.5 bg-sky-600/20 hover:bg-sky-600/30 border border-sky-500/40 text-sky-300 rounded-lg font-bold transition"
+                  className="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition"
                 >
                   + Thêm máy
                 </button>
@@ -1941,9 +1941,9 @@ function ReceptionApp() {
                   return (
                     <div
                       key={dev.uid}
-                      className="p-3 bg-[#131b2e] border border-slate-700 rounded-lg space-y-2.5"
+                      className="p-3 bg-slate-800/40 border border-slate-700 rounded-lg space-y-2.5"
                     >
-                      <div className="flex items-center justify-between border-b border-slate-700/80 pb-1.5">
+                      <div className="flex items-center justify-between border-b border-slate-700 pb-1.5">
                         <span className="font-bold text-sky-400">
                           Thiết bị #{idx + 1}
                         </span>
@@ -1951,7 +1951,7 @@ function ReceptionApp() {
                           <button
                             type="button"
                             onClick={() => setWarrantyDevices((prev) => prev.filter((x) => x.uid !== dev.uid))}
-                            className="text-rose-400 font-bold hover:text-rose-300 hover:underline"
+                            className="text-rose-400 font-bold hover:underline"
                           >
                             Xóa máy
                           </button>
@@ -1961,20 +1961,20 @@ function ReceptionApp() {
                       <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
                         {/* Serial */}
                         <div className="sm:col-span-5">
-                          <label className="block font-semibold text-slate-300 mb-1">Số Serial (S/N) *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Số Serial (S/N) *</label>
                           <input
                             type="text"
                             required
                             value={dev.serial_number}
                             placeholder="Nhập S/N *"
                             onChange={(e) => updateWarrantyDevice(dev.uid, { serial_number: e.target.value.toUpperCase() })}
-                            className="w-full h-9 px-2.5 bg-slate-900 border border-emerald-500/40 rounded-md font-mono font-bold uppercase text-emerald-300 focus:border-emerald-400 outline-none"
+                            className="w-full h-9 px-2.5 bg-slate-900 border border-emerald-500/40 rounded-md font-mono font-bold uppercase text-emerald-400 focus:border-emerald-400 outline-none"
                           />
                         </div>
 
                         {/* Tìm model */}
                         <div className="sm:col-span-7">
-                          <label className="block font-semibold text-slate-300 mb-1">Tìm / Nhập Model máy *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Tìm / Nhập Model máy *</label>
                           <input
                             type="text"
                             list="iwPrinterDatalist"
@@ -1987,7 +1987,7 @@ function ReceptionApp() {
 
                         {/* Hãng */}
                         <div className="sm:col-span-3">
-                          <label className="block font-semibold text-slate-300 mb-1">Hãng (Brand) *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Hãng (Brand) *</label>
                           <input
                             type="text"
                             list="iwBrandDatalist"
@@ -2001,7 +2001,7 @@ function ReceptionApp() {
 
                         {/* Model chuẩn */}
                         <div className="sm:col-span-5">
-                          <label className="block font-semibold text-slate-300 mb-1">Model chuẩn *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Model chuẩn *</label>
                           <input
                             type="text"
                             required
@@ -2014,7 +2014,7 @@ function ReceptionApp() {
 
                         {/* Phân loại */}
                         <div className="sm:col-span-4">
-                          <label className="block font-semibold text-slate-300 mb-1">Phân loại *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Phân loại *</label>
                           <select
                             value={dev.category}
                             onChange={(e) => updateWarrantyDevice(dev.uid, { category: e.target.value })}
@@ -2028,7 +2028,7 @@ function ReceptionApp() {
 
                         {/* Tình trạng */}
                         <div className="sm:col-span-4">
-                          <label className="block font-semibold text-slate-300 mb-1">Tình trạng *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Tình trạng *</label>
                           <select
                             value={dev.condition}
                             onChange={(e) => updateWarrantyDevice(dev.uid, { condition: e.target.value })}
@@ -2043,7 +2043,7 @@ function ReceptionApp() {
                         <div className="sm:col-span-4 flex items-end">
                           <label
                             className={`w-full h-9 px-2.5 bg-slate-900 border border-slate-700 rounded-md flex items-center gap-2 select-none transition ${
-                              isUsedMachine ? 'cursor-pointer text-slate-200 hover:border-slate-500' : 'opacity-45 cursor-not-allowed text-slate-500'
+                              isUsedMachine ? 'cursor-pointer text-white' : 'opacity-45 cursor-not-allowed text-gray-400'
                             }`}
                           >
                             <input
@@ -2059,7 +2059,7 @@ function ReceptionApp() {
 
                         {/* Loại mực */}
                         <div className="sm:col-span-4">
-                          <label className="block font-semibold text-slate-300 mb-1">Loại mực / Thiết bị *</label>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">Loại mực / Thiết bị *</label>
                           <select
                             required
                             value={dev.ink_type}
@@ -2082,7 +2082,7 @@ function ReceptionApp() {
 
                         {/* Gói bảo hành */}
                         <div className="sm:col-span-8">
-                          <label className="block font-semibold text-slate-300 mb-1">
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">
                             Gói bảo hành áp dụng * ({dev.brand_name || 'Chưa chọn hãng'} • {dev.category})
                           </label>
                           <select
@@ -2106,26 +2106,23 @@ function ReceptionApp() {
 
                         {/* Counter ban đầu */}
                         <div className="sm:col-span-4">
-                          <label className="block font-semibold text-slate-300 mb-1">Counter ban đầu</label>
-                          <div className="relative flex items-center w-full h-9">
-                            <input
-                              type="number"
-                              min="0"
-                              disabled={!counterMeta.enabled}
-                              value={dev.initial_counter}
-                              onChange={(e) =>
-                                updateWarrantyDevice(dev.uid, {
-                                  initial_counter: Math.max(0, parseInt(e.target.value || '0', 10) || 0),
-                                })
-                              }
-                              className={`w-full h-9 pl-2.5 pr-10 bg-slate-900 border border-slate-700 rounded-md font-mono font-bold text-right text-white focus:border-sky-500 outline-none transition ${
-                                !counterMeta.enabled ? 'opacity-45 cursor-not-allowed' : ''
-                              }`}
-                            />
-                            <span className="absolute right-0 inset-y-0 px-2.5 flex items-center border-l border-slate-700 text-[11px] font-mono font-bold text-slate-400 pointer-events-none select-none">
-                              {counterMeta.unit}
-                            </span>
-                          </div>
+                          <label className="block text-[11px] font-semibold text-gray-400 mb-1">
+                            Counter ban đầu {counterMeta.enabled && counterMeta.unit !== '-' ? `(${counterMeta.unit})` : ''}
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            disabled={!counterMeta.enabled}
+                            value={dev.initial_counter}
+                            onChange={(e) =>
+                              updateWarrantyDevice(dev.uid, {
+                                initial_counter: Math.max(0, parseInt(e.target.value || '0', 10) || 0),
+                              })
+                            }
+                            className={`w-full h-9 px-2.5 bg-slate-900 border border-slate-700 rounded-md font-mono font-bold text-right text-white focus:border-sky-500 outline-none transition ${
+                              !counterMeta.enabled ? 'opacity-45 cursor-not-allowed' : ''
+                            }`}
+                          />
                         </div>
                       </div>
                     </div>
@@ -2135,11 +2132,11 @@ function ReceptionApp() {
             </div>
 
             {/* Footer */}
-            <div className="px-4 py-3 border-t border-slate-800 bg-[#0a0f1d] flex items-center justify-end gap-2">
+            <div className="px-4 py-3 border-t border-slate-700 flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setWarrantyModalRecord(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-300 transition"
+                className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs font-bold text-white transition"
               >
                 Hủy
               </button>

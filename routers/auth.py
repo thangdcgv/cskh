@@ -108,7 +108,7 @@ def extract_user_from_session(request: Request) -> Optional[Dict[str, Any]]:
         return None
 
     role = _normalize_role(request.session.get("role", "user"))
-    dept = str(request.session.get("department") or "KTSC").strip()
+    dept = str(request.session.get("department") or "").strip().upper()
     if role in SUPER_ADMIN_ROLES:
         dept = "ALL"
 
@@ -270,7 +270,24 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
         username = email_or_user.split("@")[0]
         ho_ten = "Quản trị viên"
         role = "user"
-        department = "KTSC"
+        department = ""
+        if profile_res and profile_res.data:
+            info = profile_res.data[0]
+            if info.get("is_active") is False:
+                return render_template(
+                    request,
+                    "login.html",
+                    {"error": "Tài khoản của bạn đã bị tạm khóa."},
+                    status_code=403,
+                )
+            username = info.get("username") or username
+            ho_ten = info.get("ho_ten") or info.get("name") or ho_ten
+            role = _normalize_role(info.get("role", "user"))
+            department = (
+                "ALL"
+                if role in SUPER_ADMIN_ROLES
+                else str(info.get("department") or "").strip().upper()
+            )
         if profile_res and profile_res.data:
             info = profile_res.data[0]
             username = info.get("username") or username

@@ -109,8 +109,9 @@ def _extract_form_custom_fields(job_obj: dict) -> dict:
                 continue
             k = str(item.get("id") or item.get("name") or item.get("code") or "").strip()
             v = item.get("value")
-            if k and v is not None and not isinstance(v, (dict, list)):
-                extracted[k] = v
+            if k and v is not None:
+                if not isinstance(v, (dict, list)) or k == "table_custom_khach_hang":
+                    extracted[k] = v
     return extracted
 
 
@@ -413,6 +414,8 @@ async def find_existing_repair_ticket(
                     .select("*")
                     .ilike("customer_name", clean_cname)
                     .is_("storage_job_id", "null")
+                    .is_("delivery_job_id", "null")
+                    .not_.in_("status", ["returned", "cancelled"])
                     .order("updated_at", desc=True)
                     .limit(1)
                     .execute()
@@ -687,7 +690,8 @@ async def _process_repair_webhook(
     )
 
     mapped_status = validate_status(stage_for_repair, status_map, metatype=metatype, state=state) or "received"
-
+    if mapped_status == "returned":
+        update_payload["returned_date"] = existing_ticket.get("returned_date") or now_iso
     if state == "failed" or metatype == "failed":
         mapped_status = "cancelled"
 
@@ -1311,8 +1315,38 @@ def _map_installation_stage_status(stage_name: str, metatype: str = "", state: s
     return "pending"
 
 
+_VN_PHONE_STRICT_RE = re.compile(
+    r"(?<!\d)(?:\+?84|0)(?:3[2-9]|5[25689]|7[06-9]|8[1-9]|9[0-9]|2\d)(?:[\s\.\-]?\d){7,8}(?!\d)"
+)
+
+
+def _extract_strict_vn_phone(raw_text: str) -> str:
+    """Chỉ bắt SĐT Việt Nam hợp lệ (10 số di động hoặc 10-11 số bàn), tuyệt đối không dính mã HD."""
+    text = clean_base_value(raw_text)
+    if not text:
+        return ""
+    # Loại bỏ mã hóa đơn/chứng từ (HD038951, DH..., BG...) trước khi quét số
+    cleaned = re.sub(r"\b(?:HD|DH|BG|PX|PN)\s*[A-Z0-9]*\d+\b", " ", text, flags=re.IGNORECASE)
+    for m in _VN_PHONE_STRICT_RE.finditer(cleaned):
+        digits = re.sub(r"\D", "", m.group(0))
+        if digits.startswith("84") and len(digits) in (11, 12):
+            digits = "0" + digits[2:]
+        if digits.startswith("02") and len(digits) in (10, 11):
+            return digits
+        if len(digits) == 10 and digits.startswith("0"):
+            return digits
+    return ""
+
+
+def _is_valid_vn_phone(phone_val: str) -> bool:
+    digits = re.sub(r"\D", "", str(phone_val or ""))
+    if digits.startswith("02"):
+        return len(digits) in (10, 11)
+    return len(digits) == 10 and digits.startswith("0")
+
+
 def _extract_installation_data(payload: dict, job_data: dict, task_name: str, custom_fields_data: dict) -> dict:
-    # 1. Tách Mã hóa đơn (VD: HD038906) và Model gợi ý ngay sau mã HD (VD: L18050, MF 463DW, AC 450)
+    # 1. Tách Mã hóa đơn (VD: HD038906) và Model gợi ý ngay sau mã HD (VD: L8050, 804A, MF 463DW)
     invoice_code = ""
     model_hint = ""
     hd_match = re.search(
@@ -1323,7 +1357,6 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
     if hd_match:
         invoice_code = (hd_match.group(1) or "").upper()
         raw_model = (hd_match.group(2) or "").strip()
-        # Loại bỏ các từ khóa giao nhận không phải tên model
         if raw_model and raw_model.upper() not in {"GHLD", "GHLĐ", "XE", "NHA", "GUI", "GỬI", "MUA", "DOI", "ĐỢI"}:
             model_hint = raw_model.upper()
 
@@ -1347,17 +1380,27 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
     )
 
     # 3. Khách Quen -> Ưu tiên đọc JSON table_custom_khach_hang
-    table_kh = payload.get("table_custom_khach_hang") or job_data.get("table_custom_khach_hang")
+    table_kh = (
+        payload.get("table_custom_khach_hang")
+        or job_data.get("table_custom_khach_hang")
+        or custom_fields_data.get("table_custom_khach_hang")
+    )
     if isinstance(table_kh, str) and table_kh.strip().startswith("{"):
         try:
             table_kh = json.loads(table_kh)
         except Exception:
             table_kh = {}
 
+    has_linked_customer = False
     if isinstance(table_kh, dict) and table_kh:
-        customer_name = customer_name or clean_base_value(table_kh.get("1_1"))
-        phone_raw = phone_raw or clean_base_value(table_kh.get("1_2"))
-        address = address or clean_base_value(table_kh.get("1_3"))
+        t_name = clean_base_value(table_kh.get("1_1"))
+        t_phone = clean_base_value(table_kh.get("1_2"))
+        t_addr = clean_base_value(table_kh.get("1_3"))
+        if t_name or t_phone or t_addr:
+            has_linked_customer = True
+        customer_name = customer_name or t_name
+        phone_raw = phone_raw or t_phone
+        address = address or t_addr
 
     # 4. Fallback: Tách từ chuỗi keyword ngăn cách bằng dấu "|"
     if not (customer_name and phone_raw and address):
@@ -1365,10 +1408,10 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         if "|" in kw_raw:
             parts = [p.strip() for p in kw_raw.split("|")]
             for idx, part in enumerate(parts):
-                digits = re.sub(r"\D", "", part)
-                if len(digits) in (10, 11) and digits.startswith(("0", "84")):
+                strict_p = _extract_strict_vn_phone(part)
+                if strict_p:
                     if not phone_raw:
-                        phone_raw = part
+                        phone_raw = strict_p
                     if not customer_name and idx >= 1:
                         prev_val = parts[idx - 1].split("&middot;")[-1].strip()
                         if prev_val and not prev_val.startswith("{"):
@@ -1379,18 +1422,32 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
                             address = next_val
                     break
 
-    # 5. Fallback tên khách quen từ "Trần Hữu Tài (#199051)" hoặc SĐT trên tiêu đề
-    if not customer_name:
-        ref_kh = clean_base_value(payload.get("custom_khach_hang") or custom_fields_data.get("khach_hang"))
-        if ref_kh:
+    # 5. Fallback tên khách quen từ "Huỳnh Ngọc Tòa (#36023)"
+    ref_kh = clean_base_value(payload.get("custom_khach_hang") or custom_fields_data.get("khach_hang"))
+    if ref_kh:
+        has_linked_customer = True
+        if not customer_name:
             customer_name = re.sub(r"\s*\(#\d+\)\s*$", "", ref_kh).strip()
 
-    if not phone_raw:
-        phone_in_title = re.search(r"(0\d{2,3}[\s\.\-]?\d{3}[\s\.\-]?\d{3,4})", task_name)
-        if phone_in_title:
-            phone_raw = phone_in_title.group(1)
+    # 6. Fallback SĐT & Tên khách từ nội dung mô tả (content) hoặc tiêu đề (đã lọc mã HD)
+    content_clean = clean_base_content(
+        str(payload.get("content") or job_data.get("content") or payload.get("description") or "")
+    )
+    if not _extract_strict_vn_phone(phone_raw):
+        phone_raw = _extract_strict_vn_phone(content_clean) or _extract_strict_vn_phone(task_name)
 
-    # 6. Lấy Số Serial từ custom_so_seria_may & custom_so_seria_may_2 (dùng chung cho Khách Mới & Khách Quen)
+    if not customer_name and content_clean:
+        m_name = re.search(
+            r"(?:khách\s*hàng|tên\s*khách|người\s*nhận|kh)\s*[:\-]\s*([^\n\r\-|]+)",
+            content_clean,
+            flags=re.IGNORECASE,
+        )
+        if m_name:
+            cand = re.sub(r"(?:0|\+?84)\d[\d\s\.\-]{7,11}.*$", "", m_name.group(1)).strip()
+            if len(cand) >= 2:
+                customer_name = cand
+
+    # 7. Lấy Số Serial từ custom_so_seria_may & custom_so_seria_may_2
     sn1 = clean_base_value(
         payload.get("custom_so_seria_may")
         or custom_fields_data.get("so_seria_may")
@@ -1419,14 +1476,17 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
             assignee_obj = {}
     assignee_name = assignee_obj.get("name", "") if isinstance(assignee_obj, dict) else ""
 
+    note_parts = [p for p in (content_clean, f"Chành xe: {shipping_info}" if shipping_info else "") if p]
+    final_phone = _extract_strict_vn_phone(phone_raw)
+
     return {
         "invoice_code": invoice_code,
         "task_name": task_name,
-        "customer_type": customer_type or "Khách Mới",
+        "customer_type": customer_type or ("Khách Quen" if has_linked_customer else "Khách Mới"),
         "customer_name": customer_name or "Khách lẻ",
-        "phone": normalize_phone(phone_raw) or phone_raw or "",
+        "phone": final_phone,
         "address": address or "",
-        "note": shipping_info or "",
+        "note": " | ".join(note_parts),
         "model_hint": model_hint,
         "serial_number": serial_number,
         "assignee_name": assignee_name,
@@ -1449,7 +1509,6 @@ async def _process_installation_webhook(
     now_iso = datetime.now(timezone.utc).isoformat()
 
     def _build_update_payload(existing_row: dict) -> dict:
-        # Không ghi đè dữ liệu KTV/Lễ tân đã chuẩn hóa trên App nếu Base gửi lại rỗng hoặc dữ liệu cũ
         update_data = {
             "status": mapped_status,
             "base_stage_name": stage_name or existing_row.get("base_stage_name"),
@@ -1462,13 +1521,16 @@ async def _process_installation_webhook(
             update_data["invoice_code"] = info["invoice_code"]
         if (not existing_row.get("customer_name") or existing_row.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
             update_data["customer_name"] = info["customer_name"]
-        if not existing_row.get("phone") and info["phone"]:
+
+        # Ghi đè nếu chưa có SĐT hoặc SĐT cũ bị lỗi định dạng (VD: 038951804)
+        existing_phone = existing_row.get("phone") or ""
+        if (not existing_phone or not _is_valid_vn_phone(existing_phone)) and info["phone"]:
             update_data["phone"] = info["phone"]
+
         if not existing_row.get("address") and info["address"]:
             update_data["address"] = info["address"]
         if not existing_row.get("model_hint") and info["model_hint"]:
             update_data["model_hint"] = info["model_hint"]
-        # Cho phép đồng bộ cập nhật/bổ sung Serial từ Base miễn là đơn chưa tạo phiếu bảo hành
         if info["serial_number"] and not existing_row.get("warranty_record_id"):
             update_data["serial_number"] = info["serial_number"]
         return update_data
@@ -1482,7 +1544,6 @@ async def _process_installation_webhook(
     )
     existing = (existing_res.data or [None])[0]
 
-    # Nếu đơn bị lưu trữ (Archive) trên Base và chưa cấp phiếu bảo hành -> dọn khỏi bảng Kanban
     is_archived = str(payload.get("is_archive") or job_data.get("is_archive") or "0").strip() == "1"
     if is_archived:
         if existing and not existing.get("warranty_record_id"):
@@ -1521,7 +1582,6 @@ async def _process_installation_webhook(
             lambda: supabase.table("installation_orders").insert(insert_payload).execute()
         )
     except Exception as exc:
-        # Bắt race-condition khi Base.vn bắn 2 webhook cùng mili-giây gây trùng unique key (23505)
         err_code = getattr(exc, "code", None)
         err_msg = str(exc)
         if err_code == "23505" or "23505" in err_msg or "installation_orders_base_job_id_key" in err_msg:

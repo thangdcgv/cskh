@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, Dict, Union
+from typing import Any, Dict, List, Set, Union
 
 from fastapi import APIRouter, Header, HTTPException
 from starlette.concurrency import run_in_threadpool
@@ -28,6 +28,24 @@ STAFF_DEPT_CACHE: Dict[str, str] = {}
 LAST_STAFF_CACHE_UPDATE: float = 0
 
 CACHE_TTL_SECONDS: int = 300  # 5 phút TTL
+
+
+def get_user_departments(user: dict) -> Set[str]:
+    """Lấy tập hợp mã phòng ban chuẩn (IN HOA) của user từ session hoặc user_metadata."""
+    if not user:
+        return set()
+    meta = user.get("user_metadata") or {}
+    raw = (
+        user.get("departments")
+        or user.get("department")
+        or user.get("phong_ban")
+        or meta.get("departments")
+        or meta.get("department")
+        or ""
+    )
+    if isinstance(raw, (list, tuple, set)):
+        return {str(d).strip().upper() for d in raw if str(d).strip()}
+    return {d.strip().upper() for d in str(raw).split(",") if d.strip()}
 
 
 def load_permissions_cache(force: bool = False) -> None:
@@ -110,10 +128,8 @@ def get_staff_department_map(force: bool = False) -> Dict[str, str]:
 
 def can_access(arg1: Union[str, dict], arg2: Union[str, dict]) -> bool:
     """
-    Kiểm tra quyền truy cập trang qua Cache RAM (RBAC + Data Scope).
-    Hỗ trợ linh hoạt cả 2 vị trí truyền tham số:
-    - can_access(user, page_key)
-    - can_access(page_key, user)
+    Kiểm tra quyền truy cập trang/chức năng qua Cache RAM (RBAC + Data Scope).
+    Hỗ trợ cả 2 cách gọi: can_access(user, page_key) hoặc can_access(page_key, user).
     """
     if isinstance(arg1, dict):
         user = arg1
@@ -124,11 +140,11 @@ def can_access(arg1: Union[str, dict], arg2: Union[str, dict]) -> bool:
     else:
         return False
 
-    if not user:
+    if not user or not page_key:
         return False
 
     user_role = str(user.get("role") or "").strip().lower().replace("_", " ")
-    user_dept = str(user.get("department") or "KTSC").strip().upper()
+    user_depts = get_user_departments(user)
     user_level = ROLE_LEVELS.get(user_role, 1)
 
     # 1. System Admin luôn có toàn quyền
@@ -151,27 +167,53 @@ def can_access(arg1: Union[str, dict], arg2: Union[str, dict]) -> bool:
     else:
         return False
 
-    # 3. Kiểm tra Phạm vi Phòng Ban (Department Scope)
+    # 3. Kiểm tra Phạm vi Phòng Ban (Super Admin bỏ qua giới hạn phòng ban)
     if user_role != "super admin" and "ALL" not in allowed_depts:
-        if user_dept not in allowed_depts:
+        if not user_depts or not (user_depts & allowed_depts):
             return False
 
-    # 4. Kiểm tra Cấp bậc Vai trò (Role Level)
-    if user_role in allowed_roles:
-        return True
+    # 4. Kiểm tra Vai trò được tick trong bảng phân quyền
+    return user_role in allowed_roles
 
-    allowed_levels = [ROLE_LEVELS.get(r, 1) for r in allowed_roles if r in ROLE_LEVELS]
-    if allowed_levels and user_level >= min(allowed_levels):
-        return True
 
-    return False
+def get_allowed_workflows(user: dict) -> List[str]:
+    """Trả về danh sách tab quy trình được phép hiển thị/thao tác theo phòng ban."""
+    if not user:
+        return []
+
+    user_role = str(user.get("role") or "").strip().lower().replace("_", " ")
+    if ROLE_LEVELS.get(user_role, 1) >= ROLE_LEVELS["super admin"]:
+        return ["repair", "storage", "delivery", "installation", "all"]
+
+    depts = get_user_departments(user)
+    if not depts or "ALL" in depts:
+        return ["repair", "storage", "delivery", "installation", "all"]
+
+    dept_workflows = {
+        "KTSC": ["repair", "storage"],
+        "KTLD": ["installation"],
+        "GN": ["delivery", "storage"],
+        "CSKH": ["repair", "storage", "delivery", "installation", "all"],
+        "KD": ["installation", "delivery", "all"],
+        "KT": ["storage", "all"],
+    }
+
+    ordered_tabs = ["repair", "storage", "delivery", "installation", "all"]
+    allowed_set: Set[str] = set()
+    for d in depts:
+        allowed_set.update(dept_workflows.get(d, []))
+
+    if not allowed_set:
+        return ["repair"]
+
+    return [tab for tab in ordered_tabs if tab in allowed_set]
 
 
 def can_modify_warranty_record(user: dict, record: dict) -> bool:
     """
     Kiểm tra quyền Sửa/Xóa phiếu bảo hành:
     - Super Admin / System Admin: Toàn quyền.
-    - Tác giả tạo phiếu: Được phép (So sánh trùng với ho_ten, username hoặc email).
+    - Tác giả tạo phiếu: Được phép.
     - Người cùng phòng ban với tác giả: Được phép.
     """
     if not user or not record:
@@ -181,7 +223,6 @@ def can_modify_warranty_record(user: dict, record: dict) -> bool:
     if role in ["super admin", "system admin"]:
         return True
 
-    # 1. Gom tất cả danh xưng định danh của User hiện tại
     user_identifiers = {
         str(user.get("ho_ten") or "").strip().lower(),
         str(user.get("display_name") or "").strip().lower(),
@@ -191,21 +232,14 @@ def can_modify_warranty_record(user: dict, record: dict) -> bool:
     user_identifiers.discard("")
 
     creator = str(record.get("created_by") or record.get("staff_name") or "").strip().lower()
-
     if creator and creator in user_identifiers:
         return True
 
-    # 2. Kiểm tra cùng phòng ban
-    user_dept = str(user.get("department") or "").strip().lower()
-    if not user_dept:
-        meta = user.get("user_metadata", {})
-        user_dept = str(meta.get("department") or "").strip().lower()
-
-    if user_dept:
+    user_depts = {d.lower() for d in get_user_departments(user)}
+    if user_depts:
         staff_dept_map = get_staff_department_map()
         record_dept = staff_dept_map.get(creator, "")
-
-        if record_dept and user_dept == record_dept:
+        if record_dept and record_dept in user_depts:
             return True
 
     return False

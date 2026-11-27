@@ -486,7 +486,6 @@ async def update_installation_order(
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn lắp đặt")
     return {"success": True, "data": res.data[0]}
 
-
 @router.post("/installations/{order_id}/create-warranties")
 async def create_installation_warranties(
     order_id: str,
@@ -494,6 +493,17 @@ async def create_installation_warranties(
     user: dict = Depends(get_current_user),
 ):
     """Tạo 1 hoặc nhiều phiếu bảo hành vào bảng warranty_records từ đơn Kỹ Thuật Lắp Đặt."""
+    allowed = await asyncio.to_thread(can_access, "installation_warranty", user)
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={
+                "success": False,
+                "status": "error",
+                "message": "⛔ Bạn hoặc phòng ban của bạn không có quyền cấp phiếu bảo hành từ đơn KTLĐ!",
+            },
+        )
+
     body = await request.json()
     customer_name = str(body.get("customer_name") or "").strip().title()
     phone_number = _normalize_warranty_phone(body.get("phone_number"))
@@ -814,7 +824,7 @@ async def delete_reception_ticket(ticket_id: str, user: dict = Depends(get_curre
     except ValueError:
         raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
-    allowed = await asyncio.to_thread(can_access, "reception", user)
+    allowed = await asyncio.to_thread(can_access, "reception_delete", user)
     if not allowed:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

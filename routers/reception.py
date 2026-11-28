@@ -200,6 +200,57 @@ async def safe_broadcast(message: dict) -> None:
     except Exception as e:
         logger.warning(f"WebSocket broadcast failed: {e}")
 
+def _get_actor_name(user: Optional[dict]) -> str:
+    if not user or not isinstance(user, dict):
+        return ""
+    return str(
+        user.get("ho_ten")
+        or user.get("display_name")
+        or user.get("full_name")
+        or user.get("username")
+        or user.get("email")
+        or ""
+    ).strip()
+
+
+def _safe_table_update(client, table_name: str, payload: dict, match_col: str, match_val: Any):
+    """Cập nhật bảng và tự bỏ qua cột audit nếu DB chưa chạy ALTER TABLE."""
+    data = dict(payload)
+    for _ in range(8):
+        try:
+            return client.table(table_name).update(data).eq(match_col, match_val).execute()
+        except Exception as exc:
+            msg = str(exc)
+            m = re.search(r"['\"]([a-zA-Z0-9_]+)['\"] column", msg) or re.search(
+                r'column "([a-zA-Z0-9_]+)"', msg
+            )
+            if m and m.group(1) in data:
+                bad_col = m.group(1)
+                logger.warning(f"Bỏ qua cột chưa tồn tại {table_name}.{bad_col}")
+                data.pop(bad_col, None)
+                continue
+            raise
+    return client.table(table_name).update(data).eq(match_col, match_val).execute()
+
+
+def _safe_table_insert(client, table_name: str, payload: dict):
+    """Insert bảng và tự bỏ qua cột audit nếu DB chưa chạy ALTER TABLE."""
+    data = dict(payload)
+    for _ in range(8):
+        try:
+            return client.table(table_name).insert(data).execute()
+        except Exception as exc:
+            msg = str(exc)
+            m = re.search(r"['\"]([a-zA-Z0-9_]+)['\"] column", msg) or re.search(
+                r'column "([a-zA-Z0-9_]+)"', msg
+            )
+            if m and m.group(1) in data:
+                bad_col = m.group(1)
+                logger.warning(f"Bỏ qua cột chưa tồn tại {table_name}.{bad_col}")
+                data.pop(bad_col, None)
+                continue
+            raise
+    return client.table(table_name).insert(data).execute()
 
 # ==================== TRANG GIAO DIỆN ====================
 @router.get("/page", response_class=HTMLResponse)
@@ -262,6 +313,7 @@ async def create_reception_record(
             "received_note": data.received_note,
             "status": "received",
             "current_process": "repair",
+            "created_by": creator_name or None,
             "updated_at": now_utc,
         }
         try:
@@ -296,6 +348,10 @@ async def search_reception_records(
     query_str: Optional[str] = Query(None),
     status: Optional[str] = Query("all"),
     workflow: Optional[str] = Query("all"),
+    staff_name: Optional[str] = Query(None),
+    staff_role: Optional[str] = Query("all"),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     limit: int = Query(100, ge=1, le=200),
     user: dict = Depends(get_current_user),
@@ -338,7 +394,23 @@ async def search_reception_records(
             db_query = db_query.eq("status", "cancelled")
         else:
             db_query = db_query.eq("status", st)
+    if date_from and re.match(r"^\d{4}-\d{2}-\d{2}$", date_from.strip()):
+        db_query = db_query.gte("created_at", f"{date_from.strip()}T00:00:00+07:00")
+    if date_to and re.match(r"^\d{4}-\d{2}-\d{2}$", date_to.strip()):
+        db_query = db_query.lte("created_at", f"{date_to.strip()}T23:59:59+07:00")
 
+    s_name = (staff_name or "").strip()
+    s_role = (staff_role or "all").strip().lower()
+    if s_name:
+        s_esc = escape_postgrest(s_name)
+        role_cols = {
+            "creator": ["created_by"],
+            "updater": ["updated_by"],
+            "responder": ["returned_by", "sms_sent_by", "link_sent_by"],
+            "all": ["created_by", "updated_by", "returned_by", "sms_sent_by", "link_sent_by"],
+        }.get(s_role, ["created_by", "updated_by", "returned_by", "sms_sent_by", "link_sent_by"])
+        or_expr = ",".join(f"{col}.ilike.%{s_esc}%" for col in role_cols)
+        db_query = db_query.or_(or_expr)
     start = (page - 1) * limit
     end = start + limit - 1
     try:
@@ -384,24 +456,171 @@ def _validate_warranty_condition(cond: Any) -> str:
     return "Máy mới"
 
 
+def _fetch_order_warranty_records(order: dict) -> List[dict]:
+    """Lấy tất cả phiếu bảo hành thuộc 1 đơn KTLĐ (hỗ trợ đơn nhiều máy)."""
+    found_map: Dict[str, dict] = {}
+    first_id = str(order.get("warranty_record_id") or "").strip()
+    serials = [
+        s.strip().upper()
+        for s in str(order.get("serial_number") or "").split(",")
+        if s.strip()
+    ]
+
+    if first_id:
+        res_id = (
+            supabase_admin.table("warranty_records")
+            .select("*")
+            .eq("id", first_id)
+            .limit(1)
+            .execute()
+        )
+        for row in (res_id.data or []):
+            found_map[str(row["id"])] = row
+
+    if serials:
+        res_sn = (
+            supabase_admin.table("warranty_records")
+            .select("*")
+            .in_("serial_number", serials)
+            .execute()
+        )
+        for row in (res_sn.data or []):
+            found_map[str(row["id"])] = row
+
+    rows = list(found_map.values())
+    rows.sort(key=lambda r: str(r.get("created_at") or ""))
+    return rows
+
+
+def _extract_latest_editor_from_log(edit_log: str) -> str:
+    """Trích tên người sửa gần nhất từ dòng log 'SỬA PHIẾU BH' hoặc 'CẬP NHẬT'."""
+    if not edit_log:
+        return ""
+    for line in reversed(str(edit_log).splitlines()):
+        m = re.search(
+            r"\]\s*([^:]+):\s*(?:SỬA PHIẾU BH|CẬP NHẬT|CHỈNH SỬA)",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
 @router.get("/installations")
 async def list_installation_orders(
     query_str: str = "",
+    staff_name: str = "",
+    staff_role: str = "all",
+    date_from: str = "",
+    date_to: str = "",
     current_user: dict = Depends(get_current_user),
 ):
     q = (query_str or "").strip()
 
     def _run():
         req = supabase.table("installation_orders").select("*").order("created_at", desc=True).limit(200)
+        if date_from and re.match(r"^\d{4}-\d{2}-\d{2}$", date_from.strip()):
+            req = req.gte("created_at", f"{date_from.strip()}T00:00:00+07:00")
+        if date_to and re.match(r"^\d{4}-\d{2}-\d{2}$", date_to.strip()):
+            req = req.lte("created_at", f"{date_to.strip()}T23:59:59+07:00")
         if q:
             safe_q = q.replace(",", " ").replace("(", " ").replace(")", " ")
             req = req.or_(
-                f"customer_name.ilike.%{safe_q}%,phone.ilike.%{safe_q}%,invoice_code.ilike.%{safe_q}%,serial_number.ilike.%{safe_q}%,model_hint.ilike.%{safe_q}%"
+                f"customer_name.ilike.%{safe_q}%,phone.ilike.%{safe_q}%,invoice_code.ilike.%{safe_q}%,"
+                f"serial_number.ilike.%{safe_q}%,model_hint.ilike.%{safe_q}%,assignee_name.ilike.%{safe_q}%"
             )
-        return req.execute()
+        res = req.execute()
+        orders = res.data or []
 
-    res = await asyncio.to_thread(_run)
-    return {"success": True, "data": res.data or []}
+        # Làm giàu thông tin người tạo / người sửa phiếu BH từ warranty_records
+        w_ids = [str(o["warranty_record_id"]) for o in orders if o.get("warranty_record_id")]
+        all_sns = []
+        for o in orders:
+            if o.get("warranty_record_id") and o.get("serial_number"):
+                for sn in str(o["serial_number"]).split(","):
+                    clean_sn = sn.strip().upper()
+                    if clean_sn:
+                        all_sns.append(clean_sn)
+
+        w_by_id: Dict[str, dict] = {}
+        w_by_sn: Dict[str, dict] = {}
+        if w_ids:
+            w_res = (
+                supabase_admin.table("warranty_records")
+                .select("id, serial_number, staff_name, edit_log, updated_by, created_at")
+                .in_("id", list(set(w_ids)))
+                .execute()
+            )
+            for wr in (w_res.data or []):
+                w_by_id[str(wr["id"])] = wr
+                if wr.get("serial_number"):
+                    w_by_sn[str(wr["serial_number"]).upper()] = wr
+
+        if all_sns:
+            sn_res = (
+                supabase_admin.table("warranty_records")
+                .select("id, serial_number, staff_name, edit_log, updated_by, created_at")
+                .in_("serial_number", list(set(all_sns)))
+                .execute()
+            )
+            for wr in (sn_res.data or []):
+                w_by_id[str(wr["id"])] = wr
+                if wr.get("serial_number"):
+                    w_by_sn[str(wr["serial_number"]).upper()] = wr
+
+        for o in orders:
+            linked_w = []
+            wid = str(o.get("warranty_record_id") or "")
+            if wid and wid in w_by_id:
+                linked_w.append(w_by_id[wid])
+            for sn in str(o.get("serial_number") or "").split(","):
+                clean_sn = sn.strip().upper()
+                if clean_sn and clean_sn in w_by_sn:
+                    wr = w_by_sn[clean_sn]
+                    if all(str(x["id"]) != str(wr["id"]) for x in linked_w):
+                        linked_w.append(wr)
+
+            if linked_w:
+                first_w = linked_w[0]
+                if not o.get("warranty_created_by"):
+                    o["warranty_created_by"] = first_w.get("staff_name") or ""
+                if not o.get("warranty_updated_by"):
+                    latest_ed = ""
+                    for wr in linked_w:
+                        latest_ed = wr.get("updated_by") or _extract_latest_editor_from_log(wr.get("edit_log") or "") or latest_ed
+                    o["warranty_updated_by"] = latest_ed
+                logs = [str(wr.get("edit_log") or "").strip() for wr in linked_w if wr.get("edit_log")]
+                o["warranty_edit_log"] = "\n".join(logs)
+
+        s_kw = (staff_name or "").strip().lower()
+        s_role = (staff_role or "all").strip().lower()
+        if s_kw or s_role != "all":
+            filtered_orders = []
+            for o in orders:
+                pools = {
+                    "creator": [o.get("warranty_created_by")],
+                    "updater": [o.get("warranty_updated_by"), o.get("updated_by")],
+                    "assignee": [o.get("assignee_name")],
+                    "all": [
+                        o.get("warranty_created_by"),
+                        o.get("warranty_updated_by"),
+                        o.get("updated_by"),
+                        o.get("assignee_name"),
+                    ],
+                }
+                vals = [str(v).strip() for v in (pools.get(s_role) or pools["all"]) if v]
+                if s_role != "all" and not s_kw and not vals:
+                    continue
+                if s_kw and not any(s_kw in v.lower() for v in vals):
+                    continue
+                filtered_orders.append(o)
+            return filtered_orders
+
+        return orders
+
+    orders_data = await asyncio.to_thread(_run)
+    return {"success": True, "data": orders_data}
 
 
 @router.get("/installations/warranty-options")
@@ -469,6 +688,9 @@ async def update_installation_order(
     if clean_phone.startswith("84") and len(clean_phone) >= 11:
         clean_phone = "0" + clean_phone[2:]
 
+    now_utc = datetime.now(timezone.utc).isoformat()
+    actor_name = _get_actor_name(current_user)
+
     update_data = {
         "customer_name": clean_name,
         "phone": clean_phone or None,
@@ -476,15 +698,45 @@ async def update_installation_order(
         "model_hint": (body.model_hint or "").strip().upper() or None,
         "serial_number": (body.serial_number or "").strip().upper() or None,
         "note": (body.note or "").strip() or None,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": actor_name or None,
+        "updated_by_at": now_utc,
+        "updated_at": now_utc,
     }
 
     res = await asyncio.to_thread(
-        lambda: supabase.table("installation_orders").update(update_data).eq("id", install_id).execute()
+        lambda: _safe_table_update(supabase, "installation_orders", update_data, "id", install_id)
     )
     if not res.data:
         raise HTTPException(status_code=404, detail="Không tìm thấy đơn lắp đặt")
     return {"success": True, "data": res.data[0]}
+
+
+@router.get("/installations/{order_id}/warranties")
+async def get_installation_warranties(
+    order_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Lấy toàn bộ phiếu bảo hành đã tạo từ đơn KTLĐ để xem/chỉnh sửa."""
+    def _fetch():
+        order_res = (
+            supabase_admin.table("installation_orders")
+            .select("*")
+            .eq("id", order_id)
+            .limit(1)
+            .execute()
+        )
+        if not order_res.data:
+            return None, []
+        order = order_res.data[0]
+        records = _fetch_order_warranty_records(order)
+        return order, records
+
+    order, records = await asyncio.to_thread(_fetch)
+    if not order:
+        raise HTTPException(status_code=404, detail="Không tìm thấy đơn lắp đặt")
+
+    return {"success": True, "order": order, "records": records}
+
 
 @router.post("/installations/{order_id}/create-warranties")
 async def create_installation_warranties(
@@ -523,13 +775,7 @@ async def create_installation_warranties(
     if len(input_sns) != len(set(input_sns)):
         return JSONResponse(status_code=400, content={"status": "error", "message": "Có số Serial bị trùng lặp trong cùng đơn!"})
 
-    staff_display = (
-        user.get("ho_ten")
-        or user.get("display_name")
-        or user.get("full_name")
-        or user.get("username")
-        or "Kỹ thuật"
-    )
+    staff_display = _get_actor_name(user) or "Kỹ thuật"
 
     def _execute():
         order_res = (
@@ -562,6 +808,7 @@ async def create_installation_warranties(
         policy_map = {str(p["id"]): p for p in (pol_res.data or []) if p.get("id")}
 
         now_dt = datetime.now()
+        now_utc_iso = datetime.now(timezone.utc).isoformat()
         now_str = now_dt.strftime("%H:%M %d/%m/%Y")
         invoice_ref = f" | ĐH: {order.get('invoice_code')}" if order.get("invoice_code") else ""
 
@@ -639,15 +886,23 @@ async def create_installation_warranties(
         first_id = created_rows[0].get("id")
         all_sns_str = ", ".join(r["serial_number"] for r in created_rows)
 
-        supabase_admin.table("installation_orders").update({
-            "customer_name": customer_name,
-            "phone": phone_number,
-            "serial_number": all_sns_str,
-            "warranty_record_id": first_id,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", order_id).execute()
+        _safe_table_update(
+            supabase_admin,
+            "installation_orders",
+            {
+                "customer_name": customer_name,
+                "phone": phone_number,
+                "serial_number": all_sns_str,
+                "warranty_record_id": first_id,
+                "warranty_created_by": staff_display,
+                "warranty_created_at": now_utc_iso,
+                "updated_at": now_utc_iso,
+            },
+            "id",
+            order_id,
+        )
 
-        return {"created": created_rows}
+        return {"created": created_rows, "created_by": staff_display}
 
     result = await asyncio.to_thread(_execute)
     if "error" in result:
@@ -659,6 +914,256 @@ async def create_installation_warranties(
         "status": "success",
         "message": f"Đã tạo thành công {len(result['created'])} phiếu bảo hành!",
         "records": result["created"],
+        "warranty_created_by": result["created_by"],
+    }
+
+
+@router.put("/installations/{order_id}/warranties")
+async def update_installation_warranties(
+    order_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Chỉnh sửa lại phiếu bảo hành đã tạo từ đơn KTLĐ (hỗ trợ sửa nhiều máy & bổ sung máy)."""
+    allowed = await asyncio.to_thread(can_access, "installation_warranty", user)
+    if not allowed:
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={
+                "success": False,
+                "status": "error",
+                "message": "⛔ Bạn hoặc phòng ban của bạn không có quyền chỉnh sửa phiếu bảo hành từ đơn KTLĐ!",
+            },
+        )
+
+    body = await request.json()
+    customer_name = str(body.get("customer_name") or "").strip().title()
+    phone_number = _normalize_warranty_phone(body.get("phone_number"))
+    purchase_date = str(body.get("purchase_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    items = body.get("items") or []
+
+    if not customer_name:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Vui lòng nhập tên khách hàng!"})
+    if not phone_number or not phone_number.isdigit() or not (9 <= len(phone_number) <= 11):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Số điện thoại phải gồm 9 - 11 chữ số!"})
+    if not items:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Phải có ít nhất 1 thiết bị bảo hành!"})
+
+    input_sns = [str(it.get("serial_number") or "").strip().upper() for it in items]
+    if any(not sn for sn in input_sns):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Số Serial (S/N) không được để trống!"})
+    if len(input_sns) != len(set(input_sns)):
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Có số Serial bị trùng lặp trong cùng đơn!"})
+
+    editor_display = _get_actor_name(user) or "Kỹ thuật"
+
+    def _execute():
+        order_res = (
+            supabase_admin.table("installation_orders")
+            .select("*")
+            .eq("id", order_id)
+            .limit(1)
+            .execute()
+        )
+        if not order_res.data:
+            return {"error": (404, "Không tìm thấy đơn lắp đặt!")}
+        order = order_res.data[0]
+
+        existing_records = _fetch_order_warranty_records(order)
+        existing_by_id = {str(r["id"]): r for r in existing_records}
+        owned_ids = set(existing_by_id.keys())
+
+        exist_sn_res = (
+            supabase_admin.table("warranty_records")
+            .select("id, serial_number")
+            .in_("serial_number", input_sns)
+            .execute()
+        )
+        conflict_sns = [
+            r["serial_number"]
+            for r in (exist_sn_res.data or [])
+            if str(r.get("id")) not in owned_ids
+        ]
+        if conflict_sns:
+            return {
+                "error": (
+                    400,
+                    f"Số Serial đã tồn tại ở phiếu bảo hành khác: {', '.join(conflict_sns)}",
+                )
+            }
+
+        pol_res = (
+            supabase_admin.table("warranty_policy")
+            .select("*")
+            .execute()
+        )
+        policy_map = {str(p["id"]): p for p in (pol_res.data or []) if p.get("id")}
+
+        now_dt = datetime.now()
+        now_utc_iso = datetime.now(timezone.utc).isoformat()
+        now_str = now_dt.strftime("%H:%M %d/%m/%Y")
+        invoice_ref = f" | ĐH: {order.get('invoice_code')}" if order.get("invoice_code") else ""
+
+        final_rows = []
+        for idx, it in enumerate(items, start=1):
+            rec_id = str(it.get("id") or "").strip()
+            sn = str(it.get("serial_number") or "").strip().upper()
+            brand = str(it.get("brand_name") or "").strip().upper()
+            model = str(it.get("model_name") or "").strip()
+            category = str(it.get("category") or "In phun").strip()
+            condition = _validate_warranty_condition(it.get("condition"))
+            ink_type = str(it.get("ink_type") or "").strip()
+            policy_id = str(it.get("policy_id") or "").strip()
+
+            if not brand or not model:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng nhập đầy đủ Hãng và Model!")}
+            if not ink_type:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng chọn Loại mực!")}
+            if not policy_id or policy_id not in policy_map:
+                return {"error": (400, f"Máy #{idx} ({sn}): Vui lòng chọn Gói bảo hành hợp lệ!")}
+
+            if condition == "Đã qua sử dụng" and it.get("new_head") and "đầu phun mới" not in model.lower():
+                model = f"{model} - Đầu phun mới"
+            elif condition == "Máy mới":
+                model = re.sub(r"\s*-\s*Đầu phun mới\s*$", "", model, flags=re.I).strip()
+
+            try:
+                init_counter = max(0, int(it.get("initial_counter") or 0))
+            except (ValueError, TypeError):
+                init_counter = 0
+
+            p_info = policy_map[policy_id]
+            p_name = p_info.get("policy_name", "N/A")
+            w_months = int(p_info.get("warranty_months") or 0)
+            h_months = int(p_info.get("head_warranty_months") or 0) if category != "In Laser" else 0
+            c_months = int(p_info.get("cartridge_warranty_months") or 0) if category == "In Laser" else 0
+            p_body = int(p_info.get("page_limit_body") or 0)
+            p_head = int(p_info.get("page_limit_head") or 0)
+            is_no_limit = bool(p_info.get("no_page_limit", False))
+
+            if rec_id and rec_id in existing_by_id:
+                old_rec = existing_by_id[rec_id]
+                diffs = []
+                if (old_rec.get("customer_name") or "") != customer_name:
+                    diffs.append(f"KH: {old_rec.get('customer_name')} → {customer_name}")
+                if (old_rec.get("phone_number") or "") != phone_number:
+                    diffs.append(f"SĐT: {old_rec.get('phone_number')} → {phone_number}")
+                if str(old_rec.get("purchase_date") or "")[:10] != purchase_date:
+                    diffs.append(f"Ngày BH: {str(old_rec.get('purchase_date') or '')[:10]} → {purchase_date}")
+                if (old_rec.get("serial_number") or "").upper() != sn:
+                    diffs.append(f"S/N: {old_rec.get('serial_number')} → {sn}")
+                if (old_rec.get("brand_name") or "").upper() != brand or (old_rec.get("model_name") or "") != model:
+                    diffs.append(f"Máy: {old_rec.get('brand_name')} {old_rec.get('model_name')} → {brand} {model}")
+                if (old_rec.get("ink_type") or "") != ink_type:
+                    diffs.append(f"Mực: {old_rec.get('ink_type')} → {ink_type}")
+                if str(old_rec.get("policy_id") or "") != policy_id:
+                    diffs.append(f"Gói BH: {p_name}")
+
+                diff_text = "; ".join(diffs) if diffs else "Cập nhật thông tin phiếu"
+                old_log = str(old_rec.get("edit_log") or "").strip()
+                new_log_line = f"• [{now_str}] {editor_display}: SỬA PHIẾU BH ({diff_text})"
+                combined_log = f"{old_log}\n{new_log_line}".strip()
+
+                old_init = int(old_rec.get("initial_counter") or 0)
+                old_curr = int(old_rec.get("current_counter") or 0)
+                next_curr = init_counter if old_curr == old_init else max(old_curr, init_counter)
+
+                upd_payload = {
+                    "policy_id": policy_id,
+                    "customer_name": customer_name,
+                    "phone_number": phone_number,
+                    "purchase_date": purchase_date,
+                    "category": category,
+                    "condition": condition,
+                    "brand_name": brand,
+                    "model_name": model,
+                    "ink_type": ink_type,
+                    "serial_number": sn,
+                    "warranty_months": w_months,
+                    "head_warranty_months": h_months,
+                    "cartridge_warranty_months": c_months,
+                    "initial_counter": init_counter,
+                    "current_counter": next_curr,
+                    "page_limit_body": p_body,
+                    "page_limit_head": p_head,
+                    "no_page_limit": is_no_limit,
+                    "updated_by": editor_display,
+                    "edit_log": combined_log,
+                }
+                upd_res = _safe_table_update(supabase_admin, "warranty_records", upd_payload, "id", rec_id)
+                if upd_res.data:
+                    final_rows.append(upd_res.data[0])
+            else:
+                log_entry = (
+                    f"• [{now_str}] {editor_display}: BỔ SUNG MÁY BH (Gói: {p_name}) | "
+                    f"Máy: {brand} {model} ({ink_type}) | S/N: {sn}{invoice_ref}"
+                )
+                ins_payload = {
+                    "policy_id": policy_id,
+                    "customer_name": customer_name,
+                    "phone_number": phone_number,
+                    "purchase_date": purchase_date,
+                    "category": category,
+                    "condition": condition,
+                    "brand_name": brand,
+                    "model_name": model,
+                    "ink_type": ink_type,
+                    "serial_number": sn,
+                    "warranty_months": w_months,
+                    "head_warranty_months": h_months,
+                    "cartridge_warranty_months": c_months,
+                    "initial_counter": init_counter,
+                    "current_counter": init_counter,
+                    "page_limit_body": p_body,
+                    "page_limit_head": p_head,
+                    "no_page_limit": is_no_limit,
+                    "staff_name": editor_display,
+                    "updated_by": editor_display,
+                    "edit_log": log_entry,
+                    "pages_updated_at": now_dt.isoformat(),
+                }
+                ins_res = _safe_table_insert(supabase_admin, "warranty_records", ins_payload)
+                if ins_res.data:
+                    final_rows.append(ins_res.data[0])
+
+        first_id = final_rows[0].get("id") if final_rows else order.get("warranty_record_id")
+        all_sns_str = ", ".join(r["serial_number"] for r in final_rows)
+        all_logs = "\n".join(str(r.get("edit_log") or "").strip() for r in final_rows if r.get("edit_log"))
+
+        _safe_table_update(
+            supabase_admin,
+            "installation_orders",
+            {
+                "customer_name": customer_name,
+                "phone": phone_number,
+                "serial_number": all_sns_str,
+                "warranty_record_id": first_id,
+                "warranty_updated_by": editor_display,
+                "warranty_updated_at": now_utc_iso,
+                "updated_at": now_utc_iso,
+            },
+            "id",
+            order_id,
+        )
+
+        return {
+            "records": final_rows,
+            "updated_by": editor_display,
+            "edit_log": all_logs,
+        }
+
+    result = await asyncio.to_thread(_execute)
+    if "error" in result:
+        code, msg = result["error"]
+        return JSONResponse(status_code=code, content={"status": "error", "message": msg})
+
+    return {
+        "success": True,
+        "status": "success",
+        "message": f"Đã cập nhật thành công {len(result['records'])} phiếu bảo hành!",
+        "records": result["records"],
+        "warranty_updated_by": result["updated_by"],
+        "warranty_edit_log": result["edit_log"],
     }
 
 
@@ -695,7 +1200,8 @@ async def update_reception_record(
         raise HTTPException(status_code=400, detail="ID phiếu không hợp lệ")
 
     now_utc = datetime.now(timezone.utc).isoformat()
-    update_payload = {"updated_at": now_utc}
+    actor_name = _get_actor_name(user)
+    update_payload = {"updated_at": now_utc, "updated_by": actor_name or None}
     if data.customer_name is not None:
         update_payload["customer_name"] = data.customer_name
     if data.phone is not None:
@@ -726,7 +1232,7 @@ async def update_reception_record(
 
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table(TABLE).update(update_payload).eq("id", record_id).execute()
+            lambda: _safe_table_update(supabase, TABLE, update_payload, "id", record_id)
         )
     except Exception as e:
         logger.error(f"Lỗi cập nhật phiếu: {e}", exc_info=True)
@@ -780,7 +1286,14 @@ async def return_item_to_customer(
         raise HTTPException(status_code=400, detail="Phiếu này đã được xác nhận trả trước đó.")
 
     now_utc = datetime.now(timezone.utc).isoformat()
-    payload = {"status": "returned", "returned_date": now_utc, "updated_at": now_utc}
+    actor_name = _get_actor_name(user)
+    payload = {
+        "status": "returned",
+        "returned_date": now_utc,
+        "returned_by": actor_name or None,
+        "updated_by": actor_name or None,
+        "updated_at": now_utc,
+    }
 
     if current_process == "storage":
         payload["storage_status"] = "dispatched"
@@ -796,7 +1309,7 @@ async def return_item_to_customer(
 
     try:
         res = await asyncio.to_thread(
-            lambda: supabase.table(TABLE).update(payload).eq("id", record_id).execute()
+            lambda: _safe_table_update(supabase, TABLE, payload, "id", record_id)
         )
     except Exception as e:
         logger.error(f"Lỗi trả máy: {e}", exc_info=True)

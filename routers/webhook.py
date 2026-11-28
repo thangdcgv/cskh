@@ -1338,6 +1338,31 @@ def _extract_strict_vn_phone(raw_text: str) -> str:
     return ""
 
 
+MISSING_CUSTOMER_NAME = "Không lấy được tên KH"
+_PLACEHOLDER_CUSTOMER_NAMES = {"", "khách lẻ", "không lấy được tên kh"}
+
+_VN_PHONE_STRICT_RE = re.compile(
+    r"(?<!\d)(?:\+?84|0)(?:3[2-9]|5[25689]|7[06-9]|8[1-9]|9[0-9]|2\d)(?:[\s\.\-]?\d){7,8}(?!\d)"
+)
+
+
+def _extract_strict_vn_phone(raw_text: str) -> str:
+    """Chỉ bắt SĐT Việt Nam hợp lệ (10 số di động hoặc 10-11 số bàn) từ trường form có cấu trúc."""
+    text = clean_base_value(raw_text)
+    if not text:
+        return ""
+    cleaned = re.sub(r"\b(?:HD|DH|BG|PX|PN)\s*[A-Z0-9]*\d+\b", " ", text, flags=re.IGNORECASE)
+    for m in _VN_PHONE_STRICT_RE.finditer(cleaned):
+        digits = re.sub(r"\D", "", m.group(0))
+        if digits.startswith("84") and len(digits) in (11, 12):
+            digits = "0" + digits[2:]
+        if digits.startswith("02") and len(digits) in (10, 11):
+            return digits
+        if len(digits) == 10 and digits.startswith("0"):
+            return digits
+    return ""
+
+
 def _is_valid_vn_phone(phone_val: str) -> bool:
     digits = re.sub(r"\D", "", str(phone_val or ""))
     if digits.startswith("02"):
@@ -1379,7 +1404,7 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         or custom_fields_data.get("phan_loai_khach_hang")
     )
 
-    # 3. Khách Quen -> Ưu tiên đọc JSON table_custom_khach_hang
+    # 3. Khách Quen -> Đọc JSON table_custom_khach_hang
     table_kh = (
         payload.get("table_custom_khach_hang")
         or job_data.get("table_custom_khach_hang")
@@ -1402,52 +1427,14 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         phone_raw = phone_raw or t_phone
         address = address or t_addr
 
-    # 4. Fallback: Tách từ chuỗi keyword ngăn cách bằng dấu "|"
-    if not (customer_name and phone_raw and address):
-        kw_raw = str(payload.get("keyword") or job_data.get("keyword") or "")
-        if "|" in kw_raw:
-            parts = [p.strip() for p in kw_raw.split("|")]
-            for idx, part in enumerate(parts):
-                strict_p = _extract_strict_vn_phone(part)
-                if strict_p:
-                    if not phone_raw:
-                        phone_raw = strict_p
-                    if not customer_name and idx >= 1:
-                        prev_val = parts[idx - 1].split("&middot;")[-1].strip()
-                        if prev_val and not prev_val.startswith("{"):
-                            customer_name = prev_val
-                    if not address and idx + 1 < len(parts):
-                        next_val = parts[idx + 1].strip()
-                        if next_val and not next_val.startswith("{"):
-                            address = next_val
-                    break
-
-    # 5. Fallback tên khách quen từ "Huỳnh Ngọc Tòa (#36023)"
+    # 4. Tên khách quen từ trường liên kết custom_khach_hang ("Huỳnh Ngọc Tòa (#36023)")
     ref_kh = clean_base_value(payload.get("custom_khach_hang") or custom_fields_data.get("khach_hang"))
     if ref_kh:
         has_linked_customer = True
         if not customer_name:
             customer_name = re.sub(r"\s*\(#\d+\)\s*$", "", ref_kh).strip()
 
-    # 6. Fallback SĐT & Tên khách từ nội dung mô tả (content) hoặc tiêu đề (đã lọc mã HD)
-    content_clean = clean_base_content(
-        str(payload.get("content") or job_data.get("content") or payload.get("description") or "")
-    )
-    if not _extract_strict_vn_phone(phone_raw):
-        phone_raw = _extract_strict_vn_phone(content_clean) or _extract_strict_vn_phone(task_name)
-
-    if not customer_name and content_clean:
-        m_name = re.search(
-            r"(?:khách\s*hàng|tên\s*khách|người\s*nhận|kh)\s*[:\-]\s*([^\n\r\-|]+)",
-            content_clean,
-            flags=re.IGNORECASE,
-        )
-        if m_name:
-            cand = re.sub(r"(?:0|\+?84)\d[\d\s\.\-]{7,11}.*$", "", m_name.group(1)).strip()
-            if len(cand) >= 2:
-                customer_name = cand
-
-    # 7. Lấy Số Serial từ custom_so_seria_may & custom_so_seria_may_2
+    # 5. Lấy Số Serial từ custom_so_seria_may & custom_so_seria_may_2
     sn1 = clean_base_value(
         payload.get("custom_so_seria_may")
         or custom_fields_data.get("so_seria_may")
@@ -1468,6 +1455,7 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
             serial_list.append(sn_upper)
     serial_number = ", ".join(serial_list)
 
+    # 6. Người phụ trách & Ghi chú (chỉ dùng content làm ghi chú, không suy đoán tên/SĐT)
     assignee_obj = payload.get("assignee") or job_data.get("assignee") or {}
     if isinstance(assignee_obj, str) and assignee_obj.strip().startswith("{"):
         try:
@@ -1476,6 +1464,9 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
             assignee_obj = {}
     assignee_name = assignee_obj.get("name", "") if isinstance(assignee_obj, dict) else ""
 
+    content_clean = clean_base_content(
+        str(payload.get("content") or job_data.get("content") or payload.get("description") or "")
+    )
     note_parts = [p for p in (content_clean, f"Chành xe: {shipping_info}" if shipping_info else "") if p]
     final_phone = _extract_strict_vn_phone(phone_raw)
 
@@ -1483,7 +1474,7 @@ def _extract_installation_data(payload: dict, job_data: dict, task_name: str, cu
         "invoice_code": invoice_code,
         "task_name": task_name,
         "customer_type": customer_type or ("Khách Quen" if has_linked_customer else "Khách Mới"),
-        "customer_name": customer_name or "Khách lẻ",
+        "customer_name": customer_name or MISSING_CUSTOMER_NAME,
         "phone": final_phone,
         "address": address or "",
         "note": " | ".join(note_parts),
@@ -1519,7 +1510,9 @@ async def _process_installation_webhook(
             update_data["assignee_name"] = info["assignee_name"]
         if not existing_row.get("invoice_code") and info["invoice_code"]:
             update_data["invoice_code"] = info["invoice_code"]
-        if (not existing_row.get("customer_name") or existing_row.get("customer_name") == "Khách lẻ") and info["customer_name"] != "Khách lẻ":
+
+        existing_cname = str(existing_row.get("customer_name") or "").strip().lower()
+        if existing_cname in _PLACEHOLDER_CUSTOMER_NAMES and info["customer_name"] != MISSING_CUSTOMER_NAME:
             update_data["customer_name"] = info["customer_name"]
 
         # Ghi đè nếu chưa có SĐT hoặc SĐT cũ bị lỗi định dạng (VD: 038951804)

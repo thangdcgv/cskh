@@ -261,11 +261,13 @@ async def reception_page(request: Request, user: dict = Depends(get_current_user
             "⛔ Bạn không có quyền truy cập trang Lễ tân tiếp nhận!",
             status_code=status.HTTP_403_FORBIDDEN,
         )
+    can_delete = await asyncio.to_thread(can_access, "reception_delete", user)
     return templates.TemplateResponse(
         request=request,
         name="reception.html",
         context={
             "current_user": user,
+            "user_perms": {"can_delete": bool(can_delete)},
             "session": request.session,
             "supabase_url": getattr(settings, "SUPABASE_URL", ""),
             "supabase_anon_key": getattr(
@@ -1166,6 +1168,57 @@ async def update_installation_warranties(
         "warranty_edit_log": result["edit_log"],
     }
 
+@router.delete("/installations/{order_id}")
+async def delete_installation_order(order_id: str, user: dict = Depends(get_current_user)):
+    # 1. Kiểm tra quyền xóa đồng bộ với delete_reception_ticket
+    allowed = await asyncio.to_thread(can_access, "reception_delete", user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bạn không có quyền xóa đơn lắp đặt theo phân quyền hệ thống!",
+        )
+
+    def _delete_tx():
+        res = (
+            supabase_admin.table("installation_orders")
+            .select("id, status, warranty_record_id, invoice_code, base_job_id, customer_name, serial_number")
+            .eq("id", order_id)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            return {"error": (404, "Không tìm thấy đơn kỹ thuật lắp đặt!")}
+
+        order = res.data[0]
+        st = str(order.get("status") or "pending").strip().lower()
+        code_label = order.get("invoice_code") or f"#{order.get('base_job_id')}"
+
+        # 2. Chặn xóa nếu đơn đã hoàn thành, thất bại hoặc đã tạo phiếu bảo hành
+        if st == "completed":
+            return {"error": (400, "Đơn đã hoàn thành, không được phép xóa!")}
+        if st not in ("pending", "processing"):
+            return {
+                "error": (
+                    400,
+                    "Chỉ được phép xóa đơn đang ở trạng thái Thông tin đơn hoặc Xử lý đơn!",
+                )
+            }
+        if order.get("warranty_record_id") or _fetch_order_warranty_records(order):
+            return {"error": (400, "Đơn này đã tạo phiếu bảo hành, không được phép xóa!")}
+
+        # 3. Thực hiện xóa đơn khỏi bảng installation_orders
+        supabase_admin.table("installation_orders").delete().eq("id", order_id).execute()
+        return {"code_label": code_label}
+
+    result = await asyncio.to_thread(_delete_tx)
+    if "error" in result:
+        code, msg = result["error"]
+        raise HTTPException(status_code=code, detail=msg)
+
+    return {
+        "success": True,
+        "message": f"Đã xóa đơn lắp đặt [{result['code_label']}]!",
+    }
 
 # ==================== 4. CHI TIẾT PHIẾU (ROUTE ĐỘNG ĐẶT SAU CÙNG) ====================
 @router.get("/{record_id}")

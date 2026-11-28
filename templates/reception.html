@@ -181,6 +181,186 @@ function ReceptionApp() {
       return {};
     }
   });
+
+  const [staffFilter, setStaffFilter] = useState('');
+  const [staffRoleFilter, setStaffRoleFilter] = useState('all'); // 'all' | 'creator' | 'updater' | 'responder' | 'assignee'
+  const [quickFilter, setQuickFilter] = useState('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterPopoverRef = useRef(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (filterPopoverRef.current && !filterPopoverRef.current.contains(e.target)) {
+        setIsFilterOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Reset bộ lọc nhanh đặc thù khi chuyển đổi giữa KTLĐ và các quy trình khác
+  useEffect(() => {
+    setQuickFilter('all');
+    if (activeWorkflow !== 'installation' && staffRoleFilter === 'assignee') {
+      setStaffRoleFilter('all');
+    }
+    if (activeWorkflow === 'installation' && staffRoleFilter === 'responder') {
+      setStaffRoleFilter('all');
+    }
+  }, [activeWorkflow]);
+
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (staffFilter.trim()) count += 1;
+    if (staffRoleFilter !== 'all') count += 1;
+    if (quickFilter !== 'all') count += 1;
+    if (dateFrom || dateTo) count += 1;
+    return count;
+  }, [staffFilter, staffRoleFilter, quickFilter, dateFrom, dateTo]);
+
+  const resetAllFilters = () => {
+    setStaffFilter('');
+    setStaffRoleFilter('all');
+    setQuickFilter('all');
+    setDateFrom('');
+    setDateTo('');
+  };
+
+  // Tự động tổng hợp danh sách nhân viên theo quy trình đang chọn
+  const staffOptions = useMemo(() => {
+    const counts = new Map();
+    const addPerson = (rawName) => {
+      const name = String(rawName || '').trim();
+      if (!name || name.toLowerCase() === 'none') return;
+      counts.set(name, (counts.get(name) || 0) + 1);
+    };
+
+    const sourceList = activeWorkflow === 'installation' ? (installRecords || []) : (records || []);
+    sourceList.forEach((r) => {
+      const fields =
+        activeWorkflow === 'installation'
+          ? [r.warranty_created_by, r.warranty_updated_by, r.updated_by, r.assignee_name]
+          : [r.created_by, r.updated_by, r.returned_by, r.sms_sent_by, r.link_sent_by];
+
+      const seen = new Set();
+      fields.forEach((f) => {
+        const clean = String(f || '').trim();
+        if (clean && !seen.has(clean)) {
+          seen.add(clean);
+          addPerson(clean);
+        }
+      });
+    });
+
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, 'vi'));
+  }, [records, installRecords, activeWorkflow]);
+
+  const filteredStaffOptions = useMemo(() => {
+    const kw = removeAccents(staffFilter).toLowerCase().trim();
+    if (!kw) return staffOptions;
+    return staffOptions.filter((opt) => removeAccents(opt.name).toLowerCase().includes(kw));
+  }, [staffOptions, staffFilter]);
+
+  const matchesUniversalFilters = useCallback(
+    (item, isInstall = false) => {
+      const kw = removeAccents(searchQuery).toLowerCase().trim();
+      const sKw = removeAccents(staffFilter).toLowerCase().trim();
+
+      // 1. Lọc theo nhân viên & vai trò thao tác
+      const creators = isInstall ? [item.warranty_created_by] : [item.created_by];
+      const updaters = isInstall ? [item.warranty_updated_by, item.updated_by] : [item.updated_by];
+      const responders = isInstall ? [] : [item.returned_by, item.sms_sent_by, item.link_sent_by];
+      const assignees = isInstall ? [item.assignee_name] : [];
+
+      const rolePools = {
+        all: [...creators, ...updaters, ...responders, ...assignees],
+        creator: creators,
+        updater: updaters,
+        responder: responders,
+        assignee: assignees,
+      };
+
+      const selectedPool = (rolePools[staffRoleFilter] || rolePools.all).filter(Boolean);
+      if (staffRoleFilter !== 'all' && !sKw && selectedPool.length === 0) {
+        return false;
+      }
+      if (sKw) {
+        const normalizedPool = selectedPool.map((x) => removeAccents(String(x)).toLowerCase());
+        if (!normalizedPool.some((name) => name.includes(sKw))) {
+          return false;
+        }
+      }
+
+      // 2. Lọc nhanh theo đặc thù quy trình
+      if (quickFilter !== 'all') {
+        if (isInstall) {
+          const hasWarranty = Boolean(item.warranty_record_id);
+          const missingCustomer =
+            !item.phone ||
+            !item.customer_name ||
+            ['khách lẻ', 'không lấy được tên kh'].includes(String(item.customer_name).trim().toLowerCase());
+          if (quickFilter === 'no_warranty' && hasWarranty) return false;
+          if (quickFilter === 'has_warranty' && !hasWarranty) return false;
+          if (quickFilter === 'missing_info' && !missingCustomer) return false;
+        } else {
+          const key = String(item.id || item.code);
+          const hasSms = Boolean(item.sms_sent_at || sentSmsMap[key]);
+          const hasLink = Boolean(item.link_sent_at || sentLinkMap[key]);
+          const missingPhone = !normalizePhoneDigits(item.phone);
+          if (quickFilter === 'no_sms' && hasSms) return false;
+          if (quickFilter === 'no_link' && hasLink) return false;
+          if (quickFilter === 'missing_info' && !missingPhone) return false;
+        }
+      }
+
+      // 3. Lọc theo khoảng ngày tạo
+      if (dateFrom || dateTo) {
+        const createdIso = item.created_at ? new Date(item.created_at).toLocaleDateString('en-CA') : '';
+        if (dateFrom && (!createdIso || createdIso < dateFrom)) return false;
+        if (dateTo && (!createdIso || createdIso > dateTo)) return false;
+      }
+
+      // 4. Lọc từ khóa chung (mã phiếu, SĐT, tên khách, model, serial, nhân viên)
+      if (kw) {
+        const haystack = removeAccents(
+          isInstall
+            ? [
+                item.customer_name,
+                item.phone,
+                item.invoice_code,
+                item.serial_number,
+                item.model_hint,
+                item.task_name,
+                item.assignee_name,
+                item.updated_by,
+                item.warranty_created_by,
+                item.warranty_updated_by,
+              ].join(' ')
+            : [
+                item.customer_name,
+                item.phone,
+                item.code,
+                item.note,
+                item.received_note,
+                item.created_by,
+                item.updated_by,
+                item.returned_by,
+                item.sms_sent_by,
+                item.link_sent_by,
+              ].join(' ')
+        ).toLowerCase();
+        if (!haystack.includes(kw)) return false;
+      }
+
+      return true;
+    },
+    [searchQuery, staffFilter, staffRoleFilter, quickFilter, dateFrom, dateTo, sentSmsMap, sentLinkMap]
+  );
+
   const [copiedTicketId, setCopiedTicketId] = useState(null);
   const [copiedPhoneId, setCopiedPhoneId] = useState(null);
 
@@ -409,50 +589,64 @@ function ReceptionApp() {
     }
   };
 
-  const handleSearch = useCallback(async (queryStr, wf = activeWorkflow) => {
-    const reqId = ++searchReqIdRef.current;
-    try {
-      setLoading(true);
-      if (wf === 'installation') {
-        const res = await fetch(`${API_BASE}/installations?query_str=${encodeURIComponent(queryStr || '')}`);
+  const handleSearch = useCallback(
+    async (
+      queryStr,
+      wf = activeWorkflow,
+      extra = { staffName: staffFilter, staffRole: staffRoleFilter, from: dateFrom, to: dateTo }
+    ) => {
+      const reqId = ++searchReqIdRef.current;
+      try {
+        setLoading(true);
+        const params = new URLSearchParams({
+          query_str: queryStr || '',
+          staff_name: extra.staffName || '',
+          staff_role: extra.staffRole || 'all',
+          date_from: extra.from || '',
+          date_to: extra.to || '',
+        });
+
+        if (wf === 'installation') {
+          const res = await fetch(`${API_BASE}/installations?${params}`);
+          const data = await handleResponse(res);
+          if (reqId === searchReqIdRef.current && data.success) {
+            setInstallRecords(data.data || []);
+          }
+          return;
+        }
+
+        params.set('workflow', wf || 'all');
+        params.set('page', '1');
+        params.set('limit', '200');
+        const res = await fetch(`${API_BASE}/search?${params}`);
         const data = await handleResponse(res);
         if (reqId === searchReqIdRef.current && data.success) {
-          setInstallRecords(data.data || []);
+          setRecords(data.data || []);
         }
-        return;
+      } catch (err) {
+        if (reqId === searchReqIdRef.current) {
+          showToast(err.message || 'Lỗi kết nối!', 'error');
+        }
+      } finally {
+        if (reqId === searchReqIdRef.current) {
+          setLoading(false);
+        }
       }
-      const params = new URLSearchParams({
-        query_str: queryStr || '',
-        workflow: wf || 'all',
-        page: 1,
-        limit: 200
-      });
-      const res = await fetch(`${API_BASE}/search?${params}`);
-      const data = await handleResponse(res);
-      if (reqId === searchReqIdRef.current && data.success) {
-        setRecords(data.data || []);
-      }
-    } catch (err) {
-      if (reqId === searchReqIdRef.current) {
-        showToast(err.message || "Lỗi kết nối!", "error");
-      }
-    } finally {
-      if (reqId === searchReqIdRef.current) {
-        setLoading(false);
-      }
-    }
-  }, [activeWorkflow]);
-
-  useEffect(() => {
-    handleSearch(searchQuery, activeWorkflow);
-  }, [activeWorkflow]);
+    },
+    [activeWorkflow, staffFilter, staffRoleFilter, dateFrom, dateTo]
+  );
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      handleSearch(searchQuery, activeWorkflow);
-    }, 350);
+      handleSearch(searchQuery, activeWorkflow, {
+        staffName: staffFilter,
+        staffRole: staffRoleFilter,
+        from: dateFrom,
+        to: dateTo,
+      });
+    }, 300);
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, activeWorkflow, staffFilter, staffRoleFilter, dateFrom, dateTo]);
 
   const handleSearchRef = useRef(handleSearch);
   useEffect(() => { handleSearchRef.current = handleSearch; }, [handleSearch]);
@@ -492,8 +686,52 @@ function ReceptionApp() {
   }, [searchQuery, activeWorkflow]);
 
   const kanbanColumns = useMemo(() => {
+    if (activeWorkflow === 'installation') {
+      const list = (Array.isArray(installRecords) ? installRecords : []).filter((r) =>
+        matchesUniversalFilters(r, true)
+      );
+      return [
+        {
+          id: 'install_pending',
+          title: '1. Thông tin đơn',
+          colorClass: 'border-t-4 border-amber-500',
+          headerBg: 'bg-[#181208]',
+          textColor: 'text-amber-400',
+          items: list.filter(r => !['processing', 'completed', 'failed'].includes((r.status || 'pending').toLowerCase()))
+        },
+        {
+          id: 'install_processing',
+          title: '2. Xử lý đơn',
+          colorClass: 'border-t-4 border-sky-500',
+          headerBg: 'bg-[#081524]',
+          textColor: 'text-sky-400',
+          items: list.filter(r => (r.status || '').toLowerCase() === 'processing')
+        },
+        {
+          id: 'install_completed',
+          title: '3. Hoàn thành đơn',
+          colorClass: 'border-t-4 border-emerald-500',
+          headerBg: 'bg-[#061711]',
+          textColor: 'text-emerald-400',
+          items: list.filter(r => (r.status || '').toLowerCase() === 'completed')
+        },
+        {
+          id: 'install_failed',
+          title: '4. Thất bại',
+          colorClass: 'border-t-4 border-rose-500',
+          headerBg: 'bg-[#1c080d]',
+          textColor: 'text-rose-400',
+          items: list.filter(r => (r.status || '').toLowerCase() === 'failed')
+        }
+      ];
+    }
+
+    const scopedRecords = (Array.isArray(records) ? records : []).filter((r) =>
+      matchesUniversalFilters(r, false)
+    );
+
     if (activeWorkflow === 'repair') {
-      const repairRecords = records.filter(r => (r.current_process || 'repair').toLowerCase() === 'repair');
+      const repairRecords = scopedRecords.filter(r => (r.current_process || 'repair').toLowerCase() === 'repair');
       return [
         {
           id: 'received',
@@ -531,7 +769,7 @@ function ReceptionApp() {
     }
 
     if (activeWorkflow === 'storage') {
-      const storageRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'storage');
+      const storageRecords = scopedRecords.filter(r => (r.current_process || '').toLowerCase() === 'storage');
       return [
         {
           id: 'storage_in_company',
@@ -561,7 +799,7 @@ function ReceptionApp() {
     }
 
     if (activeWorkflow === 'delivery') {
-      const deliveryRecords = records.filter(r => (r.current_process || '').toLowerCase() === 'delivery');
+      const deliveryRecords = scopedRecords.filter(r => (r.current_process || '').toLowerCase() === 'delivery');
       return [
         {
           id: 'delivery_pending',
@@ -598,44 +836,6 @@ function ReceptionApp() {
       ];
     }
 
-    if (activeWorkflow === 'installation') {
-      const list = Array.isArray(installRecords) ? installRecords : [];
-      return [
-        {
-          id: 'install_pending',
-          title: '1. Thông tin đơn',
-          colorClass: 'border-t-4 border-amber-500',
-          headerBg: 'bg-[#181208]',
-          textColor: 'text-amber-400',
-          items: list.filter(r => !['processing', 'completed', 'failed'].includes((r.status || 'pending').toLowerCase()))
-        },
-        {
-          id: 'install_processing',
-          title: '2. Xử lý đơn',
-          colorClass: 'border-t-4 border-sky-500',
-          headerBg: 'bg-[#081524]',
-          textColor: 'text-sky-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'processing')
-        },
-        {
-          id: 'install_completed',
-          title: '3. Hoàn thành đơn',
-          colorClass: 'border-t-4 border-emerald-500',
-          headerBg: 'bg-[#061711]',
-          textColor: 'text-emerald-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'completed')
-        },
-        {
-          id: 'install_failed',
-          title: '4. Thất bại',
-          colorClass: 'border-t-4 border-rose-500',
-          headerBg: 'bg-[#1c080d]',
-          textColor: 'text-rose-400',
-          items: list.filter(r => (r.status || '').toLowerCase() === 'failed')
-        }
-      ];
-    }
-
     return [
       {
         id: 'all_received',
@@ -643,7 +843,7 @@ function ReceptionApp() {
         colorClass: 'border-t-4 border-sky-500',
         headerBg: 'bg-[#081524]',
         textColor: 'text-sky-400',
-        items: records.filter(r =>
+        items: scopedRecords.filter(r =>
           r.status !== 'returned' &&
           r.status !== 'cancelled' &&
           (r.storage_status || '').toLowerCase() !== 'destroyed' &&
@@ -656,14 +856,14 @@ function ReceptionApp() {
         colorClass: 'border-t-4 border-emerald-500',
         headerBg: 'bg-[#061711]',
         textColor: 'text-emerald-400',
-        items: records.filter(r =>
+        items: scopedRecords.filter(r =>
           r.status === 'returned' ||
           (r.storage_status || '').toLowerCase() === 'dispatched' ||
           (r.delivery_status || '').toLowerCase() === 'delivered'
         )
       }
     ];
-  }, [records, installRecords, activeWorkflow]);
+  }, [records, installRecords, activeWorkflow, matchesUniversalFilters]);
 
   const handleDeleteConfirm = async () => {
     if (!deleteModalRecord) return;
@@ -806,6 +1006,8 @@ function ReceptionApp() {
   const [warrantyCatalog, setWarrantyCatalog] = useState({ loaded: false, printers: [], policies: [] });
   const [warrantyModalRecord, setWarrantyModalRecord] = useState(null);
   const [isCreatingWarranty, setIsCreatingWarranty] = useState(false);
+  const [isEditWarrantyMode, setIsEditWarrantyMode] = useState(false);
+  const [loadingWarrantyOrderId, setLoadingWarrantyOrderId] = useState(null);
   const [warrantyHeader, setWarrantyHeader] = useState({
     customer_name: '',
     phone_number: '',
@@ -1042,20 +1244,60 @@ function ReceptionApp() {
     return { enabled: false, unit: '-' };
   };
 
-  const openWarrantyModal = async (record) => {
-    let printers = warrantyCatalog.printers;
-    let policies = warrantyCatalog.policies;
+  const openWarrantyModal = async (record, editMode = false) => {
+  let printers = warrantyCatalog.printers;
+  let policies = warrantyCatalog.policies;
 
+  setLoadingWarrantyOrderId(record.id);
+  try {
     if (!warrantyCatalog.loaded) {
-      try {
-        const res = await fetch(`${API_BASE}/installations/warranty-options`);
-        const data = await handleResponse(res);
-        printers = data.printers || [];
-        policies = data.policies || [];
-        setWarrantyCatalog({ loaded: true, printers, policies });
-      } catch (err) {
-        return showToast(`⚠️ Không tải được danh mục bảo hành: ${err.message}`, 'error');
+      const res = await fetch(`${API_BASE}/installations/warranty-options`);
+      const data = await handleResponse(res);
+      printers = data.printers || [];
+      policies = data.policies || [];
+      setWarrantyCatalog({ loaded: true, printers, policies });
+    }
+
+    if (editMode) {
+      const wRes = await fetch(`${API_BASE}/installations/${record.id}/warranties`);
+      const wData = await handleResponse(wRes);
+      const existingList = wData.records || [];
+      if (existingList.length === 0) {
+        showToast('⚠️ Không tìm thấy phiếu bảo hành liên kết để sửa!', 'error');
+        return;
       }
+
+      const mappedDevices = existingList.map((wr) => {
+        const rawModel = String(wr.model_name || '').trim();
+        const hasNewHead = /đầu phun mới/i.test(rawModel);
+        const cleanModel = rawModel.replace(/\s*-\s*Đầu phun mới\s*$/i, '').trim();
+        const brand = String(wr.brand_name || '').trim().toUpperCase();
+        return {
+          id: wr.id,
+          uid: String(wr.id),
+          serial_number: String(wr.serial_number || '').trim().toUpperCase(),
+          model_search: `${brand} ${cleanModel}`.trim(),
+          brand_name: brand,
+          model_name: cleanModel,
+          category: resolveCategoryLabel(wr.category || 'In phun', printers, policies),
+          condition: wr.condition || 'Máy mới',
+          new_head: hasNewHead,
+          ink_type: wr.ink_type || '',
+          policy_id: String(wr.policy_id || ''),
+          initial_counter: Number(wr.initial_counter || 0),
+        };
+      });
+
+      const firstW = existingList[0];
+      setWarrantyHeader({
+        customer_name: firstW.customer_name || record.customer_name || '',
+        phone_number: firstW.phone_number || record.phone || '',
+        purchase_date: String(firstW.purchase_date || '').slice(0, 10) || new Date().toLocaleDateString('en-CA'),
+      });
+      setWarrantyDevices(mappedDevices);
+      setIsEditWarrantyMode(true);
+      setWarrantyModalRecord(record);
+      return;
     }
 
     const serials = String(record.serial_number || '')
@@ -1071,11 +1313,77 @@ function ReceptionApp() {
     setWarrantyHeader({
       customer_name: record.customer_name || '',
       phone_number: record.phone || '',
-      purchase_date: new Date().toLocaleDateString('en-CA')
+      purchase_date: new Date().toLocaleDateString('en-CA'),
     });
     setWarrantyDevices(initialDevices);
+    setIsEditWarrantyMode(false);
     setWarrantyModalRecord(record);
-  };
+  } catch (err) {
+    showToast(`⚠️ ${err.message}`, 'error');
+  } finally {
+    setLoadingWarrantyOrderId(null);
+  }
+};
+
+const handleCreateWarrantySubmit = async (e) => {
+  e.preventDefault();
+  if (!warrantyModalRecord) return;
+  setIsCreatingWarranty(true);
+  try {
+    const payload = {
+      customer_name: warrantyHeader.customer_name.trim(),
+      phone_number: warrantyHeader.phone_number.trim(),
+      purchase_date: warrantyHeader.purchase_date,
+      items: warrantyDevices.map((d) => ({
+        ...(d.id ? { id: d.id } : {}),
+        serial_number: d.serial_number.trim().toUpperCase(),
+        brand_name: d.brand_name.trim().toUpperCase(),
+        model_name: d.model_name.trim(),
+        category: d.category,
+        condition: d.condition,
+        new_head: Boolean(d.new_head),
+        ink_type: d.ink_type,
+        policy_id: d.policy_id,
+        initial_counter: Number(d.initial_counter || 0),
+      })),
+    };
+
+    const endpoint = isEditWarrantyMode
+      ? `${API_BASE}/installations/${warrantyModalRecord.id}/warranties`
+      : `${API_BASE}/installations/${warrantyModalRecord.id}/create-warranties`;
+
+    const res = await fetch(endpoint, {
+      method: isEditWarrantyMode ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await handleResponse(res);
+    const allSns = payload.items.map((x) => x.serial_number).join(', ');
+
+    setInstallRecords((prev) =>
+      prev.map((item) =>
+        item.id === warrantyModalRecord.id
+          ? {
+              ...item,
+              customer_name: payload.customer_name,
+              phone: payload.phone_number,
+              serial_number: allSns,
+              warranty_record_id: data.records?.[0]?.id || item.warranty_record_id || 'created',
+              ...(data.warranty_created_by ? { warranty_created_by: data.warranty_created_by } : {}),
+              ...(data.warranty_updated_by ? { warranty_updated_by: data.warranty_updated_by } : {}),
+              ...(data.warranty_edit_log ? { warranty_edit_log: data.warranty_edit_log } : {}),
+            }
+          : item
+      )
+    );
+    showToast(`🎉 ${data.message || 'Đã lưu phiếu bảo hành thành công!'}`, 'success');
+    setWarrantyModalRecord(null);
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    setIsCreatingWarranty(false);
+  }
+};
 
   const updateWarrantyDevice = (uid, patch) => {
     setWarrantyDevices((prev) =>
@@ -1165,57 +1473,6 @@ function ReceptionApp() {
     }
   };
 
-  const handleCreateWarrantySubmit = async (e) => {
-    e.preventDefault();
-    if (!warrantyModalRecord) return;
-    setIsCreatingWarranty(true);
-    try {
-      const payload = {
-        customer_name: warrantyHeader.customer_name.trim(),
-        phone_number: warrantyHeader.phone_number.trim(),
-        purchase_date: warrantyHeader.purchase_date,
-        items: warrantyDevices.map((d) => ({
-          serial_number: d.serial_number.trim().toUpperCase(),
-          brand_name: d.brand_name.trim().toUpperCase(),
-          model_name: d.model_name.trim(),
-          category: d.category,
-          condition: d.condition,
-          new_head: Boolean(d.new_head),
-          ink_type: d.ink_type,
-          policy_id: d.policy_id,
-          initial_counter: Number(d.initial_counter || 0)
-        }))
-      };
-
-      const res = await fetch(`${API_BASE}/installations/${warrantyModalRecord.id}/create-warranties`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await handleResponse(res);
-      const allSns = payload.items.map((x) => x.serial_number).join(', ');
-
-      setInstallRecords((prev) =>
-        prev.map((item) =>
-          item.id === warrantyModalRecord.id
-            ? {
-                ...item,
-                customer_name: payload.customer_name,
-                phone: payload.phone_number,
-                serial_number: allSns,
-                warranty_record_id: data.records?.[0]?.id || 'created'
-              }
-            : item
-        )
-      );
-      showToast(`🎉 ${data.message || 'Đã tạo phiếu bảo hành thành công!'}`, 'success');
-      setWarrantyModalRecord(null);
-    } catch (err) {
-      showToast(err.message, 'error');
-    } finally {
-      setIsCreatingWarranty(false);
-    }
-  };
   return (
     <div className="w-full flex flex-col h-[calc(100vh-140px)] max-w-full">
       {toast && (
@@ -1229,8 +1486,8 @@ function ReceptionApp() {
       )}
 
       {/* THANH TÌM KIẾM, TOGGLE MENU & TAB MOBILE */}
-      <div className="mb-4 shrink-0 space-y-3">
-        <div className="flex items-center gap-3">
+      <div className="mb-4 shrink-0 space-y-2.5">
+        <div className="flex items-center gap-2.5 flex-wrap">
           <button
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             className="hidden md:flex w-10 h-10 shrink-0 items-center justify-center bg-[#0f1424] border border-slate-700 rounded-lg hover:bg-sky-600/20 hover:text-sky-400 hover:border-sky-500/50 text-slate-400 transition-all shadow-sm"
@@ -1239,16 +1496,252 @@ function ReceptionApp() {
             <i className={`fa-solid ${isSidebarOpen ? 'fa-outdent' : 'fa-indent'}`}></i>
           </button>
 
-          <div className="relative w-full max-w-md">
-            <i className={`fa-solid ${loading ? 'fa-spinner animate-spin text-sky-400' : 'fa-magnifying-glass text-gray-400'} absolute left-3.5 top-2.5 text-sm`}></i>
-            <input
-              type="text"
-              placeholder="Tìm SĐT, tên khách, mã phiếu..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-[#0a0f1d]/70 border border-slate-700 rounded-lg text-sm text-white focus:border-sky-400 outline-none"
-            />
+          {/* Ô TÌM KIẾM + NÚT BỘ LỌC TÍCH HỢP LIỀN KỀ */}
+          <div className="relative flex-1 min-w-[260px] max-w-xl flex items-center" ref={filterPopoverRef}>
+            <div className="relative flex-1">
+              <i className={`fa-solid ${loading ? 'fa-spinner animate-spin text-sky-400' : 'fa-magnifying-glass text-gray-400'} absolute left-3.5 top-2.5 text-sm`}></i>
+              <input
+                type="text"
+                placeholder="Tìm SĐT, tên khách, mã phiếu, serial, nhân viên..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-10 pr-8 py-2 bg-[#0a0f1d]/70 border border-slate-700 rounded-l-lg text-sm text-white focus:border-sky-400 outline-none"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-2.5 text-gray-400 hover:text-white text-xs"
+                  title="Xóa từ khóa"
+                >
+                  <i className="fa-solid fa-xmark"></i>
+                </button>
+              )}
+            </div>
+
+            {/* Nút mở Popover Bộ lọc đa dụng */}
+            <button
+              type="button"
+              onClick={() => setIsFilterOpen((prev) => !prev)}
+              className={`h-[38px] px-3.5 shrink-0 border-y border-r rounded-r-lg text-xs font-bold flex items-center gap-1.5 transition-all ${
+                activeFilterCount > 0 || isFilterOpen
+                  ? 'bg-sky-600/25 border-sky-500 text-sky-300'
+                  : 'bg-[#0f1424] border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-white'
+              }`}
+              title="Lọc theo nhân viên tạo/sửa, trạng thái & ngày tạo"
+            >
+              <i className="fa-solid fa-sliders"></i>
+              <span>Bộ lọc</span>
+              {activeFilterCount > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-sky-500 text-slate-950 font-black text-[10px]">
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
+
+            {/* POPOVER BỘ LỌC ĐA DỤNG CHO MỌI QUY TRÌNH */}
+            {isFilterOpen && (
+              <div className="absolute left-0 right-0 sm:left-auto sm:right-0 top-11 z-40 sm:w-[400px] bg-[#0e1424] border border-slate-700 rounded-xl shadow-2xl p-4 space-y-3.5 text-xs">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <span className="font-bold text-sky-400 flex items-center gap-1.5">
+                    <i className="fa-solid fa-filter"></i>
+                    <span>Bộ Lọc Nâng Cao ({WORKFLOWS.find((w) => w.id === activeWorkflow)?.name})</span>
+                  </span>
+                  {activeFilterCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={resetAllFilters}
+                      className="text-[11px] text-rose-400 hover:underline font-semibold"
+                    >
+                      Đặt lại tất cả
+                    </button>
+                  )}
+                </div>
+
+                {/* 1. Vai trò thao tác */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">
+                    Vai trò nhân sự thao tác
+                  </label>
+                  <select
+                    value={staffRoleFilter}
+                    onChange={(e) => setStaffRoleFilter(e.target.value)}
+                    className="w-full h-9 px-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold focus:border-sky-500 outline-none"
+                  >
+                    <option value="all">Tất cả thao tác (Tạo / Cập nhật / Sửa)</option>
+                    <option value="creator">
+                      {activeWorkflow === 'installation' ? '🆕 Người tạo phiếu bảo hành' : '🆕 Người tạo phiếu tiếp nhận'}
+                    </option>
+                    <option value="updater">
+                      {activeWorkflow === 'installation' ? '✏️ Người chuẩn hóa đơn / sửa BH' : '✏️ Người cập nhật thông tin'}
+                    </option>
+                    {activeWorkflow === 'installation' ? (
+                      <option value="assignee">🛠️ KTV phụ trách đơn (Base)</option>
+                    ) : (
+                      <option value="responder">📨 Người trả máy / gửi SMS & Link</option>
+                    )}
+                  </select>
+                </div>
+
+                {/* 2. LiveSearch Nhân viên */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">
+                    Nhân viên thực hiện (LiveSearch)
+                  </label>
+                  <div className="relative">
+                    <i className="fa-solid fa-user-check text-emerald-400 absolute left-3 top-2.5"></i>
+                    <input
+                      type="text"
+                      placeholder="Gõ hoặc chọn tên nhân viên bên dưới..."
+                      value={staffFilter}
+                      onChange={(e) => setStaffFilter(e.target.value)}
+                      className="w-full h-9 pl-8 pr-7 bg-slate-900 border border-slate-700 rounded-lg text-white focus:border-emerald-400 outline-none"
+                    />
+                    {staffFilter && (
+                      <button
+                        type="button"
+                        onClick={() => setStaffFilter('')}
+                        className="absolute right-2.5 top-2.5 text-gray-400 hover:text-rose-400"
+                      >
+                        <i className="fa-solid fa-circle-xmark"></i>
+                      </button>
+                    )}
+                  </div>
+
+                  {filteredStaffOptions.length > 0 && (
+                    <div className="mt-1.5 max-h-32 overflow-y-auto bg-slate-950/80 border border-slate-800 rounded-lg divide-y divide-slate-800/70">
+                      {filteredStaffOptions.map((opt) => (
+                        <button
+                          key={opt.name}
+                          type="button"
+                          onClick={() => setStaffFilter(staffFilter === opt.name ? '' : opt.name)}
+                          className={`w-full px-2.5 py-1.5 text-left flex items-center justify-between hover:bg-sky-600/20 transition ${
+                            staffFilter === opt.name ? 'bg-sky-600/25 text-sky-300 font-bold' : 'text-slate-200'
+                          }`}
+                        >
+                          <span className="truncate">{opt.name}</span>
+                          <span className="ml-2 px-1.5 py-0.2 rounded bg-slate-800 text-[10px] font-mono text-gray-400">
+                            {opt.count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* 3. Lọc nhanh thích ứng theo từng quy trình */}
+                <div>
+                  <label className="block text-[11px] font-semibold text-gray-400 mb-1">
+                    Trạng thái hồ sơ ({activeWorkflow === 'installation' ? 'KTLĐ' : 'Tiếp nhận & CSKH'})
+                  </label>
+                  <select
+                    value={quickFilter}
+                    onChange={(e) => setQuickFilter(e.target.value)}
+                    className="w-full h-9 px-2.5 bg-slate-900 border border-slate-700 rounded-lg text-white font-semibold focus:border-sky-500 outline-none"
+                  >
+                    <option value="all">Tất cả hồ sơ</option>
+                    {activeWorkflow === 'installation' ? (
+                      <>
+                        <option value="no_warranty">⏳ Chưa tạo phiếu bảo hành</option>
+                        <option value="has_warranty">✅ Đã cấp phiếu bảo hành</option>
+                        <option value="missing_info">⚠️ Thiếu SĐT / Chưa rõ tên KH</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="no_sms">📵 Chưa gửi tin nhắn SMS</option>
+                        <option value="no_link">🔗 Chưa gửi link tra cứu</option>
+                        <option value="missing_info">⚠️ Phiếu thiếu SĐT khách</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                {/* 4. Khoảng ngày tạo */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-400 mb-1">Từ ngày</label>
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => setDateFrom(e.target.value)}
+                      className="w-full h-8 px-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono outline-none focus:border-sky-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-gray-400 mb-1">Đến ngày</label>
+                    <input
+                      type="date"
+                      value={dateTo}
+                      onChange={(e) => setDateTo(e.target.value)}
+                      className="w-full h-8 px-2 bg-slate-900 border border-slate-700 rounded-lg text-white font-mono outline-none focus:border-sky-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
+
+          {/* THẺ CHIP HIỂN THỊ NHANH CÁC BỘ LỌC ĐANG BẬT NGAY CẠNH THANH TÌM KIẾM */}
+          {activeFilterCount > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(staffFilter || staffRoleFilter !== 'all') && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold">
+                  <i className="fa-solid fa-user-tag text-[10px]"></i>
+                  <span>
+                    {staffRoleFilter === 'creator'
+                      ? 'Người tạo'
+                      : staffRoleFilter === 'updater'
+                        ? 'Người sửa'
+                        : staffRoleFilter === 'assignee'
+                          ? 'Phụ trách'
+                          : staffRoleFilter === 'responder'
+                            ? 'Trả máy/SMS'
+                            : 'Nhân viên'}
+                    {staffFilter ? `: ${staffFilter}` : ''}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => { setStaffFilter(''); setStaffRoleFilter('all'); }}
+                    className="hover:text-white ml-0.5"
+                  >
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </span>
+              )}
+
+              {quickFilter !== 'all' && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-500/15 border border-sky-500/40 text-sky-300 text-[11px] font-semibold">
+                  <span>
+                    {quickFilter === 'no_warranty'
+                      ? 'Chưa tạo BH'
+                      : quickFilter === 'has_warranty'
+                        ? 'Đã cấp BH'
+                        : quickFilter === 'no_sms'
+                          ? 'Chưa gửi SMS'
+                          : quickFilter === 'no_link'
+                            ? 'Chưa gửi Link'
+                            : 'Thiếu SĐT/Tên KH'}
+                  </span>
+                  <button type="button" onClick={() => setQuickFilter('all')} className="hover:text-white ml-0.5">
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </span>
+              )}
+
+              {(dateFrom || dateTo) && (
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 border border-amber-500/40 text-amber-300 text-[11px] font-mono font-semibold">
+                  <span>{dateFrom || '...'} → {dateTo || '...'}</span>
+                  <button
+                    type="button"
+                    onClick={() => { setDateFrom(''); setDateTo(''); }}
+                    className="hover:text-white ml-0.5"
+                  >
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="md:hidden flex gap-2 overflow-x-auto pb-1 hide-scrollbar">
@@ -1407,6 +1900,19 @@ function ReceptionApp() {
                                 <span className="text-amber-200">{r.assignee_name}</span>
                               </div>
                             )}
+							{(r.warranty_created_by || r.warranty_updated_by || r.updated_by) && (
+							  <div className="pt-1 border-t border-slate-700/50 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-slate-400">
+								{r.warranty_created_by && (
+								  <span>Tạo BH: <strong className="text-emerald-300">{r.warranty_created_by}</strong></span>
+								)}
+								{r.warranty_updated_by && (
+								  <span>Sửa BH: <strong className="text-sky-300">{r.warranty_updated_by}</strong></span>
+								)}
+								{!r.warranty_updated_by && r.updated_by && (
+								  <span>Cập nhật: <strong className="text-sky-300">{r.updated_by}</strong></span>
+								)}
+							  </div>
+							)}
                           </div>
 
                           <div className="mt-3 flex gap-1.5 pt-2.5 border-t border-slate-700/50">
@@ -1420,26 +1926,28 @@ function ReceptionApp() {
                             </button>
 
                             {isCompleted && (
-                              hasWarranty ? (
-                                <button
-                                  type="button"
-                                  disabled
-                                  className="flex-[1.4] h-8 bg-emerald-950/60 border border-emerald-500/40 text-emerald-400 rounded text-[11px] font-bold flex items-center justify-center gap-1 cursor-default"
-                                >
-                                  <i className="fa-solid fa-shield-check"></i>
-                                  <span>Đã tạo phiếu BH</span>
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => openWarrantyModal(r)}
-                                  className="flex-[1.4] h-8 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
-                                >
-                                  <i className="fa-solid fa-file-shield"></i>
-                                  <span>Tạo phiếu BH</span>
-                                </button>
-                              )
-                            )}
+							  hasWarranty ? (
+								<button
+								  type="button"
+								  disabled={loadingWarrantyOrderId === r.id}
+								  onClick={() => openWarrantyModal(r, true)}
+								  className="flex-[1.4] h-8 bg-amber-600/90 hover:bg-amber-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
+								>
+								  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-pen'}`}></i>
+								  <span>Sửa phiếu BH</span>
+								</button>
+							  ) : (
+								<button
+								  type="button"
+								  disabled={loadingWarrantyOrderId === r.id}
+								  onClick={() => openWarrantyModal(r, false)}
+								  className="flex-[1.4] h-8 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
+								>
+								  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-shield'}`}></i>
+								  <span>Tạo phiếu BH</span>
+								</button>
+							  )
+							)}
                           </div>
                         </div>
                       );
@@ -1847,7 +2355,7 @@ function ReceptionApp() {
               <div>
                 <h3 className="text-sm sm:text-base font-bold text-sky-400 flex items-center gap-2">
                   <i className="fa-solid fa-file-shield"></i>
-                  <span>Tạo Phiếu Bảo Hành (KTLĐ)</span>
+                  <span>{isEditWarrantyMode ? 'Sửa Phiếu Bảo Hành (KTLĐ)' : 'Tạo Phiếu Bảo Hành (KTLĐ)'}</span>
                 </h3>
                 <p className="text-xs text-gray-400 font-mono mt-0.5">
                   {warrantyModalRecord.invoice_code || `#${warrantyModalRecord.base_job_id}`} • {warrantyModalRecord.task_name}
@@ -2145,7 +2653,11 @@ function ReceptionApp() {
                 disabled={isCreatingWarranty}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow-lg transition disabled:opacity-50"
               >
-                {isCreatingWarranty ? 'Đang tạo phiếu...' : 'Lưu & Cấp Phiếu Bảo Hành'}
+                {isCreatingWarranty
+				  ? 'Đang lưu...'
+				  : isEditWarrantyMode
+					? 'Lưu Thay Đổi Phiếu BH'
+					: 'Lưu & Cấp Phiếu Bảo Hành'}
               </button>
             </div>
           </form>

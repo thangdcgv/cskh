@@ -33,6 +33,7 @@
   window.SUPABASE_ANON_KEY = "{{ supabase_anon_key | default('', true) }}";
   window.SUPABASE_KEY = window.SUPABASE_ANON_KEY;
   window.CAN_DELETE_TICKET = "{{ 'true' if (user_perms and user_perms.get('can_delete')) else 'false' }}" === "true";
+  window.CAN_INSTALL_WARRANTY = "{{ 'true' if (user_perms and user_perms.get('can_install_warranty')) else 'false' }}" === "true";
   window.CURRENT_USER = {
     id: "{{ current_user.get('id', '') if current_user else '' }}",
     username: "{{ current_user.get('username', '') if current_user else '' }}",
@@ -384,7 +385,8 @@ function ReceptionApp() {
   };
 
   const canDeleteTicket = Boolean(window.CAN_DELETE_TICKET);
-
+  const canInstallWarranty = Boolean(window.CAN_INSTALL_WARRANTY);
+  const [warrantyFormError, setWarrantyFormError] = useState('');
   const openDeleteModal = (record) => {
     if (!canDeleteTicket) {
       return showToast("⚠️ Bạn không có quyền xóa phiếu này!", "error");
@@ -991,6 +993,45 @@ function ReceptionApp() {
       setIsSavingInstall(false);
     }
   };
+  const [installDeleteRecord, setInstallDeleteRecord] = useState(null);
+  const [isDeletingInstall, setIsDeletingInstall] = useState(false);
+
+  const canDeleteInstallationOrder = (record) => {
+    if (!record) return false;
+    const status = String(record.status || 'pending').trim().toLowerCase();
+    const hasWarranty = Boolean(record.warranty_record_id);
+    const isAllowedStatus = !['completed', 'failed'].includes(status); // Chỉ cho phép 'pending' (Thông tin đơn) & 'processing' (Xử lý đơn)
+    return isAllowedStatus && !hasWarranty;
+  };
+
+  const openInstallDeleteModal = (record) => {
+    if (!canDeleteTicket) {
+      return showToast("⚠️ Bạn không có quyền xóa đơn này!", "error");
+    }
+    if (!canDeleteInstallationOrder(record)) {
+      return showToast("⚠️ Không thể xóa đơn đã hoàn thành, thất bại hoặc đã tạo phiếu bảo hành!", "error");
+    }
+    setInstallDeleteRecord(record);
+  };
+
+  const handleInstallDeleteConfirm = async () => {
+    if (!installDeleteRecord) return;
+    setIsDeletingInstall(true);
+    try {
+      const res = await fetch(`${API_BASE}/installations/${installDeleteRecord.id}`, {
+        method: 'DELETE',
+      });
+      const data = await handleResponse(res);
+      setInstallRecords((prev) => prev.filter((item) => item.id !== installDeleteRecord.id));
+      const label = installDeleteRecord.invoice_code || `#${installDeleteRecord.base_job_id}`;
+      showToast(`🗑️ ${data.message || `Đã xóa đơn [${label}]!`}`, 'success');
+      setInstallDeleteRecord(null);
+    } catch (err) {
+      showToast(err.message || "Lỗi khi xóa đơn lắp đặt!", "error");
+    } finally {
+      setIsDeletingInstall(false);
+    }
+  };
   const INK_PRINTER_OPTIONS = [
     'DYE UV', 'MỰC CHÍNH HÃNG', 'CHUYỂN NHIỆT', 'IN PHIM', 'PREMIUM DYE',
     'MỰC PET', 'DYE INKTEK', 'PIGMENT UV', 'PIGMENT ART', 'PIGMENT CANON',
@@ -1245,6 +1286,10 @@ function ReceptionApp() {
   };
 
   const openWarrantyModal = async (record, editMode = false) => {
+  if (!canInstallWarranty) {
+    return showToast("⛔ Bạn hoặc phòng ban của bạn không có quyền tạo/sửa phiếu bảo hành!", "error");
+  }
+  setWarrantyFormError('');
   let printers = warrantyCatalog.printers;
   let policies = warrantyCatalog.policies;
 
@@ -1379,7 +1424,9 @@ const handleCreateWarrantySubmit = async (e) => {
     showToast(`🎉 ${data.message || 'Đã lưu phiếu bảo hành thành công!'}`, 'success');
     setWarrantyModalRecord(null);
   } catch (err) {
-    showToast(err.message, 'error');
+    const msg = err.message || 'Không thể lưu phiếu bảo hành!';
+    setWarrantyFormError(msg);
+    showToast(msg, 'error');
   } finally {
     setIsCreatingWarranty(false);
   }
@@ -1476,13 +1523,13 @@ const handleCreateWarrantySubmit = async (e) => {
   return (
     <div className="w-full flex flex-col h-[calc(100vh-140px)] max-w-full">
       {toast && (
-        <div className={`fixed top-16 right-4 z-50 p-4 rounded-xl shadow-2xl border flex items-center gap-3 ${
-          toast.type === 'error'
-            ? 'bg-rose-950 border-rose-500 text-rose-100'
-            : 'bg-emerald-950 border-emerald-500 text-emerald-100'
-        }`}>
-          <span className="text-sm font-semibold">{toast.message}</span>
-        </div>
+        <div className={`fixed top-16 right-4 z-[100] p-4 rounded-xl shadow-2xl border flex items-center gap-3 ${
+		  toast.type === 'error'
+			? 'bg-rose-950 border-rose-500 text-rose-100'
+			: 'bg-emerald-950 border-emerald-500 text-emerald-100'
+		}`}>
+		  <span className="text-sm font-semibold">{toast.message}</span>
+		</div>
       )}
 
       {/* THANH TÌM KIẾM, TOGGLE MENU & TAB MOBILE */}
@@ -1817,6 +1864,7 @@ const handleCreateWarrantySubmit = async (e) => {
                       const cleanPhone = normalizePhoneDigits(r.phone);
                       const isCompleted = (r.status || '').toLowerCase() === 'completed';
                       const hasWarranty = Boolean(r.warranty_record_id);
+					  const canDeleteInstall = canDeleteTicket && canDeleteInstallationOrder(r);
 
                       return (
                         <div key={r.id} className="bg-[#162036] rounded-lg p-3 border border-slate-700 hover:border-slate-500 transition-colors shadow-sm relative">
@@ -1925,29 +1973,40 @@ const handleCreateWarrantySubmit = async (e) => {
                               <span>Chuẩn hóa</span>
                             </button>
 
+                            {canDeleteInstall && (
+                              <button
+                                type="button"
+                                onClick={() => openInstallDeleteModal(r)}
+                                className="w-8 h-8 shrink-0 bg-rose-950/80 hover:bg-rose-600 text-rose-400 hover:text-white border border-rose-800/60 rounded text-[11px] transition-all flex items-center justify-center"
+                                title="Xóa đơn lắp đặt (khi đã xóa trên Base)"
+                              >
+                                <i className="fa-solid fa-trash-can"></i>
+                              </button>
+                            )}
+
                             {isCompleted && (
-							  hasWarranty ? (
-								<button
-								  type="button"
-								  disabled={loadingWarrantyOrderId === r.id}
-								  onClick={() => openWarrantyModal(r, true)}
-								  className="flex-[1.4] h-8 bg-amber-600/90 hover:bg-amber-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
-								>
-								  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-pen'}`}></i>
-								  <span>Sửa phiếu BH</span>
-								</button>
-							  ) : (
-								<button
-								  type="button"
-								  disabled={loadingWarrantyOrderId === r.id}
-								  onClick={() => openWarrantyModal(r, false)}
-								  className="flex-[1.4] h-8 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
-								>
-								  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-shield'}`}></i>
-								  <span>Tạo phiếu BH</span>
-								</button>
-							  )
-							)}
+                              hasWarranty ? (
+                                <button
+                                  type="button"
+                                  disabled={loadingWarrantyOrderId === r.id}
+                                  onClick={() => openWarrantyModal(r, true)}
+                                  className="flex-[1.4] h-8 bg-amber-600/90 hover:bg-amber-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
+                                >
+                                  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-pen'}`}></i>
+                                  <span>Sửa phiếu BH</span>
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled={loadingWarrantyOrderId === r.id}
+                                  onClick={() => openWarrantyModal(r, false)}
+                                  className="flex-[1.4] h-8 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold shadow transition-all flex items-center justify-center gap-1"
+                                >
+                                  <i className={`fa-solid ${loadingWarrantyOrderId === r.id ? 'fa-spinner animate-spin' : 'fa-file-shield'}`}></i>
+                                  <span>Tạo phiếu BH</span>
+                                </button>
+                              )
+                            )}
                           </div>
                         </div>
                       );
@@ -2205,7 +2264,69 @@ const handleCreateWarrantySubmit = async (e) => {
           </div>
         </div>
       )}
+	  {/* MODAL XÁC NHẬN XÓA ĐƠN KỸ THUẬT LẮP ĐẶT */}
+      {installDeleteRecord && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-[#0e1424] max-w-sm w-full p-5 border border-rose-500/50 rounded-xl shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 text-lg shrink-0">
+                <i className="fa-solid fa-triangle-exclamation"></i>
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-white">Xác Nhận Xóa Đơn Lắp Đặt</h3>
+                <p className="text-xs text-rose-400 font-medium mt-0.5">
+                  Chỉ xóa khi đơn đã bị hủy/xóa trên Base. Không thể hoàn tác!
+                </p>
+              </div>
+            </div>
 
+            <div className="bg-black/40 p-3 rounded-lg border border-slate-800 text-xs space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-gray-400">Mã đơn:</span>
+                <span className="text-amber-400 font-mono font-bold">
+                  {installDeleteRecord.invoice_code || `#${installDeleteRecord.base_job_id}`}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Khách hàng:</span>
+                <span className="text-white font-bold">{installDeleteRecord.customer_name}</span>
+              </div>
+              {installDeleteRecord.phone && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">SĐT:</span>
+                  <span className="text-slate-300 font-mono">{installDeleteRecord.phone}</span>
+                </div>
+              )}
+              {installDeleteRecord.model_hint && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Thiết bị:</span>
+                  <span className="text-sky-300 font-semibold">{installDeleteRecord.model_hint}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setInstallDeleteRecord(null)}
+                disabled={isDeletingInstall}
+                className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-300 transition-all"
+              >
+                Hủy Bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleInstallDeleteConfirm}
+                disabled={isDeletingInstall}
+                className="flex-[1.5] py-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-50 text-white rounded-lg text-xs font-bold shadow-lg transition-all flex items-center justify-center gap-1.5"
+              >
+                {isDeletingInstall ? <i className="fa-solid fa-spinner animate-spin"></i> : <i className="fa-solid fa-trash-can"></i>}
+                <span>{isDeletingInstall ? "Đang xóa..." : "Xóa Vĩnh Viễn"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* MODAL TRẢ MÁY */}
       {returnModalRecord && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
@@ -2372,6 +2493,12 @@ const handleCreateWarrantySubmit = async (e) => {
 
             {/* Body */}
             <div className="p-4 overflow-y-auto space-y-4 text-xs">
+			  {warrantyFormError && (
+				 <div className="p-3 rounded-lg bg-rose-950/90 border border-rose-500/60 text-rose-200 flex items-center gap-2 font-semibold">
+				   <i className="fa-solid fa-circle-exclamation text-rose-400 shrink-0"></i>
+				   <span>{warrantyFormError}</span>
+				 </div>
+			   )}
               {/* Khối thông tin khách hàng */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3 bg-slate-800/40 border border-slate-700 rounded-lg">
                 <div>

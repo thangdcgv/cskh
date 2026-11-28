@@ -264,14 +264,12 @@ async def reception_page(request: Request, user: dict = Depends(get_current_user
 
     def _resolve_page_perms() -> dict:
         can_delete = bool(can_access("reception_delete", user))
-        can_w_create = bool(check_ktld_warranty_permission("installation_warranty_create", user))
-        can_w_edit = bool(check_ktld_warranty_permission("installation_warranty_edit", user))
-        can_w_delete = bool(check_ktld_warranty_permission("installation_warranty_delete", user))
+        can_w_create = bool(can_access("installation_warranty_create", user))
+        can_w_edit = bool(can_access("installation_warranty_edit", user))
+        can_w_delete = bool(can_access("installation_warranty_delete", user))
         return {
             "can_delete": can_delete,
-            # Giữ cờ cũ để tương thích ngược với giao diện reception.html hiện tại
             "can_install_warranty": bool(can_w_create or can_w_edit or can_w_delete),
-            # 3 quyền chi tiết lấy từ system_settings
             "can_install_warranty_create": can_w_create,
             "can_install_warranty_edit": can_w_edit,
             "can_install_warranty_delete": can_w_delete,
@@ -458,67 +456,6 @@ class InstallationNormalizePayload(BaseModel):
     serial_number: Optional[str] = ""
     note: Optional[str] = ""
 
-_ktld_warranty_perm_cache = {"data": {}, "expires_at": 0.0}
-KTLD_WARRANTY_PERM_KEYS = (
-    "installation_warranty_create",
-    "installation_warranty_edit",
-    "installation_warranty_delete",
-)
-
-
-def _get_ktld_warranty_settings() -> Dict[str, List[str]]:
-    now = time.time()
-    if now < _ktld_warranty_perm_cache["expires_at"]:
-        return _ktld_warranty_perm_cache["data"]
-    try:
-        res = (
-            supabase_admin.table("system_settings")
-            .select("key, value")
-            .in_("key", list(KTLD_WARRANTY_PERM_KEYS))
-            .execute()
-        )
-        parsed: Dict[str, List[str]] = {}
-        for item in (res.data or []):
-            raw = str(item.get("value") or "").strip()
-            if raw.startswith("["):
-                try:
-                    import json
-                    parsed[item["key"]] = [str(x).strip().lower() for x in json.loads(raw) if str(x).strip()]
-                    continue
-                except Exception:
-                    raw = raw.strip("[]")
-            parsed[item["key"]] = [x.strip().strip("\"'").lower() for x in raw.split(",") if x.strip()]
-    except Exception as e:
-        logger.warning(f"Không đọc được phân quyền bảo hành KTLĐ từ system_settings: {e}")
-        parsed = {}
-
-    _ktld_warranty_perm_cache["data"] = parsed
-    _ktld_warranty_perm_cache["expires_at"] = now + 60
-    return parsed
-
-
-def check_ktld_warranty_permission(setting_key: str, user: dict) -> bool:
-    """Kiểm tra quyền thêm/sửa/xóa phiếu BH KTLĐ từ system_settings (fallback sang can_access)."""
-    if not user or not isinstance(user, dict):
-        return False
-
-    user_tags = {
-        str(user.get(field) or "").strip().lower()
-        for field in ("role", "user_role", "department", "phong_ban", "email", "id")
-        if user.get(field)
-    }
-    if user.get("is_admin") or "admin" in user_tags or "super admin" in user_tags:
-        return True
-
-    cfg = _get_ktld_warranty_settings()
-    if setting_key in cfg:
-        allowed_values = set(cfg[setting_key])
-        return "*" in allowed_values or bool(user_tags & allowed_values)
-
-    # Fallback về key cũ trong page_permissions nếu system_settings chưa có bản ghi
-    if setting_key == "installation_warranty_delete":
-        return can_access("reception_delete", user)
-    return can_access("installation_warranty", user)
 
 def _normalize_warranty_phone(phone: Any) -> str:
     digits = re.sub(r"\D", "", str(phone or ""))
@@ -708,8 +645,8 @@ async def get_installation_warranty_options(current_user: dict = Depends(get_cur
     """Lấy danh sách chính sách bảo hành active và danh mục máy in."""
     def _can_view_options() -> bool:
         return (
-            check_ktld_warranty_permission("installation_warranty_create", current_user)
-            or check_ktld_warranty_permission("installation_warranty_edit", current_user)
+            can_access("installation_warranty_create", current_user)
+            or can_access("installation_warranty_edit", current_user)
         )
 
     if not await asyncio.to_thread(_can_view_options):
@@ -717,7 +654,7 @@ async def get_installation_warranty_options(current_user: dict = Depends(get_cur
             status_code=status.HTTP_403_FORBIDDEN,
             detail="⛔ Bạn hoặc phòng ban của bạn không có quyền tạo/sửa phiếu bảo hành từ đơn KTLĐ!",
         )
-    """Lấy danh sách chính sách bảo hành active và danh mục máy in."""
+
     def _fetch():
         policies_res = (
             supabase_admin.table("warranty_policy")
@@ -811,9 +748,9 @@ async def get_installation_warranties(
     """Lấy toàn bộ phiếu bảo hành đã tạo từ đơn KTLĐ để xem/chỉnh sửa."""
     def _can_view_warranties() -> bool:
         return (
-            check_ktld_warranty_permission("installation_warranty_create", user)
-            or check_ktld_warranty_permission("installation_warranty_edit", user)
-            or check_ktld_warranty_permission("installation_warranty_delete", user)
+            can_access("installation_warranty_create", user)
+            or can_access("installation_warranty_edit", user)
+            or can_access("installation_warranty_delete", user)
         )
 
     if not await asyncio.to_thread(_can_view_warranties):
@@ -821,7 +758,7 @@ async def get_installation_warranties(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="⛔ Bạn hoặc phòng ban của bạn không có quyền xem/sửa phiếu bảo hành từ đơn KTLĐ!",
         )
-    """Lấy toàn bộ phiếu bảo hành đã tạo từ đơn KTLĐ để xem/chỉnh sửa."""
+
     def _fetch():
         order_res = (
             supabase_admin.table("installation_orders")
@@ -851,7 +788,7 @@ async def create_installation_warranties(
 ):
     """Tạo 1 hoặc nhiều phiếu bảo hành vào bảng warranty_records từ đơn Kỹ Thuật Lắp Đặt."""
     allowed = await asyncio.to_thread(
-        check_ktld_warranty_permission, "installation_warranty_create", user
+        can_access, "installation_warranty_create", user
     )
     if not allowed:
         return JSONResponse(
@@ -1033,7 +970,7 @@ async def update_installation_warranties(
 ):
     """Chỉnh sửa lại phiếu bảo hành đã tạo từ đơn KTLĐ (hỗ trợ sửa nhiều máy & bổ sung máy)."""
     allowed = await asyncio.to_thread(
-        check_ktld_warranty_permission, "installation_warranty_edit", user
+        can_access, "installation_warranty_edit", user
     )
     if not allowed:
         return JSONResponse(
@@ -1275,6 +1212,7 @@ async def update_installation_warranties(
         "warranty_edit_log": result["edit_log"],
     }
 
+
 @router.delete("/installations/{order_id}/warranties/{warranty_id}")
 async def delete_installation_warranty_record(
     order_id: str,
@@ -1282,7 +1220,7 @@ async def delete_installation_warranty_record(
     user: dict = Depends(get_current_user),
 ):
     allowed = await asyncio.to_thread(
-        check_ktld_warranty_permission, "installation_warranty_delete", user
+        can_access, "installation_warranty_delete", user
     )
     if not allowed:
         return JSONResponse(
@@ -1341,6 +1279,7 @@ async def delete_installation_warranty_record(
         "message": f"Đã xóa phiếu bảo hành S/N: {result['deleted_sn']}",
         "records": result["remaining"],
     }
+
 
 @router.delete("/installations/{order_id}")
 async def delete_installation_order(order_id: str, user: dict = Depends(get_current_user)):

@@ -262,12 +262,16 @@ async def reception_page(request: Request, user: dict = Depends(get_current_user
             status_code=status.HTTP_403_FORBIDDEN,
         )
     can_delete = await asyncio.to_thread(can_access, "reception_delete", user)
+    can_install_warranty = await asyncio.to_thread(can_access, "installation_warranty", user)
     return templates.TemplateResponse(
         request=request,
         name="reception.html",
         context={
             "current_user": user,
-            "user_perms": {"can_delete": bool(can_delete)},
+            "user_perms": {
+                "can_delete": bool(can_delete),
+                "can_install_warranty": bool(can_install_warranty),
+            },
             "session": request.session,
             "supabase_url": getattr(settings, "SUPABASE_URL", ""),
             "supabase_anon_key": getattr(
@@ -627,6 +631,12 @@ async def list_installation_orders(
 
 @router.get("/installations/warranty-options")
 async def get_installation_warranty_options(current_user: dict = Depends(get_current_user)):
+    allowed = await asyncio.to_thread(can_access, "installation_warranty", current_user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="⛔ Bạn hoặc phòng ban của bạn không có quyền tạo/sửa phiếu bảo hành từ đơn KTLĐ!",
+        )
     """Lấy danh sách chính sách bảo hành active và danh mục máy in."""
     def _fetch():
         policies_res = (
@@ -718,6 +728,12 @@ async def get_installation_warranties(
     order_id: str,
     user: dict = Depends(get_current_user),
 ):
+    allowed = await asyncio.to_thread(can_access, "installation_warranty", user)
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="⛔ Bạn hoặc phòng ban của bạn không có quyền xem/sửa phiếu bảo hành từ đơn KTLĐ!",
+        )
     """Lấy toàn bộ phiếu bảo hành đã tạo từ đơn KTLĐ để xem/chỉnh sửa."""
     def _fetch():
         order_res = (

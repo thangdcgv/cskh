@@ -211,11 +211,22 @@ async def home_dashboard(request: Request):
     if not user:
         return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
-    user_perms = {
-        "settings": can_access("settings", user),
-        "sync": can_access("sync", user),
-        "can_delete": can_access("reception", user),
-    }
+    def _resolve_home_perms() -> dict:
+        can_delete = bool(can_access("reception_delete", user))
+        can_w_create = bool(can_access("installation_warranty_create", user))
+        can_w_edit = bool(can_access("installation_warranty_edit", user))
+        can_w_delete = bool(can_access("installation_warranty_delete", user))
+        return {
+            "settings": bool(can_access("settings", user)),
+            "sync": bool(can_access("sync", user)),
+            "can_delete": can_delete,
+            "can_install_warranty": bool(can_w_create or can_w_edit or can_w_delete),
+            "can_install_warranty_create": can_w_create,
+            "can_install_warranty_edit": can_w_edit,
+            "can_install_warranty_delete": can_w_delete,
+        }
+
+    user_perms = await run_in_threadpool(_resolve_home_perms)
 
     return templates.TemplateResponse(
         request=request,
